@@ -1,5 +1,11 @@
 # 🌲 MindForest
 
+<div align="center">
+
+[English](README.md) | 简体中文
+
+</div>
+
 MindForest 是一款「双层导航」的可视化知识组织工具：树状结构负责主题深潜，图谱结构负责跨主题关联。它结合了 Tree View、Graph View 以及 Markdown 编辑面板，帮助你以更具沉浸感的方式构建和梳理知识森林。
 
 ---

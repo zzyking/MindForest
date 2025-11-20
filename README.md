@@ -1,5 +1,11 @@
 # 🌲 MindForest
 
+<div align="center">
+
+English | [简体中文](README.zh-CN.md)
+
+</div>
+
 MindForest is a dual-layer visual knowledge workspace: the Tree View helps you dive deep into a topic while the Graph View exposes cross-topic relations. The app blends trees, graph canvas, and a Markdown editor so you can grow and reorganize your forest of ideas with an immersive flow.
 
 ---
