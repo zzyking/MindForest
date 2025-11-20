@@ -1,26 +1,45 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@theme {
+  /* --- 调整后的森林色板 (更饱满) --- */
+  
+  /* 纸张底色 (保持暖白) */
+  --color-forest-50: #F5F7F5; 
+  /* 浅雾绿 (用于子节点背景) */
+  --color-forest-100: #E6EDE9; 
+  /* 芦苇绿 (用于连线/边框) */
+  --color-forest-200: #CCD6D1; 
+  /* 苔藓绿 (用于非焦点元素) */
+  --color-forest-300: #9FB3A6; 
+  /* 正叶绿 (标准品牌色) */
+  --color-forest-500: #557C68; 
+  /* 深林绿 (文字/焦点背景) */
+  --color-forest-800: #2C453B; 
+  /* 极夜绿 (最深) */
+  --color-forest-900: #182822;
+
+  /* 暖沙色 (配合深绿的高光) */
+  --color-sand-100: #F9F7F2;
+  --color-sand-200: #EBE5D9;
+
+  /* 强调色 (秋叶/果实) */
+  --color-accent: #D47A5D;
+
+  /* ... 字体和阴影保持不变 ... */
+  --font-sans: var(--font-inter);
+  --font-serif: var(--font-crimson);
+  --shadow-glass: 0 8px 32px rgba(24, 40, 34, 0.08);
+  --shadow-soft: 0 20px 40px -10px rgba(24, 40, 34, 0.15);
+  --image-noise: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+/* ... Reset 保持不变 ... */
+html, body {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  overflow: hidden;
+  background-color: var(--color-forest-50);
+  color: var(--color-forest-900);
 }
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
-}
+.bg-noise { background-image: var(--image-noise); }
