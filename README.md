@@ -13,7 +13,7 @@ MindForest is a dual-layer visual knowledge workspace: the Tree View helps you d
 ## ✨ Core Features
 
 - **Tree ↔ Graph toggle** – The bottom dock (Framer Motion) switches between `TreeLayer` (orbital layout around the focus node) and `GraphLayer` (react-force-graph-2d).
-- **Node authoring panel** – `NodeEditorPanel` offers Markdown editing + preview with metadata such as created date, ID, and node type.
+- **Node authoring panel** – `NodeEditorPanel` provides inline breadcrumbs, Write/Read toggle, back/forward navigation history, clickable connection chips, and a dropdown connection picker.
 - **Local persistence** – Zustand with `persist` stores the forest in `localStorage`, enabling offline edits.
 - **Expressive motion language** – Tailwind CSS v4 plus a custom forest palette (`src/app/globals.css`) delivers glassmorphism, glow, and film-grain accents.
 - **Extensible data model** – `ForestNode` tracks both hierarchical `children` and semantic `links`, paving the way for multiple layouts and syncing strategies.
@@ -51,8 +51,8 @@ public/                  # Static assets & previews
 | `src/components/workspace/WorkspaceShell.tsx` | Client entry point that manages the dock, view toggles, sidebar animation, and layer composition. |
 | `TreeLayer.tsx` | Bubble tree view that uses Framer Motion `layoutId` for seamless scaling, hover states, and parent breadcrumbs. |
 | `GraphLayer.tsx` | Force-directed graph with responsive sizing, automatic focus/offset handling when the sidebar is open, and custom canvas rendering. |
-| `NodeEditorPanel.tsx` | Markdown write/preview tabs, metadata panel, color chip placeholder, and delete action powered by `useDebounce`. |
-| `useForestStore.ts` | Nodes CRUD, focus/view/sidebar state, Immer-based updates, and persistence. |
+| `NodeEditorPanel.tsx` | Inline breadcrumb path, Write/Read toggle, back/forward navigation controls, clickable connection chips, dropdown link picker, metadata, and debounced saves. |
+| `useForestDataStore.ts` / `useWorkspaceUIStore.ts` | Nodes CRUD + persistence, plus UI state for focus/view/sidebar and navigation history (`goToNode`, `goBack`, `goForward`). |
 
 ---
 
@@ -88,10 +88,12 @@ public/                  # Static assets & previews
 ## 🗂️ Data & State
 
 - `ForestNode` (`src/types/forest.ts`) keeps both `children` (tree) and `links` (graph) references; `type` currently supports `concept | fact | source | question`.
-- `useForestStore` exposes:
-  - `nodes`, `rootNodeId`, `focusedNodeId`, `viewMode`, `isSidebarOpen`
-  - `setFocus`, `toggleView`, `toggleSidebar`
+- `useForestDataStore` exposes:
+  - `nodes`, `rootNodeId`
   - `addNode`, `updateNodeTitle`, `updateNodeContent`
+- `useWorkspaceUIStore` handles UI/focus:
+  - `focusedNodeId`, `viewMode`, `isSidebarOpen`, navigation stacks
+  - `goToNode`, `goBack`, `goForward`, `toggleView`, `toggleSidebar`, `hydrateEditorDraft`
 - `persist` only saves the data layer (`nodes`, `rootNodeId`) to keep UI state predictable after refresh.
 
 ---

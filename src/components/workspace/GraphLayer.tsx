@@ -2,7 +2,10 @@
 
 import React, { useMemo, useRef, useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { useForestStore } from '@/store/useForestStore';
+
+import { useForestDataStore } from '@/store/useForestDataStore';
+import { useWorkspaceUIStore } from '@/store/useWorkspaceUIStore';
+import { buildGraphData, type GraphData } from '@/lib/layout/graphData';
 
 // 1. Dynamic Import (SSR False)
 const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), {
@@ -11,11 +14,11 @@ const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), {
 });
 
 export function GraphLayer() {
-  const nodes = useForestStore((s) => s.nodes);
-  const focusedId = useForestStore((s) => s.focusedNodeId);
-  const setFocus = useForestStore((s) => s.setFocus);
-  const toggleSidebar = useForestStore((s) => s.toggleSidebar);
-  const isSidebarOpen = useForestStore((s) => s.isSidebarOpen); // 获取侧边栏状态
+  const nodes = useForestDataStore((s) => s.nodes);
+  const focusedId = useWorkspaceUIStore((s) => s.focusedNodeId);
+  const goToNode = useWorkspaceUIStore((s) => s.goToNode);
+  const toggleSidebar = useWorkspaceUIStore((s) => s.toggleSidebar);
+  const isSidebarOpen = useWorkspaceUIStore((s) => s.isSidebarOpen); // 获取侧边栏状态
 
   // 遥控器 Ref (操作相机)
   const fgRef = useRef<any>();
@@ -24,35 +27,10 @@ export function GraphLayer() {
   const [dimensions, setDimensions] = useState({ w: 800, h: 600 });
 
   // 2. 数据转换
-  const graphData = useMemo(() => {
-    const gNodes: any[] = [];
-    const gLinks: any[] = [];
-
-    Object.values(nodes).forEach((node) => {
-      gNodes.push({
-        id: node.id,
-        name: node.title,
-        val: 1
-      });
-
-      node.children.forEach((childId) => {
-        if (nodes[childId]) {
-          gLinks.push({ source: node.id, target: childId, type: 'hierarchy' });
-        }
-      });
-
-      node.links?.forEach((targetId) => {
-        if (nodes[targetId]) {
-          gLinks.push({ source: node.id, target: targetId, type: 'semantic' });
-        }
-      });
-    });
-
-    return { nodes: gNodes, links: gLinks };
-  }, [nodes]);
+  const graphData = useMemo(() => buildGraphData(nodes), [nodes]);
 
   // --- 3. Ref 穿透模式 (解决依赖死循环的关键) ---
-  const graphDataRef = useRef(graphData);
+  const graphDataRef = useRef<GraphData>(graphData);
   useEffect(() => {
     graphDataRef.current = graphData;
   }, [graphData]);
@@ -128,7 +106,7 @@ export function GraphLayer() {
         nodeLabel="name"
         nodeRelSize={6}
         onNodeClick={(node) => {
-            setFocus(node.id as string);
+            goToNode(node.id as string);
             toggleSidebar(true);
             // 点击时的动画由上面的 useEffect 接管，这里只需改状态
         }}

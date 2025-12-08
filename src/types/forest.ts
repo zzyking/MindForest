@@ -8,17 +8,14 @@ export interface ForestNode {
   title: string;
   content: string; // Markdown body
   type: NodeType;
+  createdAt: number;
   
   // The Tree Structure
   children: NodeID[]; 
   
   // The Graph Structure (Cross-links)
   links: NodeID[]; 
-  
-  // Visual metadata (persisted)
-  position?: { x: number; y: number }; // For graph view or manual layout
-  color?: string;
-  createdAt: number;
+
 }
 
 export interface ForestState {

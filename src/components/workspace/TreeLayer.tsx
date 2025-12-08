@@ -1,8 +1,11 @@
 'use client';
 
-import React from 'react';
-import { useForestStore } from '@/store/useForestStore';
+import React, { useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+
+import { useForestDataStore } from '@/store/useForestDataStore';
+import { useWorkspaceUIStore } from '@/store/useWorkspaceUIStore';
+import { computeOrbitPositions } from '@/lib/layout/treeLayout';
 
 // --- 共享的物理动画配置 (确保文字和气泡同步) ---
 const springConfig = {
@@ -11,6 +14,8 @@ const springConfig = {
   damping: 15,
   mass: 0.8
 };
+
+
 
 const Bubble = ({ node, isFocused, onClick, x = 0, y = 0, size }: any) => (
   <motion.div
@@ -80,32 +85,49 @@ const Bubble = ({ node, isFocused, onClick, x = 0, y = 0, size }: any) => (
 );
 
 export function TreeLayer() {
-  const nodes = useForestStore((s) => s.nodes);
-  const focusedId = useForestStore((s) => s.focusedNodeId);
-  const setFocus = useForestStore((s) => s.setFocus);
-  const toggleSidebar = useForestStore((s) => s.toggleSidebar);
-  const isSidebarOpen = useForestStore((s) => s.isSidebarOpen);
+  const nodes = useForestDataStore((s) => s.nodes);
+  const focusedId = useWorkspaceUIStore((s) => s.focusedNodeId);
+  const goToNode = useWorkspaceUIStore((s) => s.goToNode);
+  const toggleSidebar = useWorkspaceUIStore((s) => s.toggleSidebar);
+  const isSidebarOpen = useWorkspaceUIStore((s) => s.isSidebarOpen);
+  const hydrateEditorDraft = useWorkspaceUIStore((s) => s.hydrateEditorDraft);
+  const editorDraftNodeId = useWorkspaceUIStore((s) => s.editorDraft.nodeId);
 
   const focusedNode = nodes[focusedId];
   const parentNode = focusedNode?.parentId ? nodes[focusedNode.parentId] : null;
   const childrenNodes = focusedNode?.children.map(id => nodes[id]) || [];
 
+  const focusAndHydrate = (id: string) => {
+    const target = nodes[id];
+    if (!target) return;
+    goToNode(id);
+    hydrateEditorDraft(target);
+  };
+
   const handleNodeClick = (id: string) => {
-    setFocus(id);
+    focusAndHydrate(id);
     toggleSidebar(true);
   };
+
+  useEffect(() => {
+    if (focusedNode && editorDraftNodeId !== focusedNode.id) {
+      hydrateEditorDraft(focusedNode);
+    }
+  }, [focusedNode, editorDraftNodeId, hydrateEditorDraft]);
 
   // 尺寸常量
   const CENTER_SIZE = 200;
   const CHILD_SIZE = 100;
-  const ORBIT_RADIUS = 240;
+  const ORBIT_RADIUS = 200;
+  const OFFSET_Y = 30;
+  const childPositions = computeOrbitPositions(childrenNodes.length, ORBIT_RADIUS);
 
   if (!focusedNode) return <div>Error: Node not found</div>;
 
   return (
     <div 
       className="w-full h-full relative overflow-hidden"
-      onClick={() => parentNode && setFocus(parentNode.id)}
+      onClick={() => parentNode && focusAndHydrate(parentNode.id)}
     >
       {/* 
          --- 1. 顶部提示文字 (现在也会跟着平移了) --- 
@@ -117,7 +139,7 @@ export function TreeLayer() {
             initial={{ opacity: 0, y: -20 }}
             animate={{ 
               opacity: 0.5, 
-              y: 0,
+              y: -20,
               x: isSidebarOpen ? -200 : 0 // <--- 关键：应用相同的平移
             }}
             exit={{ opacity: 0, y: -20 }}
@@ -126,6 +148,21 @@ export function TreeLayer() {
           >
             <div className="text-xs uppercase tracking-widest mb-2">Return to</div>
             <div className="text-xl font-bold">{parentNode.title}</div>
+          </motion.div>
+        )}
+        {!parentNode && (
+          <motion.div 
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ 
+              opacity: 0.5, 
+              y: -20,
+              x: isSidebarOpen ? -200 : 0 // <--- 关键：应用相同的平移
+            }}
+            exit={{ opacity: 0, y: -20 }}
+            transition={springConfig} // <--- 关键：应用相同的物理参数
+            className="absolute top-24 w-full text-center pointer-events-none z-0"
+          >
+            <div className="text-xl font-bold">Root</div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -151,19 +188,12 @@ export function TreeLayer() {
             onClick={() => {}}
             size={CENTER_SIZE}
             x={0}
-            y={0}
+            y={OFFSET_Y}
           />
 
           {/* Children */}
           {childrenNodes.map((child, i) => {
-            const total = childrenNodes.length;
-            const angle = total === 1 
-              ? Math.PI / 2 
-              : (i / total) * 2 * Math.PI - Math.PI/2;
-            
-            const x = Math.cos(angle) * ORBIT_RADIUS;
-            const y = Math.sin(angle) * ORBIT_RADIUS;
-
+            const { x, y } = childPositions[i] || { x: 0, y: 0 };
             return (
               <Bubble 
                 key={child.id}
@@ -172,7 +202,7 @@ export function TreeLayer() {
                 onClick={handleNodeClick}
                 size={CHILD_SIZE}
                 x={x}
-                y={y}
+                y={y+OFFSET_Y}
               />
             );
           })}

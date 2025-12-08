@@ -4,20 +4,20 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { PanelRight, Network, TreeDeciduous } from 'lucide-react';
-import { useForestStore } from '@/store/useForestStore';
 
+import { useWorkspaceUIStore } from '@/store/useWorkspaceUIStore';
 import { TreeLayer } from './TreeLayer';
 import { GraphLayer } from './GraphLayer';
 import { NodeEditorPanel } from './NodeEditorPanel';
 
 export default function WorkspaceShell() {
-  const viewMode = useForestStore((s) => s.viewMode);
-  const isSidebarOpen = useForestStore((s) => s.isSidebarOpen);
-  const toggleSidebar = useForestStore((s) => s.toggleSidebar);
-  const toggleView = useForestStore((s) => s.toggleView); // 假设你有这个action
+  const viewMode = useWorkspaceUIStore((s) => s.viewMode);
+  const isSidebarOpen = useWorkspaceUIStore((s) => s.isSidebarOpen);
+  const toggleSidebar = useWorkspaceUIStore((s) => s.toggleSidebar);
+  const setViewMode = useWorkspaceUIStore((s) => s.setViewMode);
 
   // 侧边栏宽度常量
-  const SIDEBAR_WIDTH = 400;
+  const SIDEBAR_WIDTH = 450;
 
   return (
     <div className="h-screen w-screen overflow-hidden bg-forest-50 flex relative">
@@ -39,22 +39,22 @@ export default function WorkspaceShell() {
         <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-50">
           <div className="flex items-center gap-1 bg-white/80 backdrop-blur-xl border border-white/20 shadow-glass p-2 rounded-2xl text-forest-800">
             <button 
-              onClick={() => useForestStore.setState({ viewMode: 'tree' })}
-              className={`p-3 rounded-xl transition-all ${viewMode === 'tree' ? 'bg-forest-100 text-forest-900' : 'hover:bg-forest-50/50 text-forest-400'}`}
+              onClick={() => setViewMode('tree')}
+              className={`p-3 rounded-xl transition-all ${viewMode === 'tree' ? 'bg-forest-200/75 text-forest-900' : 'hover:bg-forest-100/50 text-forest-400'}`}
             >
               <TreeDeciduous size={20} />
             </button>
             <div className="w-px h-4 bg-forest-200 mx-1" />
             <button 
-              onClick={() => useForestStore.setState({ viewMode: 'graph' })}
-              className={`p-3 rounded-xl transition-all ${viewMode === 'graph' ? 'bg-forest-100 text-forest-900' : 'hover:bg-forest-50/50 text-forest-400'}`}
+              onClick={() => setViewMode('graph')}
+              className={`p-3 rounded-xl transition-all ${viewMode === 'graph' ? 'bg-forest-200/75 text-forest-900' : 'hover:bg-forest-100/50 text-forest-400'}`}
             >
               <Network size={20} />
             </button>
             <div className="w-px h-4 bg-forest-200 mx-1" />
             <button 
               onClick={() => toggleSidebar()}
-              className={`p-3 rounded-xl transition-all ${isSidebarOpen ? 'bg-sand-100 text-accent' : 'hover:bg-forest-50/50 text-forest-800'}`}
+              className={`p-3 rounded-xl transition-all ${isSidebarOpen ? 'bg-sand-200/75 text-accent' : 'hover:bg-sand-100 text-accent/70'}`}
             >
               <PanelRight size={20} />
             </button>

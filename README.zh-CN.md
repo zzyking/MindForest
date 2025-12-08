@@ -13,7 +13,7 @@ MindForest 是一款「双层导航」的可视化知识组织工具：树状结
 ## ✨ 核心特性
 
 - **Tree ↔ Graph 双模式切换**：底部 Dock 使用 Framer Motion 动化切换 `TreeLayer`（围绕焦点节点轨道排布）与 `GraphLayer`（react-force-graph-2d 物理布局）。
-- **节点编辑工作台**：`NodeEditorPanel` 以 Markdown + 预览双模式编写内容，并显示创建日期、ID、类型等元数据。
+- **节点编辑工作台**：`NodeEditorPanel` 提供行内路径（可点击跳转）、Write/Read 切换、前进/后退导航、可点击的连接标签和下拉式连接选择器，辅以元数据与 Markdown 编辑/预览。
 - **本地持久化**：Zustand + `persist` 中间件将节点树保存到 `localStorage`，即使离线也能继续编辑。
 - **语义动画语言**：Tailwind CSS v4 + 自定义森林调色板（`src/app/globals.css`）打造玻璃拟态、柔和光晕与噪点纹理。
 - **扩展友好的数据模型**：`ForestNode` 同时记录树形 `children` 与图形 `links`，便于未来接入多种布局/同步策略。
@@ -51,8 +51,8 @@ public/                  # 静态资源与预览图
 | `src/components/workspace/WorkspaceShell.tsx` | 顶层客户端组件，负责 Dock 控件、视图切换、侧边栏动画与层管理。 |
 | `TreeLayer.tsx` | 气泡化树视图，使用 Framer Motion `layoutId` 实现平滑缩放、悬停及父节点导航提示。 |
 | `GraphLayer.tsx` | Force-directed 图谱，监听窗口尺寸，自动调整焦点节点与侧边栏偏移，渲染自定义 Canvas 节点。 |
-| `NodeEditorPanel.tsx` | Markdown 编辑/预览、元数据、color token placeholder 与删除入口，使用 `useDebounce` 减少写入频率。 |
-| `useForestStore.ts` | 提供节点 CRUD、聚焦、视图/侧边栏状态，使用 Immer 语义更新并落盘。 |
+| `NodeEditorPanel.tsx` | 行内路径 + Write/Read 切换、前进/后退导航、可点击连接标签、下拉搜索链接、元数据与去抖保存。 |
+| `useForestDataStore.ts` / `useWorkspaceUIStore.ts` | 数据层 CRUD 与持久化，UI 层的聚焦/视图/侧边栏状态及导航历史（`goToNode`/`goBack`/`goForward`）。 |
 
 ---
 
@@ -88,10 +88,12 @@ public/                  # 静态资源与预览图
 ## 🗂️ 数据与状态
 
 - `ForestNode` (`src/types/forest.ts`) 同时存储 `children`（树）与 `links`（图）引用，`type` 字段预设 `concept/fact/source/question`。
-- `useForestStore` 提供：
-  - `nodes`, `rootNodeId`, `focusedNodeId`, `viewMode`, `isSidebarOpen`
-  - `setFocus`, `toggleView`, `toggleSidebar`
+- `useForestDataStore` 提供：
+  - `nodes`, `rootNodeId`
   - `addNode`, `updateNodeTitle`, `updateNodeContent`
+- `useWorkspaceUIStore` 负责 UI/聚焦：
+  - `focusedNodeId`, `viewMode`, `isSidebarOpen`, 导航栈
+  - `goToNode`, `goBack`, `goForward`, `toggleView`, `toggleSidebar`, `hydrateEditorDraft`
 - `persist` 仅 `partialize` 数据层（节点 & root），UI 状态在刷新后会重置，保持 predictable UX。
 
 ---
