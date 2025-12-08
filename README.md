@@ -1,6 +1,7 @@
-# 🌲 MindForest
-
 <div align="center">
+
+<img src="./assets/MindForest.png" alt="logo" width="40%" />
+
 
 English | [简体中文](README.zh-CN.md)
 
@@ -8,17 +9,15 @@ English | [简体中文](README.zh-CN.md)
 
 MindForest is a dual-layer visual knowledge workspace: the Tree View helps you dive deep into a topic while the Graph View exposes cross-topic relations. The app blends trees, graph canvas, and a Markdown editor so you can grow and reorganize your forest of ideas with an immersive flow.
 
----
 
 ## ✨ Core Features
 
 - **Tree ↔ Graph toggle** – The bottom dock (Framer Motion) switches between `TreeLayer` (orbital layout around the focus node) and `GraphLayer` (react-force-graph-2d).
-- **Node authoring panel** – `NodeEditorPanel` provides inline breadcrumbs, Write/Read toggle, back/forward navigation history, clickable connection chips, and a dropdown connection picker.
+- **Node authoring panel** – `NodeEditorPanel` provides node deletion, child addition, inline breadcrumbs, Write/Read toggle, back/forward navigation history, clickable connection chips, and a dropdown connection picker.
 - **Local persistence** – Zustand with `persist` stores the forest in `localStorage`, enabling offline edits.
 - **Expressive motion language** – Tailwind CSS v4 plus a custom forest palette (`src/app/globals.css`) delivers glassmorphism, glow, and film-grain accents.
 - **Extensible data model** – `ForestNode` tracks both hierarchical `children` and semantic `links`, paving the way for multiple layouts and syncing strategies.
 
----
 
 ## 🧱 Tech Stack
 
@@ -27,7 +26,6 @@ MindForest is a dual-layer visual knowledge workspace: the Tree View helps you d
 - **Animation & Canvas**: Framer Motion, react-force-graph-2d  
 - **UI utilities**: Tailwind CSS 4, tailwind-merge, lucide-react, React Markdown, react-textarea-autosize
 
----
 
 ## 📁 Project Structure
 
@@ -42,7 +40,6 @@ src/
 public/                  # Static assets & previews
 ```
 
----
 
 ## 🧭 Workspace Highlights
 
@@ -54,7 +51,6 @@ public/                  # Static assets & previews
 | `NodeEditorPanel.tsx` | Inline breadcrumb path, Write/Read toggle, back/forward navigation controls, clickable connection chips, dropdown link picker, metadata, and debounced saves. |
 | `useForestDataStore.ts` / `useWorkspaceUIStore.ts` | Nodes CRUD + persistence, plus UI state for focus/view/sidebar and navigation history (`goToNode`, `goBack`, `goForward`). |
 
----
 
 ## 🚀 Getting Started
 
@@ -83,7 +79,6 @@ public/                  # Static assets & previews
 
 > Use Node 18+ and make sure dev server, build, and lint pass before committing.
 
----
 
 ## 🗂️ Data & State
 
@@ -96,7 +91,6 @@ public/                  # Static assets & previews
   - `goToNode`, `goBack`, `goForward`, `toggleView`, `toggleSidebar`, `hydrateEditorDraft`
 - `persist` only saves the data layer (`nodes`, `rootNodeId`) to keep UI state predictable after refresh.
 
----
 
 ## 🧪 Testing & Quality
 
@@ -108,7 +102,6 @@ npx vitest run --coverage
 
 Document manual verification steps in PR descriptions until we consistently reach ≥80% branch coverage.
 
----
 
 ## 🗺️ Roadmap (excerpt)
 
@@ -119,7 +112,6 @@ Document manual verification steps in PR descriptions until we consistently reac
 3. **Beta**
    - Multiple layouts (Pythagorean / Radial / Flow), AI assistant, community features (Fork / Upvote / Learning Paths)
 
----
 
 ## 🤝 Contribution Guide
 

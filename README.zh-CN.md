@@ -1,6 +1,6 @@
-# 🌲 MindForest
-
 <div align="center">
+
+<img src="./assets/MindForest.png" alt="logo" width="40%" />
 
 [English](README.md) | 简体中文
 
@@ -8,17 +8,14 @@
 
 MindForest 是一款「双层导航」的可视化知识组织工具：树状结构负责主题深潜，图谱结构负责跨主题关联。它结合了 Tree View、Graph View 以及 Markdown 编辑面板，帮助你以更具沉浸感的方式构建和梳理知识森林。
 
----
-
 ## ✨ 核心特性
 
 - **Tree ↔ Graph 双模式切换**：底部 Dock 使用 Framer Motion 动化切换 `TreeLayer`（围绕焦点节点轨道排布）与 `GraphLayer`（react-force-graph-2d 物理布局）。
-- **节点编辑工作台**：`NodeEditorPanel` 提供行内路径（可点击跳转）、Write/Read 切换、前进/后退导航、可点击的连接标签和下拉式连接选择器，辅以元数据与 Markdown 编辑/预览。
+- **节点编辑工作台**：`NodeEditorPanel` 提供节点删除、子节点添加、行内路径（可点击跳转）、Write/Read 切换、前进/后退导航、可点击的连接标签和下拉式连接选择器，辅以元数据与 Markdown 编辑/预览。
 - **本地持久化**：Zustand + `persist` 中间件将节点树保存到 `localStorage`，即使离线也能继续编辑。
 - **语义动画语言**：Tailwind CSS v4 + 自定义森林调色板（`src/app/globals.css`）打造玻璃拟态、柔和光晕与噪点纹理。
 - **扩展友好的数据模型**：`ForestNode` 同时记录树形 `children` 与图形 `links`，便于未来接入多种布局/同步策略。
 
----
 
 ## 🧱 技术栈
 
@@ -27,7 +24,6 @@ MindForest 是一款「双层导航」的可视化知识组织工具：树状结
 - **Animation & Canvas**：Framer Motion、react-force-graph-2d
 - **UI 工具**：Tailwind CSS 4、tailwind-merge、lucide-react、React Markdown、react-textarea-autosize
 
----
 
 ## 📁 项目结构
 
@@ -42,7 +38,6 @@ src/
 public/                  # 静态资源与预览图
 ```
 
----
 
 ## 🧭 Workspace 导览
 
@@ -54,7 +49,6 @@ public/                  # 静态资源与预览图
 | `NodeEditorPanel.tsx` | 行内路径 + Write/Read 切换、前进/后退导航、可点击连接标签、下拉搜索链接、元数据与去抖保存。 |
 | `useForestDataStore.ts` / `useWorkspaceUIStore.ts` | 数据层 CRUD 与持久化，UI 层的聚焦/视图/侧边栏状态及导航历史（`goToNode`/`goBack`/`goForward`）。 |
 
----
 
 ## 🚀 快速开始
 
@@ -83,7 +77,6 @@ public/                  # 静态资源与预览图
 
 > 推荐使用 Node 18+，并在提交前确保 dev server、build、lint 均无报错。
 
----
 
 ## 🗂️ 数据与状态
 
@@ -96,7 +89,6 @@ public/                  # 静态资源与预览图
   - `goToNode`, `goBack`, `goForward`, `toggleView`, `toggleSidebar`, `hydrateEditorDraft`
 - `persist` 仅 `partialize` 数据层（节点 & root），UI 状态在刷新后会重置，保持 predictable UX。
 
----
 
 ## 🧪 测试与质量
 
@@ -108,7 +100,6 @@ npx vitest run --coverage
 
 在 PR 描述中补充手动验证步骤，直至自动化覆盖达到 ≥80% branch coverage。
 
----
 
 ## 🗺️ 路线图（节选）
 
@@ -119,7 +110,6 @@ npx vitest run --coverage
 3. **Beta**
    - 多布局（Pythagorean / Radial / Flow）、AI 助手、社区互动（Fork / Upvote / Learning Paths）
 
----
 
 ## 🤝 贡献指南
 
