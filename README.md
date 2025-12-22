@@ -9,6 +9,34 @@ English | [简体中文](README.zh-CN.md)
 
 MindForest is a dual-layer visual knowledge workspace: the Tree View helps you dive deep into a topic while the Graph View exposes cross-topic relations. The app blends trees, graph canvas, and a Markdown editor so you can grow and reorganize your forest of ideas with an immersive flow.
 
+**Current version:** 0.1.0-alpha · See [CHANGELOG.md](CHANGELOG.md) for updates.
+
+## 🚀 Quick start (desktop app is primary)
+
+The desktop app bundles the Rust API and SQLite; the backend is **required**.
+
+1. Build/export the frontend (Execute from root directory):
+   ```bash
+   npm run build
+   rm -rf rust-mindforest/apps/.tauri-dist
+   mkdir -p rust-mindforest/apps/.tauri-dist
+   cp -R out/* rust-mindforest/apps/.tauri-dist
+   ```
+2. Package or run the desktop app:
+   ```bash
+   cd rust-mindforest/apps/desktop
+   cargo tauri build        # packaged app
+   # or cargo tauri dev     # live dev (expects Next dev at :13000)
+   ```
+3. Launch the app. It auto-starts the Rust API on `127.0.0.1:8787`, waits for it, then picks an existing topic or creates “My Forest”. Data is stored in SQLite at `~/Library/Application Support/com.mindforest.desktop/mindforest.db` (or `DATABASE_URL`).
+
+DevTools (when needed): run the app with `TAURI_DEVTOOLS=1 .../MindForest.app/Contents/MacOS/desktop`, then `⌥+⌘+I`.
+
+**Gatekeeper note (macOS, unsigned builds)**: if you see “app is damaged” on first open, remove quarantine:
+```bash
+xattr -dr com.apple.quarantine /Applications/MindForest.app
+# or on the DMG before mounting: xattr -dr com.apple.quarantine MindForest.dmg
+```
 
 ## ✨ Core Features
 
@@ -30,6 +58,10 @@ MindForest is a dual-layer visual knowledge workspace: the Tree View helps you d
 ## 📁 Project Structure
 
 ```
+rust-mindforest/         # Rust workspace: domain, storage (memory/postgres/sqlite), API, desktop
+  ├─ crates/             # domain + storage implementations
+  ├─ apps/api/           # Axum HTTP API (topics/nodes)
+  └─ apps/desktop/       # Tauri desktop wrapper (bundles API + SQLite)
 src/
  ├─ app/                 # App Router (layout.tsx, page.tsx, global styles)
  ├─ components/
@@ -59,25 +91,38 @@ public/                  # Static assets & previews
    npm install
    # or pnpm install
    ```
-2. **Local development**
+2. **Start the Rust API (required for real data)**
+   ```bash
+   cd rust-mindforest
+   DATABASE_URL="sqlite://$HOME/Library/Application Support/com.mindforest.desktop/mindforest.db" \
+   API_ADDR=127.0.0.1:8787 \
+   cargo run -p api
+   ```
+3. **Local frontend development**
    ```bash
    npm run dev
    # or pnpm dev
    ```
-   Visit `http://localhost:3000` to see `WorkspaceShell`.
-3. **Production build / preview**
+   Visit `http://localhost:13000` to see `WorkspaceShell`.
+4. **Production build / preview**
    ```bash
    npm run build
    npm run start   # Run the prod server locally before releases
    # or pnpm build / pnpm start
    ```
-4. **Quality gates**
+5. **Quality gates**
    ```bash
    npm run lint    # ESLint + Next.js Core Web Vitals
    # or pnpm lint
    ```
 
 > Use Node 18+ and make sure dev server, build, and lint pass before committing.
+
+## 🔗 Backend (required)
+- The Rust API is mandatory; the desktop app runs it in-process on `127.0.0.1:8787` and the frontend points there by default.
+- If you prefer to run the API standalone (e.g., Postgres), start it from `rust-mindforest` (see its README) and set:
+  - `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8787` (or your port)
+- The workspace hydrates from the remote topic on load and mirrors edits (add/update/delete/link) back to the API; stale IDs are cleared automatically on 404s.
 
 
 ## 🗂️ Data & State
@@ -90,18 +135,6 @@ public/                  # Static assets & previews
   - `focusedNodeId`, `viewMode`, `isSidebarOpen`, navigation stacks
   - `goToNode`, `goBack`, `goForward`, `toggleView`, `toggleSidebar`, `hydrateEditorDraft`
 - `persist` only saves the data layer (`nodes`, `rootNodeId`) to keep UI state predictable after refresh.
-
-
-## 🧪 Testing & Quality
-
-Automated tests are not committed yet. Follow the team guidelines by adding Vitest + React Testing Library suites under `src/**/__tests__` (`*.test.tsx` or `.ts`) and run:
-
-```bash
-npx vitest run --coverage
-```
-
-Document manual verification steps in PR descriptions until we consistently reach ≥80% branch coverage.
-
 
 ## 🗺️ Roadmap (excerpt)
 

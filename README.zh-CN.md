@@ -8,6 +8,33 @@
 
 MindForest 是一款「双层导航」的可视化知识组织工具：树状结构负责主题深潜，图谱结构负责跨主题关联。它结合了 Tree View、Graph View 以及 Markdown 编辑面板，帮助你以更具沉浸感的方式构建和梳理知识森林。
 
+**当前版本：** 0.1.0-alpha · 更新内容见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 🚀 快速开始（优先使用桌面端）
+
+桌面端内置 Rust API 和 SQLite，后端是**必需的**。
+
+1. 导出前端静态资源（在根目录执行）：
+   ```bash
+   npm run build
+   rm -rf rust-mindforest/apps/.tauri-dist
+   mkdir -p rust-mindforest/apps/.tauri-dist
+   cp -R out/* rust-mindforest/apps/.tauri-dist
+   ```
+2. 构建或开发桌面端：
+   ```bash
+   cd rust-mindforest/apps/desktop
+   cargo tauri build        # 打包
+   # 或 cargo tauri dev     # 开发模式（期望 Next dev 运行在 13000 端口）
+   ```
+3. 启动应用：会自动在 `127.0.0.1:8787` 开启 Rust API，等待健康后加载现有 Topic 或创建 “My Forest”，数据写入 `~/Library/Application Support/com.mindforest.desktop/mindforest.db`（或 `DATABASE_URL`）。
+
+**若 macOS 报 “已损坏”**，可先移除隔离属性：
+```bash
+xattr -dr com.apple.quarantine /Applications/MindForest.app
+# 或在挂载前对 DMG 解除隔离：xattr -dr com.apple.quarantine MindForest.dmg
+```
+
 ## ✨ 核心特性
 
 - **Tree ↔ Graph 双模式切换**：底部 Dock 使用 Framer Motion 动化切换 `TreeLayer`（围绕焦点节点轨道排布）与 `GraphLayer`（react-force-graph-2d 物理布局）。
@@ -28,6 +55,10 @@ MindForest 是一款「双层导航」的可视化知识组织工具：树状结
 ## 📁 项目结构
 
 ```
+rust-mindforest/         # Rust 工作区：domain、storage（memory/postgres/sqlite）、API、桌面端
+  ├─ crates/             # 领域模型与存储实现
+  ├─ apps/api/           # Axum HTTP API（topics/nodes）
+  └─ apps/desktop/       # Tauri 桌面封装（内置 API + SQLite）
 src/
  ├─ app/                 # App Router，包含 layout.tsx / page.tsx / 全局样式
  ├─ components/
@@ -57,25 +88,40 @@ public/                  # 静态资源与预览图
    npm install
    # 或 pnpm install
    ```
-2. **本地开发**
+2. **启动 Rust API（写入真实数据必需）**
    ```bash
-   npm run dev
+   cd rust-mindforest
+   DATABASE_URL="sqlite://$HOME/Library/Application Support/com.mindforest.desktop/mindforest.db" \
+   API_ADDR=127.0.0.1:8787 \
+   cargo run -p api
+   ```
+3. **本地前端开发**
+   ```bash
+   npm run dev        # 端口 13000
    # 或 pnpm dev
    ```
-   访问 `http://localhost:3000`，默认加载 `WorkspaceShell`。
-3. **生产构建 / 预览**
+   访问 `http://localhost:13000`，默认加载 `WorkspaceShell`。
+4. **生产构建 / 预览**
    ```bash
    npm run build
    npm run start   # 在本地跑 prod server，发布前务必验证
    # 或 pnpm build / pnpm start
    ```
-4. **代码质量**
+5. **代码质量**
    ```bash
    npm run lint    # ESLint + Next.js Core Web Vitals
    # 或 pnpm lint
    ```
 
 > 推荐使用 Node 18+，并在提交前确保 dev server、build、lint 均无报错。
+
+## 🔗 后端（必需）
+
+- Rust API 是必选项；桌面端在 `127.0.0.1:8787` 内置启动，前端默认指向这里。
+- 如需单独运行 API（例如使用 Postgres），在 `rust-mindforest` 启动并设置：
+  - `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8787`（或你的端口）
+  - `NEXT_PUBLIC_REMOTE_TOPIC_ID=<topic-id>`（可选；不设置会自动选取/创建）
+- 页面加载时会拉取远程 Topic 并持续同步增删改链路；若远程 ID 返回 404，会自动清空并重建。
 
 
 ## 🗂️ 数据与状态
@@ -88,17 +134,6 @@ public/                  # 静态资源与预览图
   - `focusedNodeId`, `viewMode`, `isSidebarOpen`, 导航栈
   - `goToNode`, `goBack`, `goForward`, `toggleView`, `toggleSidebar`, `hydrateEditorDraft`
 - `persist` 仅 `partialize` 数据层（节点 & root），UI 状态在刷新后会重置，保持 predictable UX。
-
-
-## 🧪 测试与质量
-
-当前尚未提交自动化测试。按照团队规范，新增功能时请在 `src/**/__tests__` 下添加 Vitest + React Testing Library 测试文件（`*.test.tsx|ts`），并运行：
-
-```bash
-npx vitest run --coverage
-```
-
-在 PR 描述中补充手动验证步骤，直至自动化覆盖达到 ≥80% branch coverage。
 
 
 ## 🗺️ 路线图（节选）
