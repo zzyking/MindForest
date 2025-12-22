@@ -1,0 +1,9 @@
+[package]
+name = "storage-memory"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = { workspace = true }
+domain = { path = "../domain" }
+tokio = { workspace = true }

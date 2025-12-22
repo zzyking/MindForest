@@ -1,0 +1,13 @@
+[package]
+name = "desktop"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+api = { path = "../api" }
+tauri = { version = "2", features = ["devtools"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
