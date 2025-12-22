@@ -6,10 +6,11 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useForestDataStore } from '@/store/useForestDataStore';
 import { useWorkspaceUIStore } from '@/store/useWorkspaceUIStore';
 import { computeOrbitPositions } from '@/lib/layout/treeLayout';
+import { ForestNode } from '@/types/forest';
 
 // --- 共享的物理动画配置 (确保文字和气泡同步) ---
 const springConfig = {
-  type: "spring",
+  type: "spring" as const,
   stiffness: 120,
   damping: 15,
   mass: 0.8
@@ -17,7 +18,16 @@ const springConfig = {
 
 
 
-const Bubble = ({ node, isFocused, onClick, x = 0, y = 0, size }: any) => (
+interface BubbleProps {
+  node: ForestNode;
+  isFocused: boolean;
+  onClick: (id: string) => void;
+  x?: number;
+  y?: number;
+  size: number;
+}
+
+const Bubble = ({ node, isFocused, onClick, x = 0, y = 0, size }: BubbleProps) => (
   <motion.div
     layoutId={node.id}
     onClick={(e) => { e.stopPropagation(); onClick(node.id); }}

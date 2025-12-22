@@ -11,6 +11,9 @@ const eslintConfig = defineConfig([
     ".next/**",
     "out/**",
     "build/**",
+    ".tauri-dist/**",
+    "rust-mindforest/apps/.tauri-dist/**",
+    "rust-mindforest/target/**",
     "next-env.d.ts",
   ]),
 ]);

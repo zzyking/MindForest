@@ -6,11 +6,13 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { PanelRight, Network, TreeDeciduous } from 'lucide-react';
 
 import { useWorkspaceUIStore } from '@/store/useWorkspaceUIStore';
+import { useRemoteForestBootstrap } from '@/hooks/useRemoteForest';
 import { TreeLayer } from './TreeLayer';
 import { GraphLayer } from './GraphLayer';
 import { NodeEditorPanel } from './NodeEditorPanel';
 
 export default function WorkspaceShell() {
+  useRemoteForestBootstrap();
   const viewMode = useWorkspaceUIStore((s) => s.viewMode);
   const isSidebarOpen = useWorkspaceUIStore((s) => s.isSidebarOpen);
   const toggleSidebar = useWorkspaceUIStore((s) => s.toggleSidebar);

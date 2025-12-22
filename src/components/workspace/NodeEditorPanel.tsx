@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
-import { X, Calendar, Hash, Trash2, Link2, Unlink, Plus, ArrowLeft, ArrowRight, BookOpen, SquarePen } from 'lucide-react';
+import React, { useEffect, useMemo } from 'react';
+import { X, Calendar, Hash, Trash2, Unlink, Plus, ArrowLeft, ArrowRight, BookOpen, SquarePen } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm'; // Adds support for tables, strikethrough, etc.
 import TextareaAutosize from 'react-textarea-autosize';

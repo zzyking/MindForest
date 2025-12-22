@@ -2,16 +2,21 @@
 
 import React, { useMemo, useRef, useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
+import type { ForceGraphMethods, LinkObject, NodeObject } from 'react-force-graph-2d';
 
 import { useForestDataStore } from '@/store/useForestDataStore';
 import { useWorkspaceUIStore } from '@/store/useWorkspaceUIStore';
-import { buildGraphData, type GraphData } from '@/lib/layout/graphData';
+import { buildGraphData } from '@/lib/layout/graphData';
 
 // 1. Dynamic Import (SSR False)
 const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), {
   ssr: false,
   loading: () => <div className="text-forest-300 flex items-center justify-center h-full font-serif">Loading Graph Physics...</div>
 });
+
+type FGNode = NodeObject;
+type FGLink = LinkObject;
+type FGMethods = ForceGraphMethods;
 
 export function GraphLayer() {
   const nodes = useForestDataStore((s) => s.nodes);
@@ -21,16 +26,19 @@ export function GraphLayer() {
   const isSidebarOpen = useWorkspaceUIStore((s) => s.isSidebarOpen); // 获取侧边栏状态
 
   // 遥控器 Ref (操作相机)
-  const fgRef = useRef<any>();
+  const fgRef = useRef<FGMethods | undefined>(undefined);
   // 容器 Ref (监听尺寸)
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ w: 800, h: 600 });
 
   // 2. 数据转换
-  const graphData = useMemo(() => buildGraphData(nodes), [nodes]);
+  const graphData = useMemo(
+    () => buildGraphData(nodes) as unknown as { nodes: FGNode[]; links: FGLink[] },
+    [nodes]
+  );
 
   // --- 3. Ref 穿透模式 (解决依赖死循环的关键) ---
-  const graphDataRef = useRef<GraphData>(graphData);
+  const graphDataRef = useRef<{ nodes: FGNode[]; links: FGLink[] }>(graphData);
   useEffect(() => {
     graphDataRef.current = graphData;
   }, [graphData]);
@@ -58,17 +66,20 @@ export function GraphLayer() {
 
     // 从 Ref 中读取最新数据 (物理引擎已经计算了 x, y)
     const currentNodes = graphDataRef.current.nodes;
-    const targetNode = currentNodes.find((n: any) => n.id === focusedId);
+    const targetNode = currentNodes.find((n) => n.id === focusedId);
 
     // 卫语句：坐标必须有效
-    if (targetNode && Number.isFinite(targetNode.x) && Number.isFinite(targetNode.y)) {
+    if (targetNode) {
+      const tx = targetNode.x ?? 0;
+      const ty = targetNode.y ?? 0;
+      if (!Number.isFinite(tx) || !Number.isFinite(ty)) return;
       
       // 目标缩放倍率
       const TARGET_ZOOM = 5;
       
       // 基础坐标
-      let targetX = targetNode.x;
-      let targetY = targetNode.y;
+      let targetX = tx;
+      const targetY = ty;
 
       // 偏移逻辑：
       // 如果侧边栏打开 (宽度400px)，视觉中心向左移动了 200px。
@@ -88,7 +99,7 @@ export function GraphLayer() {
   return (
     <div ref={containerRef} className="w-full h-full bg-transparent">
       <ForceGraph2D
-        ref={fgRef}
+        ref={fgRef as React.MutableRefObject<ForceGraphMethods | undefined>}
         width={dimensions.w}
         height={dimensions.h}
         graphData={graphData}
@@ -106,15 +117,18 @@ export function GraphLayer() {
         nodeLabel="name"
         nodeRelSize={6}
         onNodeClick={(node) => {
-            goToNode(node.id as string);
-            toggleSidebar(true);
-            // 点击时的动画由上面的 useEffect 接管，这里只需改状态
+          if (!node.id) return;
+          goToNode(String(node.id));
+          toggleSidebar(true);
+          // 点击时的动画由上面的 useEffect 接管，这里只需改状态
         }}
         
         // --- 节点渲染 (Canvas API) ---
-        nodeCanvasObject={(node: any, ctx, globalScale) => {
+        nodeCanvasObject={(node: FGNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
           // 安全检查，防止报错
-          if (!Number.isFinite(node.x) || !Number.isFinite(node.y)) return;
+          const x = node.x ?? NaN;
+          const y = node.y ?? NaN;
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return;
 
           const label = node.name;
           const fontSize = 14 / globalScale;
@@ -122,7 +136,7 @@ export function GraphLayer() {
           const r = isFocused ? 8 : 4; 
 
           ctx.beginPath();
-          ctx.arc(node.x, node.y, r, 0, 2 * Math.PI, false);
+          ctx.arc(x, y, r, 0, 2 * Math.PI, false);
 
           // A. 绘制光晕 (Shadow Blur)
           if (isFocused) {
@@ -153,7 +167,7 @@ export function GraphLayer() {
           ctx.textBaseline = 'top';
           ctx.fillStyle = isFocused ? '#182822' : '#557C68';
            
-          ctx.fillText(label, node.x, node.y + r + (6/globalScale));
+          ctx.fillText(label, x, y + r + (6/globalScale));
         }}
 
         // 连线样式

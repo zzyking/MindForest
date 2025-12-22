@@ -1,6 +1,13 @@
 export type NodeID = string;
 
-export type NodeType = "concept" | "fact" | "source" | "question";
+export type NodeType =
+  | "concept"
+  | "fact"
+  | "source"
+  | "example"
+  | "question"
+  | "task"
+  | "misc";
 
 export interface ForestNode {
   id: NodeID;
