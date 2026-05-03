@@ -1,8 +1,0 @@
-CREATE TABLE IF NOT EXISTS topics (
-  id TEXT PRIMARY KEY,
-  title TEXT NOT NULL,
-  data JSONB NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_topics_title ON topics (title);

@@ -13,11 +13,14 @@
 # testing
 /coverage
 
-# next.js
+# legacy Next.js artifacts (kept ignored until package.json is rewritten in
+# task #7; protects against accidental `npm run build` recreating them)
 /.next/
 /out/
+next-env.d.ts
+pnpm-lock.yaml
 
-# production
+# build artifacts
 /build
 
 # misc
@@ -38,13 +41,22 @@ yarn-error.log*
 
 # typescript
 *.tsbuildinfo
-next-env.d.ts
-pnpm-lock.yaml
-
 
 # rust
-rust-mindforest/target/
-rust-mindforest/apps/.tauri-dist/
+rust/target/
+rust/apps/.tauri-dist/
+
+# Swift sidecar build artifacts
+rust/apps/embed-sidecar/.build/
+rust/apps/embed-sidecar/Package.resolved
+
+# vault contents (user data — lives outside repo in real use; .gitkeep only)
+/vault/*
+!/vault/.gitkeep
+
+# web build output
+/web/dist/
+/web/node_modules/
 
 # local notes / design docs (kept locally, not tracked)
 CLAUDE.md

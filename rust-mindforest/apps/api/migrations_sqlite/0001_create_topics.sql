@@ -1,8 +1,0 @@
-CREATE TABLE IF NOT EXISTS topics (
-  id TEXT PRIMARY KEY,
-  title TEXT NOT NULL,
-  data TEXT NOT NULL,
-  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_topics_title ON topics (title);
