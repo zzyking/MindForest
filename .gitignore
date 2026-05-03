@@ -45,3 +45,8 @@ pnpm-lock.yaml
 # rust
 rust-mindforest/target/
 rust-mindforest/apps/.tauri-dist/
+
+# local notes / design docs (kept locally, not tracked)
+CLAUDE.md
+REFACTOR_PLAN.md
+AGENTS.md
