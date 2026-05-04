@@ -198,7 +198,7 @@ impl Indexer for SqliteIndex {
     topic: Option<&TopicId>,
     k: usize,
   ) -> ForestResult<Vec<SearchHit>> {
-    let sanitized = sanitize_fts_query(query);
+    let sanitized = build_fts_query(query);
     if sanitized.is_empty() {
       return Ok(Vec::new());
     }
@@ -370,22 +370,105 @@ fn node_type_to_str(t: NodeType) -> &'static str {
   }
 }
 
-/// Strip FTS5 syntax characters from a free-text query so users can't
-/// accidentally trigger a parser error by typing `(`, `:`, `*`, etc.
-/// Result is a whitespace-separated bag of words; FTS5 implicitly ANDs
-/// terms. Empty result is OK — `search_fts` short-circuits to no hits.
-fn sanitize_fts_query(query: &str) -> String {
-  let cleaned: String = query
-    .chars()
+/// Build a safe FTS5 MATCH query from free-text user input.
+///
+/// Tokenizes the input respecting double-quoted phrases. Each whitespace-
+/// separated bare word becomes a quoted FTS5 term; double-quoted spans
+/// become FTS5 phrase queries (preserving internal whitespace so token
+/// adjacency is required). All resulting tokens are implicitly AND'd
+/// (FTS5's default).
+///
+/// Examples:
+///
+/// | input                     | output                          | semantics                |
+/// |---------------------------|---------------------------------|--------------------------|
+/// | `cat dog`                 | `"cat" "dog"`                   | both must appear         |
+/// | `"deep learning"`         | `"deep learning"`               | adjacency required       |
+/// | `cat "deep learning"`     | `"cat" "deep learning"`         | term + phrase, AND'd     |
+/// | `(cat:dog)`               | `"cat" "dog"`                   | specials stripped, AND'd |
+/// | `****`                    | (empty)                         | caller short-circuits    |
+/// | `深度 学习`                | `"深度" "学习"`                  | unicode preserved, AND'd |
+///
+/// Inside a bare token, FTS5 specials (`(`, `:`, `*`, `+`, `-`, `^`, `~`,
+/// `"`) are replaced with spaces and the resulting fragments emit as
+/// separate AND'd terms — so `cat:dog` becomes `"cat" "dog"` (AND), not
+/// `"cat dog"` (adjacency). Inside a phrase the same stripping happens
+/// but the result stays one phrase, preserving the user's adjacency intent.
+///
+/// Boolean operators (`OR`, `NOT`, `NEAR`) are NOT parsed in P1; bare
+/// `OR`/`AND`/`NOT` are just words. If we add them later this function
+/// grows into a small expression parser.
+fn build_fts_query(input: &str) -> String {
+  let chars: Vec<char> = input.chars().collect();
+  let mut tokens: Vec<String> = Vec::new();
+  let mut i = 0;
+
+  while i < chars.len() {
+    let c = chars[i];
+    if c.is_whitespace() {
+      i += 1;
+      continue;
+    }
+    if c == '"' {
+      // Phrase: read until matching `"`. Doubled `""` inside a phrase
+      // escapes one literal quote (FTS5 convention).
+      i += 1;
+      let mut phrase = String::new();
+      while i < chars.len() {
+        if chars[i] == '"' {
+          if i + 1 < chars.len() && chars[i + 1] == '"' {
+            phrase.push('"');
+            i += 2;
+          } else {
+            break;
+          }
+        } else {
+          phrase.push(chars[i]);
+          i += 1;
+        }
+      }
+      if i < chars.len() {
+        i += 1; // skip closing `"`
+      }
+      let safe = strip_fts_specials(&phrase);
+      if !safe.is_empty() {
+        tokens.push(format!("\"{safe}\""));
+      }
+    } else {
+      // Bare word: read until whitespace or `"`.
+      let mut word = String::new();
+      while i < chars.len() && !chars[i].is_whitespace() && chars[i] != '"' {
+        word.push(chars[i]);
+        i += 1;
+      }
+      // A bare token with internal punctuation (e.g. `cat:dog`) sanitizes
+      // to multiple sub-tokens; emit each as its own AND'd term to
+      // preserve the casual "everything must appear" expectation.
+      let safe = strip_fts_specials(&word);
+      for w in safe.split_whitespace() {
+        tokens.push(format!("\"{w}\""));
+      }
+    }
+  }
+
+  tokens.join(" ")
+}
+
+/// Replace FTS5 special chars with spaces and collapse whitespace.
+/// Keeps any Unicode alphanumeric (CJK, accented letters, etc.), `_`, `-`.
+fn strip_fts_specials(s: &str) -> String {
+  s.chars()
     .map(|c| {
-      if c.is_alphanumeric() || c.is_whitespace() || c == '_' {
+      if c.is_alphanumeric() || c.is_whitespace() || c == '_' || c == '-' {
         c
       } else {
         ' '
       }
     })
-    .collect();
-  cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
+    .collect::<String>()
+    .split_whitespace()
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 #[cfg(test)]
@@ -543,6 +626,125 @@ mod tests {
       hits2.is_empty(),
       "all-special query should return no results without erroring"
     );
+  }
+
+  #[test]
+  fn build_fts_query_handles_input_shapes() {
+    assert_eq!(build_fts_query(""), "");
+    assert_eq!(build_fts_query("cat"), "\"cat\"");
+    assert_eq!(build_fts_query("cat dog"), "\"cat\" \"dog\"");
+    assert_eq!(build_fts_query("\"deep learning\""), "\"deep learning\"");
+    assert_eq!(
+      build_fts_query("cat \"deep learning\""),
+      "\"cat\" \"deep learning\""
+    );
+    assert_eq!(build_fts_query("(cat:dog)"), "\"cat\" \"dog\"");
+    assert_eq!(build_fts_query("****"), "");
+    assert_eq!(build_fts_query("   "), "");
+    assert_eq!(build_fts_query("深度学习"), "\"深度学习\"");
+    assert_eq!(build_fts_query("深度 学习"), "\"深度\" \"学习\"");
+    // Doubled `""` inside a phrase escapes a literal quote, then our
+    // stripper replaces it with a space.
+    assert_eq!(build_fts_query("\"say \"\"hi\"\" loud\""), "\"say hi loud\"");
+    // Unclosed quote: read until end as phrase content.
+    assert_eq!(build_fts_query("cat \"deep learn"), "\"cat\" \"deep learn\"");
+  }
+
+  #[tokio::test]
+  async fn phrase_search_requires_adjacency() {
+    let idx = SqliteIndex::open_in_memory().await.unwrap();
+    let topic = TopicId::new("test").unwrap();
+    let now = Utc::now();
+
+    let id_a = NodeId::new();
+    idx
+      .upsert(&Node {
+        id: id_a,
+        topic: topic.clone(),
+        parent: None,
+        node_type: NodeType::Concept,
+        title: "A".into(),
+        content: "deep learning models".into(),
+        links: vec![],
+        created_at: now,
+        updated_at: now,
+        color: None,
+      })
+      .await
+      .unwrap();
+
+    let id_b = NodeId::new();
+    idx
+      .upsert(&Node {
+        id: id_b,
+        topic: topic.clone(),
+        parent: None,
+        node_type: NodeType::Concept,
+        title: "B".into(),
+        content: "learning is deep work".into(),
+        links: vec![],
+        created_at: now,
+        updated_at: now,
+        color: None,
+      })
+      .await
+      .unwrap();
+
+    // Bare AND: both nodes contain both words, both match.
+    let any_order = idx.search_fts("deep learning", None, 10).await.unwrap();
+    assert_eq!(any_order.len(), 2);
+
+    // Phrase: only A has them adjacent.
+    let adjacent = idx.search_fts("\"deep learning\"", None, 10).await.unwrap();
+    assert_eq!(adjacent.len(), 1);
+    assert_eq!(adjacent[0].id, id_a);
+  }
+
+  #[tokio::test]
+  async fn mixed_bare_and_phrase_anding() {
+    let idx = SqliteIndex::open_in_memory().await.unwrap();
+    let topic = TopicId::new("test").unwrap();
+    let now = Utc::now();
+
+    let id_match = NodeId::new();
+    idx
+      .upsert(&Node {
+        id: id_match,
+        topic: topic.clone(),
+        parent: None,
+        node_type: NodeType::Concept,
+        title: "Match".into(),
+        content: "deep learning rate adjusts during training".into(),
+        links: vec![],
+        created_at: now,
+        updated_at: now,
+        color: None,
+      })
+      .await
+      .unwrap();
+
+    let id_partial = NodeId::new();
+    idx
+      .upsert(&Node {
+        id: id_partial,
+        topic: topic.clone(),
+        parent: None,
+        node_type: NodeType::Concept,
+        title: "Partial".into(),
+        content: "learning is deep but rate is fixed".into(),
+        links: vec![],
+        created_at: now,
+        updated_at: now,
+        color: None,
+      })
+      .await
+      .unwrap();
+
+    // `"deep learning" rate` → phrase + bare AND: only the first matches
+    // (second has both words but not adjacent).
+    let hits = idx.search_fts("\"deep learning\" rate", None, 10).await.unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, id_match);
   }
 
   #[tokio::test]
