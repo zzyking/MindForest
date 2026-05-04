@@ -20,6 +20,7 @@ authors = ["MindForest"]
 async-trait = "0.1"
 axum = { version = "0.7", features = ["macros"] }
 blake3 = "1"
+chrono = { version = "0.4", features = ["serde"] }
 governor = "0.7"
 gray_matter = "0.2"
 notify = "6"
