@@ -18,6 +18,9 @@
 
 mod frontmatter;
 mod paths;
+mod watcher;
+
+pub use watcher::{watch_vault, WatchEvent, WatcherHandle};
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -72,6 +75,14 @@ impl FsRepository {
 
   pub fn vault_dir(&self) -> &Path {
     &self.inner.vault
+  }
+
+  /// Begin watching the vault for filesystem changes. Returns a handle
+  /// whose `events` receiver yields `WatchEvent`s; dropping the handle
+  /// stops the watcher. Consumers should re-read affected files via
+  /// `read_node` and dedupe via content-hash before re-indexing.
+  pub fn watch(&self) -> ForestResult<WatcherHandle> {
+    watch_vault(&self.inner.vault)
   }
 
   /// Walk all topics, repopulating the in-memory location cache from disk.
