@@ -25,8 +25,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { cn } from "@/lib/cn";
+import { useFocusNode, useNav } from "@/app/navigation";
 import { useForestData } from "@/stores/forestData";
-import { useWorkspaceUI } from "@/stores/workspaceUI";
 import { ApiError } from "@/lib/api";
 import type { NodeId, NodePatch } from "@/lib/types";
 
@@ -53,13 +53,8 @@ export function NodeEditor({ nodeId }: Props) {
   const deleteNode = useForestData((s) => s.deleteNode);
   const topicDetails = useForestData((s) => s.topicDetails);
 
-  const focusedNodeId = useWorkspaceUI((s) => s.focusedNodeId);
-  const setFocusReplacing = useWorkspaceUI((s) => s.setFocusReplacing);
-  const back = useWorkspaceUI((s) => s.back);
-  const forward = useWorkspaceUI((s) => s.forward);
-  const canBack = useWorkspaceUI((s) => s.canGoBack());
-  const canFwd = useWorkspaceUI((s) => s.canGoForward());
-  const focusNode = useWorkspaceUI((s) => s.focusNode);
+  const focusNode = useFocusNode();
+  const { back, forward, canGoBack, canGoForward } = useNav();
 
   const [mode, setMode] = useState<Mode>("write");
   const [error, setError] = useState<string | null>(null);
@@ -136,7 +131,7 @@ export function NodeEditor({ nodeId }: Props) {
         content: "",
         node_type: "concept",
       });
-      focusNode(child.id, child.topic);
+      await focusNode(child.id, child.topic);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -149,13 +144,16 @@ export function NodeEditor({ nodeId }: Props) {
     const parentId = node.parent;
     try {
       await deleteNode(node.id);
-      // Move focus to parent without pushing the deleted id onto the
-      // history stack — `setFocusReplacing` skips the back-stack write.
-      setFocusReplacing(parentId, node.topic);
+      // Move focus to parent. `replace: true` swaps the URL without
+      // pushing a history entry, so back-button doesn't return to a
+      // freshly-deleted node.
+      if (parentId) {
+        await focusNode(parentId, node.topic, { replace: true });
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [node, isRoot, flush, deleteNode, setFocusReplacing]);
+  }, [node, isRoot, flush, deleteNode, focusNode]);
 
   const onBack = useCallback(async () => {
     await flush();
@@ -194,14 +192,13 @@ export function NodeEditor({ nodeId }: Props) {
       <Toolbar
         mode={mode}
         onModeChange={setMode}
-        canBack={canBack}
-        canForward={canFwd}
+        canBack={canGoBack}
+        canForward={canGoForward}
         onBack={onBack}
         onForward={onForward}
         onAddChild={onAddChild}
         onDelete={onDelete}
         canDelete={!isRoot}
-        focusedHere={focusedNodeId === node.id}
       />
       <Breadcrumb nodeId={node.id} topicId={node.topic} />
       <TitleInput
@@ -250,7 +247,6 @@ interface ToolbarProps {
   onAddChild: () => void;
   onDelete: () => void;
   canDelete: boolean;
-  focusedHere: boolean;
 }
 
 function Toolbar({
@@ -263,7 +259,6 @@ function Toolbar({
   onAddChild,
   onDelete,
   canDelete,
-  focusedHere,
 }: ToolbarProps) {
   const navBtn = "text-forest-500 hover:text-forest-800 disabled:text-forest-200 px-2 py-1 text-sm";
   return (
@@ -283,7 +278,6 @@ function Toolbar({
         </button>
       </div>
       <div className="flex items-center gap-2">
-        {!focusedHere && <span className="text-forest-300 text-xs">(out of focus)</span>}
         <ModeToggle value={mode} onChange={onModeChange} />
         <button
           type="button"

@@ -10,8 +10,8 @@
 import { useMemo } from "react";
 
 import { cn } from "@/lib/cn";
+import { useFocusNode } from "@/app/navigation";
 import { useForestData } from "@/stores/forestData";
-import { useWorkspaceUI } from "@/stores/workspaceUI";
 import type { Node, NodeId, TopicId } from "@/lib/types";
 
 interface Props {
@@ -28,7 +28,7 @@ interface Crumb {
 export function Breadcrumb({ nodeId, topicId }: Props) {
   const nodes = useForestData((s) => s.nodes);
   const topicDetails = useForestData((s) => s.topicDetails);
-  const focusNode = useWorkspaceUI((s) => s.focusNode);
+  const focusNode = useFocusNode();
 
   const crumbs = useMemo(() => buildCrumbs(nodeId, topicId, nodes, topicDetails), [
     nodeId,
@@ -46,7 +46,7 @@ export function Breadcrumb({ nodeId, topicId }: Props) {
             {c.kind === "node" && !isLast ? (
               <button
                 type="button"
-                onClick={() => focusNode(c.id, topicId)}
+                onClick={() => void focusNode(c.id as NodeId, topicId)}
                 className={cn(
                   "hover:text-forest-700 max-w-[16ch] truncate underline-offset-4 hover:underline",
                 )}

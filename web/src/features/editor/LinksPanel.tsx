@@ -13,8 +13,8 @@
 import { useMemo } from "react";
 
 import { cn } from "@/lib/cn";
+import { useFocusNode } from "@/app/navigation";
 import { useForestData } from "@/stores/forestData";
-import { useWorkspaceUI } from "@/stores/workspaceUI";
 import type { Node, NodeId } from "@/lib/types";
 
 interface Props {
@@ -27,7 +27,7 @@ export function LinksPanel({ node, className }: Props) {
   const topicDetails = useForestData((s) => s.topicDetails);
   const fetchNode = useForestData((s) => s.fetchNode);
   const patchNode = useForestData((s) => s.patchNode);
-  const focusNode = useWorkspaceUI((s) => s.focusNode);
+  const focusNode = useFocusNode();
 
   const items = useMemo(
     () =>
@@ -60,7 +60,7 @@ export function LinksPanel({ node, className }: Props) {
                 // Lazy load if we haven't fetched the full node yet.
                 void fetchNode(it.id);
               }
-              focusNode(it.id, it.topic);
+              if (it.topic) void focusNode(it.id, it.topic);
             }}
             title={`${it.title}\n${it.id}`}
           >
