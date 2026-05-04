@@ -29,6 +29,20 @@ mod watcher;
 
 pub use watcher::{watch_vault, WatchEvent, WatcherHandle};
 
+/// Extract the [`NodeId`] from a vault file path.
+///
+/// Returns `None` for `_topic.md` (topic-level metadata, not a node) and
+/// for any file that doesn't match the `<slug>--<ulid>.md` convention.
+/// Used by app-core's watcher loop to decide whether a filesystem event
+/// pertains to an indexable node.
+pub fn node_id_from_path(path: &Path) -> Option<NodeId> {
+  let name = path.file_name().and_then(|n| n.to_str())?;
+  if name == paths::TOPIC_FILE {
+    return None;
+  }
+  paths::id_from_filename(name)
+}
+
 use crate::suppression::RecentWrites;
 
 use std::collections::HashMap;

@@ -4,11 +4,18 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
-# Real impl in Phase 1 task #6:
-# Composes domain + storage-fs + index-sqlite + (eventually) embed + agent
-# into ForestService. apply_patch is the transactional boundary.
+# Composes domain + storage-fs + index-sqlite (and, in P3, embed) into
+# ForestService — the surface the HTTP layer (apps/api) talks to.
+# Owns the transactional boundary for file + index writes, plus the
+# watcher loop that keeps the index in sync against external edits.
 [dependencies]
+async-trait = { workspace = true }
+chrono = { workspace = true }
 domain = { path = "../domain" }
 storage-fs = { path = "../storage-fs" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
 index-sqlite = { path = "../index-sqlite" }
-embed = { path = "../embed" }
+tempfile = { workspace = true }
