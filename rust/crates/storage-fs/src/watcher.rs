@@ -10,6 +10,7 @@
 //! without coupling FsRepository state to the watcher.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -17,6 +18,8 @@ use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, FileI
 use tokio::sync::mpsc;
 
 use domain::{ForestError, ForestResult};
+
+use crate::suppression::RecentWrites;
 
 /// Logical filesystem change inside the vault. Paths are absolute.
 #[derive(Debug, Clone)]
@@ -33,17 +36,30 @@ pub struct WatcherHandle {
   _debouncer: Debouncer<RecommendedWatcher, FileIdMap>,
 }
 
-/// Begin watching `vault` recursively. Returns a handle whose `events`
-/// receiver yields `WatchEvent`s for `.md` files until the handle is dropped.
+/// Begin watching `vault` recursively, with no self-write suppression.
+/// Returns a handle whose `events` receiver yields `WatchEvent`s for
+/// `.md` files until the handle is dropped.
 pub fn watch_vault(vault: &Path) -> ForestResult<WatcherHandle> {
+  watch_vault_with_suppression(vault, None)
+}
+
+/// Like `watch_vault`, but consults `suppression` (if provided) before
+/// emitting each event. If the event's path has a matching mtime in
+/// the registry within the suppression window, the event is dropped.
+/// FsRepository::watch() uses this to filter out its own writes.
+pub fn watch_vault_with_suppression(
+  vault: &Path,
+  suppression: Option<Arc<RecentWrites>>,
+) -> ForestResult<WatcherHandle> {
   let (out_tx, out_rx) = mpsc::unbounded_channel::<WatchEvent>();
   let cb_tx = out_tx.clone();
+  let cb_suppression = suppression.clone();
 
   let mut debouncer = new_debouncer(
     Duration::from_millis(200),
     None,
     move |res: DebounceEventResult| {
-      forward_events(res, &cb_tx);
+      forward_events(res, &cb_tx, cb_suppression.as_ref());
     },
   )
   .map_err(|e| ForestError::Storage(format!("watcher init: {e}")))?;
@@ -59,7 +75,11 @@ pub fn watch_vault(vault: &Path) -> ForestResult<WatcherHandle> {
   })
 }
 
-fn forward_events(res: DebounceEventResult, tx: &mpsc::UnboundedSender<WatchEvent>) {
+fn forward_events(
+  res: DebounceEventResult,
+  tx: &mpsc::UnboundedSender<WatchEvent>,
+  suppression: Option<&Arc<RecentWrites>>,
+) {
   let events = match res {
     Ok(events) => events,
     Err(errs) => {
@@ -76,6 +96,19 @@ fn forward_events(res: DebounceEventResult, tx: &mpsc::UnboundedSender<WatchEven
     for path in &ev.event.paths {
       if !is_relevant(path) {
         continue;
+      }
+      // Self-write suppression: read current mtime BEFORE classification
+      // (a removed file has no mtime → suppression won't match → Removed
+      // events for our own writes still fire, but consumers ignore them
+      // for paths with no current node mapping). Canonicalize before
+      // lookup — see atomic_write's matching note about macOS
+      // /var → /private/var symlinks.
+      if let Some(rw) = suppression {
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+        let mtime = std::fs::metadata(&canonical).ok().and_then(|m| m.modified().ok());
+        if rw.check(&canonical, mtime) {
+          continue;
+        }
       }
       let we = if path.exists() {
         WatchEvent::Changed(path.clone())

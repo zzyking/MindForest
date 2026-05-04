@@ -24,9 +24,12 @@
 
 mod frontmatter;
 mod paths;
+mod suppression;
 mod watcher;
 
 pub use watcher::{watch_vault, WatchEvent, WatcherHandle};
+
+use crate::suppression::RecentWrites;
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -59,6 +62,8 @@ struct Inner {
   /// topic id → its root node id. Used to guard delete_node against
   /// removing a topic's root (which would orphan `_topic.md`).
   topic_roots: RwLock<HashMap<TopicId, NodeId>>,
+  /// Shared registry that lets the watcher drop self-write events.
+  recent_writes: Arc<RecentWrites>,
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +84,7 @@ impl FsRepository {
         vault,
         cache: RwLock::new(HashMap::new()),
         topic_roots: RwLock::new(HashMap::new()),
+        recent_writes: Arc::new(RecentWrites::default()),
       }),
     })
   }
@@ -87,11 +93,15 @@ impl FsRepository {
     &self.inner.vault
   }
 
-  /// Begin watching the vault for filesystem changes. Returns a handle
-  /// whose `events` receiver yields `WatchEvent`s; dropping the handle
-  /// stops the watcher.
+  /// Begin watching the vault for filesystem changes. The returned
+  /// handle's events stream filters out this repo's own internal writes
+  /// via the shared RecentWrites registry, so consumers see only
+  /// external edits (and rename'd-away old paths during title changes).
   pub fn watch(&self) -> ForestResult<WatcherHandle> {
-    watch_vault(&self.inner.vault)
+    watcher::watch_vault_with_suppression(
+      &self.inner.vault,
+      Some(Arc::clone(&self.inner.recent_writes)),
+    )
   }
 
   /// Walk all topics, repopulating the in-memory caches from disk.
@@ -218,10 +228,17 @@ async fn read_topic_file(path: &Path) -> ForestResult<(TopicFront, String)> {
 }
 
 /// Atomic write: tempfile in same dir + fsync + rename. Crash at any
-/// point leaves the previous file intact.
-async fn atomic_write(path: &Path, contents: &str) -> ForestResult<()> {
+/// point leaves the previous file intact. After a successful persist,
+/// records `(path, post-write mtime)` in `recent_writes` so the watcher
+/// can drop the resulting self-event.
+async fn atomic_write(
+  path: &Path,
+  contents: &str,
+  recent_writes: &Arc<RecentWrites>,
+) -> ForestResult<()> {
   let path = path.to_path_buf();
   let contents = contents.to_owned();
+  let recent = Arc::clone(recent_writes);
   tokio::task::spawn_blocking(move || -> ForestResult<()> {
     use std::io::Write;
     let parent = path
@@ -240,6 +257,21 @@ async fn atomic_write(path: &Path, contents: &str) -> ForestResult<()> {
     tmp
       .persist(&path)
       .map_err(|e| ForestError::Storage(format!("persist {path:?}: {e}")))?;
+
+    // Best-effort mtime read + canonicalize — failure to read just means
+    // the watcher event for this write won't be suppressed (consumer
+    // still dedupes by content hash). We don't fail the write for it.
+    //
+    // Canonicalization is required: macOS FSEvents reports paths through
+    // `/private/var/...` while user-supplied paths often go through the
+    // `/var → /private/var` symlink. Storing the canonical form keys
+    // RecentWrites consistently across both sides.
+    let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    if let Ok(meta) = std::fs::metadata(&canonical) {
+      if let Ok(mtime) = meta.modified() {
+        recent.record(canonical, mtime);
+      }
+    }
     Ok(())
   })
   .await
@@ -343,6 +375,7 @@ impl ForestRepository for FsRepository {
     atomic_write(
       &topic_path,
       &frontmatter::render_topic_file(&topic_front, "")?,
+      &self.inner.recent_writes,
     )
     .await?;
 
@@ -359,7 +392,12 @@ impl ForestRepository for FsRepository {
       color: None,
     };
     let root_path = dir.join(new_node_filename(&title, &root_id));
-    atomic_write(&root_path, &frontmatter::render_node_file(&root_front, "")?).await?;
+    atomic_write(
+      &root_path,
+      &frontmatter::render_node_file(&root_front, "")?,
+      &self.inner.recent_writes,
+    )
+    .await?;
 
     // Update caches.
     self.inner.cache.write().await.insert(
@@ -462,6 +500,7 @@ impl ForestRepository for FsRepository {
     atomic_write(
       &desired_path,
       &frontmatter::render_node_file(&nf, &node.content)?,
+      &self.inner.recent_writes,
     )
     .await?;
     self.inner.cache.write().await.insert(
@@ -907,6 +946,92 @@ mod tests {
       .unwrap();
     assert!(dir.join(format!("矩阵--{id}.md")).exists());
     assert!(!dir.join(format!("线性代数--{id}.md")).exists());
+  }
+
+  #[tokio::test]
+  async fn watcher_suppresses_internal_writes_but_not_external() {
+    use std::time::Duration;
+    use tokio::time::timeout;
+
+    let (_tmp, repo) = fixture().await;
+    let topic = repo
+      .create_topic(NewTopic {
+        title: "Test".into(),
+        slug: None,
+      })
+      .await
+      .unwrap();
+
+    let mut handle = repo.watch().expect("watcher start");
+
+    // Drain any leftover events (FSEvents may replay create_topic's writes
+    // when watching starts; those should be suppressed since they're
+    // registered, but FS history replay can outrun the suppression window
+    // in some setups). Wait past one suppression window to settle.
+    while let Ok(Some(_)) = timeout(Duration::from_millis(150), handle.events.recv()).await {
+    }
+    tokio::time::sleep(Duration::from_millis(550)).await;
+    while let Ok(Some(_)) = timeout(Duration::from_millis(50), handle.events.recv()).await {
+    }
+
+    // Internal write — should NOT generate a watch event.
+    let now = Utc::now();
+    let id = NodeId::new();
+    repo
+      .write_node(&Node {
+        id,
+        topic: topic.id.clone(),
+        parent: Some(topic.root_node_id),
+        node_type: NodeType::Concept,
+        title: "Internal".into(),
+        content: "from repo".into(),
+        links: vec![],
+        created_at: now,
+        updated_at: now,
+        color: None,
+      })
+      .await
+      .unwrap();
+
+    let internal = timeout(Duration::from_millis(450), handle.events.recv()).await;
+    assert!(
+      internal.is_err(),
+      "internal write should be suppressed; got {internal:?}"
+    );
+
+    // External write to the same topic — should fire normally.
+    // Wait past the suppression window to ensure no leftover state interferes.
+    tokio::time::sleep(Duration::from_millis(550)).await;
+
+    let ext_id = NodeId::new();
+    let nf = frontmatter::NodeFront {
+      id: ext_id,
+      topic: topic.id.clone(),
+      parent: Some(topic.root_node_id),
+      node_type: NodeType::Concept,
+      title: "External".into(),
+      links: vec![],
+      created_at: now,
+      updated_at: now,
+      color: None,
+    };
+    let contents = frontmatter::render_node_file(&nf, "via VS Code").unwrap();
+    let ext_path = repo
+      .vault_dir()
+      .join(topic.id.as_str())
+      .join(format!("external--{ext_id}.md"));
+    fs::write(&ext_path, contents).await.unwrap();
+
+    let mut saw_external = false;
+    while let Ok(Some(ev)) = timeout(Duration::from_secs(2), handle.events.recv()).await {
+      if let WatchEvent::Changed(p) = &ev {
+        if p.ends_with(format!("external--{ext_id}.md").as_str()) {
+          saw_external = true;
+          break;
+        }
+      }
+    }
+    assert!(saw_external, "external write should fire a watch event");
   }
 
   #[tokio::test]
