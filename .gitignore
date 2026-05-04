@@ -62,3 +62,8 @@ rust/apps/embed-sidecar/Package.resolved
 CLAUDE.md
 REFACTOR_PLAN.md
 AGENTS.md
+
+# Claude Code agent memory — lives outside repo at
+# ~/.claude/projects/-Users-king-Documents-GitHub-mindforest/memory/
+# This rule is defensive in case anything ever lands a `memory/` dir here again.
+/memory/
