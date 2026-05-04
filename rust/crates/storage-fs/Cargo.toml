@@ -4,10 +4,22 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
-# Real impl in Phase 1 task #2:
-# - FsRepository: atomic write (tempfile + rename), frontmatter parse via gray_matter
-# - Watcher actor (notify, 200ms debounce, per-node single-flight mutex,
-#   500ms mtime suppression window)
-# - blake3 content_hash for incremental embedding
+# Markdown source-of-truth backend.
+# Phase 1 (this commit): FsRepository — atomic write, frontmatter parse/render,
+# slug + ULID filenames, in-memory id→path cache rebuilt lazily.
+# Phase 1 (follow-up): Watcher actor (notify-debouncer-full + per-id mutex
+# + mtime suppression) — separate commit on this same task.
 [dependencies]
+async-trait = { workspace = true }
+chrono = { workspace = true }
 domain = { path = "../domain" }
+serde = { workspace = true }
+serde_yml = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+ulid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
