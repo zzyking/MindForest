@@ -4,9 +4,21 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
-# Real impl in Phase 1 task #1:
-# - SqliteIndex: nodes / links / nodes_fts (FTS5) / embed_jobs / meta tables
-# - upsert_node, delete_node, search_fts, rebuild_from(repo)
-# - sqlite-vec virtual table reserved for Phase 3 (not loaded yet)
+# Derived FTS5 + (eventually) vector index over the markdown vault.
+# Phase 1: nodes / links / nodes_fts (FTS5) / embed_jobs / meta tables;
+# upsert / delete / search_fts / rebuild_from. search_vec returns
+# EmbedUnavailable until Phase 3 wires sqlite-vec + the MLX sidecar.
 [dependencies]
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+chrono = { workspace = true }
 domain = { path = "../domain" }
+rusqlite = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-rusqlite = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+storage-fs = { path = "../storage-fs" }
+tempfile = { workspace = true }
