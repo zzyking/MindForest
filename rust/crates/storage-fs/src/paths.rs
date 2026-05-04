@@ -81,9 +81,7 @@ pub(crate) fn slugify(title: &str) -> String {
   while !trimmed.is_char_boundary(cutoff) {
     cutoff -= 1;
   }
-  trimmed[..cutoff]
-    .trim_end_matches(|c: char| c == '-' || c == '.')
-    .to_string()
+  trimmed[..cutoff].trim_end_matches(['-', '.']).to_string()
 }
 
 #[cfg(test)]

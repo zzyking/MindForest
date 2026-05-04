@@ -4,7 +4,7 @@
 //! a fully derivable cache of it for fast queries:
 //!
 //! - `nodes`     — flat metadata (id, topic, parent, type, title, timestamps,
-//!                  content_hash). Indexed by topic + parent for O(1) tree walks.
+//!   content_hash). Indexed by topic + parent for O(1) tree walks.
 //! - `links`     — directed edge list, both directions stored as separate rows.
 //! - `nodes_fts` — FTS5 virtual table over (title, content) for keyword search.
 //! - `embed_jobs`— work queue for the Phase 3 embedding pipeline.

@@ -12,10 +12,10 @@ license.workspace = true
 async-trait = { workspace = true }
 chrono = { workspace = true }
 domain = { path = "../domain" }
+index-sqlite = { path = "../index-sqlite" }
 storage-fs = { path = "../storage-fs" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-index-sqlite = { path = "../index-sqlite" }
 tempfile = { workspace = true }

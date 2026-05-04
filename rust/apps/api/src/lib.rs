@@ -1,26 +1,73 @@
+//! HTTP surface for MindForest.
+//!
+//! Wraps `app_core::ForestService` in an axum router. The same router is
+//! served by the standalone binary (`main.rs`) for dev curl-ing and
+//! mounted in-process by `apps/desktop` so Tauri webviews can reach the
+//! same endpoints over `127.0.0.1:<port>` without spawning a separate
+//! process.
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use axum::Router;
+use tower_http::cors::CorsLayer;
+use tower_http::trace::TraceLayer;
+
+use app_core::{bootstrap, Bootstrap, ForestService};
+
+pub mod error;
+pub mod routes;
+
+/// Shared axum state. `Arc<ForestService>` is itself cheap to clone and
+/// already internally reference-counts the repo + index.
+pub type AppState = Arc<ForestService>;
 
 #[derive(Clone)]
 pub struct ApiConfig {
   pub addr: SocketAddr,
-  pub vault_dir: Option<PathBuf>,
+  pub vault_dir: PathBuf,
 }
 
-impl Default for ApiConfig {
-  fn default() -> Self {
+impl ApiConfig {
+  pub fn new(vault_dir: PathBuf) -> Self {
     Self {
       addr: SocketAddr::from(([127, 0, 0, 1], 8787)),
-      vault_dir: None,
+      vault_dir,
     }
   }
 }
 
-pub async fn run(config: ApiConfig) -> Result<(), Box<dyn std::error::Error>> {
-  tracing::warn!(
-    "api::run is a v2 placeholder; routes land in Phase 1 task #6 (addr={}, vault={:?})",
+/// Build the axum `Router` over a pre-wired service. Useful for tests
+/// (with an in-memory index) and for desktop embedding where bootstrap
+/// is owned by the host.
+pub fn router(state: AppState) -> Router {
+  Router::new()
+    .route("/health", axum::routing::get(routes::health))
+    .nest("/v1", routes::v1())
+    .layer(CorsLayer::permissive())
+    .layer(TraceLayer::new_for_http())
+    .with_state(state)
+}
+
+/// Bootstrap a `ForestService` against `config.vault_dir`, spawn the
+/// watcher loop, bind axum on `config.addr`, and serve until the future
+/// is cancelled. The watcher's debouncer is held alive by this function's
+/// stack until the server shuts down — see `Bootstrap` docs.
+pub async fn run(config: ApiConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+  let Bootstrap { service, watcher } = bootstrap(config.vault_dir.clone()).await?;
+  // Partial-moving `watcher.events` leaves the private `_debouncer` field
+  // bound to `watcher` until end of scope; that's what keeps the notify
+  // watcher running for the lifetime of `axum::serve` below.
+  service.clone().spawn_watcher(watcher.events);
+
+  let app = router(service);
+  let listener = tokio::net::TcpListener::bind(config.addr).await?;
+  tracing::info!(
+    "api listening on {} (vault={})",
     config.addr,
-    config.vault_dir
+    config.vault_dir.display()
   );
+  axum::serve(listener, app).await?;
   Ok(())
 }

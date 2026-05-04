@@ -10,7 +10,7 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use ulid::Ulid;
 
@@ -52,7 +52,11 @@ impl FromStr for NodeId {
 
 /// Slug-based topic identifier. Doubles as the topic's directory name
 /// under `vault/`. Constraint: 1–64 chars, ASCII lowercase + digits + `-`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// `Deserialize` is implemented manually so the constraint runs on every
+/// inbound payload (HTTP, file frontmatter). A derived `transparent`
+/// deserializer would silently accept invalid slugs.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct TopicId(String);
 
@@ -94,6 +98,13 @@ impl fmt::Display for TopicId {
 impl AsRef<str> for TopicId {
   fn as_ref(&self) -> &str {
     &self.0
+  }
+}
+
+impl<'de> Deserialize<'de> for TopicId {
+  fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+    let s = String::deserialize(d)?;
+    Self::new(s).map_err(serde::de::Error::custom)
   }
 }
 
@@ -329,7 +340,7 @@ mod tests {
     assert!(TopicId::new("Has-Caps").is_err());
     assert!(TopicId::new("has spaces").is_err());
     assert!(TopicId::new("中文").is_err());
-    assert!(TopicId::new(&"x".repeat(65)).is_err());
+    assert!(TopicId::new("x".repeat(65)).is_err());
     assert!(TopicId::new("-leading").is_err());
     assert!(TopicId::new("trailing-").is_err());
   }

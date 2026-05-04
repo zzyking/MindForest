@@ -22,15 +22,13 @@ fn main() {
         .parse()
         .expect("Invalid API_ADDR");
 
-      let vault_dir = std::env::var("MINDFOREST_VAULT")
+      let vault_dir: PathBuf = std::env::var("MINDFOREST_VAULT")
         .ok()
         .map(PathBuf::from)
-        .or_else(|| app.path().app_data_dir().ok().map(|d| d.join("vault")));
+        .or_else(|| app.path().app_data_dir().ok().map(|d| d.join("vault")))
+        .expect("could not resolve a vault directory: set MINDFOREST_VAULT or run inside Tauri so app_data_dir is available");
 
-      let config = ApiConfig {
-        addr,
-        vault_dir,
-      };
+      let config = ApiConfig { addr, vault_dir };
 
       tauri::async_runtime::spawn(async move {
         if let Err(err) = run(config).await {

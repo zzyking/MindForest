@@ -1,13 +1,24 @@
 [package]
 name = "api"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
 
-# Phase 1 stub. Real impl (axum routes, FTS search, agent SSE) lands in tasks
-# #6 / #8. Surface kept compatible so apps/desktop continues to build.
+# HTTP surface over `app-core::ForestService`. Lives both as a dev-only
+# standalone binary (`apps/api/src/main.rs`) and as an in-process server
+# inside the Tauri shell (`apps/desktop` calls `api::run`).
 [dependencies]
+app-core = { path = "../../crates/app-core" }
+axum = { workspace = true }
+domain = { path = "../../crates/domain" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+tower-http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tempfile = { workspace = true }
+tower = { version = "0.5", features = ["util"] }

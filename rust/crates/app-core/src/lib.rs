@@ -15,6 +15,7 @@
 //! - **Search composition**: P1 just delegates to FTS; P3 will fuse FTS
 //!   + vector + topic-bonus reranking here.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -25,7 +26,42 @@ use domain::{
   NodeId, NodePatch, SearchHit, Topic, TopicId, TopicSummary,
 };
 
+pub use index_sqlite::SqliteIndex;
 pub use storage_fs::{node_id_from_path, FsRepository, WatchEvent, WatcherHandle};
+
+/// Wired-up service plus the watcher handle required to keep the index
+/// reactive to external edits. Callers must spawn the watcher loop
+/// (`service.clone().spawn_watcher(watcher.events)`) and hold the
+/// `watcher` binding for the lifetime of the process — its private
+/// debouncer field stops watching when dropped.
+pub struct Bootstrap {
+  pub service: Arc<ForestService>,
+  pub watcher: WatcherHandle,
+}
+
+/// Open the vault, prepare the derived SQLite index, and return both
+/// composed into a `ForestService`. Rebuilds the index from filesystem
+/// state only when `index.db` doesn't yet exist; once present, trust
+/// the index and rely on watcher events for updates. A user-triggered
+/// `POST /index/rebuild` covers the rare case where the index drifts.
+pub async fn bootstrap(vault: PathBuf) -> ForestResult<Bootstrap> {
+  let repo = Arc::new(FsRepository::open(&vault).await?);
+
+  let mindforest_dir = vault.join(".mindforest");
+  tokio::fs::create_dir_all(&mindforest_dir)
+    .await
+    .map_err(|e| ForestError::Storage(format!("create {}: {e}", mindforest_dir.display())))?;
+  let index_path = mindforest_dir.join("index.db");
+  let needs_rebuild = !index_path.exists();
+  let index = Arc::new(SqliteIndex::open(&index_path).await?);
+  if needs_rebuild {
+    index.rebuild_from(repo.as_ref()).await?;
+  }
+
+  let service = Arc::new(ForestService::new(repo.clone(), index));
+  let watcher = repo.watch()?;
+  Ok(Bootstrap { service, watcher })
+}
 
 #[derive(Clone)]
 pub struct ForestService {
