@@ -1,0 +1,58 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+/* Reset + globals. Keep this layer thin — feature components own their
+   own styling via Tailwind utilities composed through `cn()`. */
+
+html,
+body {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  background-color: var(--color-forest-50);
+  color: var(--color-forest-900);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  /* The workspace shell is a fixed-viewport canvas; scrolling lives inside
+     individual panes (editor, sidebar). Lock the body to keep tree/graph
+     viewports honest. */
+  overflow: hidden;
+}
+
+#root {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Paper-grain overlay. Used as a background helper on top-level surfaces —
+   the noise texture rides on top of solid colors via mix-blend-overlay
+   so it tints rather than washes them out. */
+.bg-noise {
+  position: relative;
+}
+.bg-noise::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: var(--image-noise);
+  opacity: 0.06;
+  mix-blend-mode: overlay;
+}
+
+/* Default focus-visible: subtle accent ring, no color flash. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+::selection {
+  background-color: rgba(212, 122, 93, 0.25);
+  color: var(--color-forest-900);
+}

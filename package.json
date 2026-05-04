@@ -1,43 +1,17 @@
 {
   "name": "mindforest",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
+  "description": "MindForest v2 — file-as-truth knowledge forest. Markdown vault + Rust API + Vite/React frontend + Tauri desktop.",
+  "workspaces": [
+    "web"
+  ],
   "scripts": {
-    "dev": "next dev -p 13000",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
-  },
-  "dependencies": {
-    "@tailwindcss/postcss": "^4.1.17",
-    "@types/uuid": "^11.0.0",
-    "clsx": "^2.1.1",
-    "date-fns": "^4.1.0",
-    "framer-motion": "^12.23.24",
-    "immer": "^10.2.0",
-    "lucide-react": "^0.554.0",
-    "next": "^16.1.0",
-    "postcss": "^8.5.6",
-    "react": "19.2.0",
-    "react-dom": "19.2.0",
-    "react-force-graph-2d": "^1.29.0",
-    "react-markdown": "^10.1.0",
-    "react-textarea-autosize": "^8.5.9",
-    "remark-gfm": "^4.0.1",
-    "tailwind-merge": "^3.4.0",
-    "uuid": "^13.0.0",
-    "zustand": "^5.0.8"
-  },
-  "devDependencies": {
-    "@tailwindcss/typography": "^0.5.19",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "babel-plugin-react-compiler": "1.0.0",
-    "baseline-browser-mapping": "^2.9.11",
-    "eslint": "^9",
-    "eslint-config-next": "16.0.3",
-    "tailwindcss": "^4.1.17",
-    "typescript": "^5"
+    "dev": "npm run dev --workspace=@mindforest/web",
+    "build": "npm run build --workspace=@mindforest/web",
+    "preview": "npm run preview --workspace=@mindforest/web",
+    "api": "cargo run -p api --manifest-path rust/Cargo.toml",
+    "rust:test": "cargo test --manifest-path rust/Cargo.toml --workspace",
+    "rust:lint": "cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings"
   }
 }

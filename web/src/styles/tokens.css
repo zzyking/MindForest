@@ -1,0 +1,47 @@
+/*
+ * Design tokens for MindForest v2. Migrated verbatim from the v1
+ * `src/app/globals.css` so the visual language carries over (forest
+ * palette + warm sand + accent + glass shadows + film noise + Crimson
+ * Pro / Inter pairing).
+ *
+ * Tailwind v4 reads `@theme` to generate utility classes. Adding a
+ * `--color-foo-500` here yields `bg-foo-500`, `text-foo-500`, etc., for
+ * free — no `tailwind.config.js` round-trip.
+ */
+
+@theme {
+  /* Forest palette — warm-tinted greens, paper at the top, ink at the bottom. */
+  --color-forest-50: #f5f7f5;
+  --color-forest-100: #e6ede9;
+  --color-forest-200: #ccd6d1;
+  --color-forest-300: #9fb3a6;
+  --color-forest-400: #7a9a8a;
+  --color-forest-500: #557c68;
+  --color-forest-600: #436856;
+  --color-forest-700: #345543;
+  --color-forest-800: #2c453b;
+  --color-forest-900: #182822;
+
+  /* Warm sand — high-saturation neutral that pairs with deep greens. */
+  --color-sand-100: #f9f7f2;
+  --color-sand-200: #ebe5d9;
+
+  /* Accent — autumn leaf / fruit. Used for CTAs, focused-node strokes,
+     active dock items. Sparingly. */
+  --color-accent: #d47a5d;
+
+  /* Typography. Crimson Pro for serif headings, Inter for UI sans.
+     Both are loaded from Google Fonts in `index.html`. */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-serif: "Crimson Pro", ui-serif, Georgia, "Times New Roman", serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+
+  /* Glass + soft shadows for the dock + sidebar + draft overlay. */
+  --shadow-glass: 0 8px 32px rgba(24, 40, 34, 0.08);
+  --shadow-soft: 0 20px 40px -10px rgba(24, 40, 34, 0.15);
+
+  /* Inline SVG fractal noise — applied via `.bg-noise` + `mix-blend-overlay`
+     in components that need a paper-grain texture. Encoding the SVG inline
+     keeps it cacheable as a CSS variable and avoids a network round trip. */
+  --image-noise: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+}

@@ -1,0 +1,28 @@
+{
+  "name": "@mindforest/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MindForest v2 frontend — Vite + React 19 + Tailwind v4. Speaks to the Rust API at http://127.0.0.1:8787 (or whatever the Tauri shell injects via VITE_API_BASE).",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tailwind-merge": "^3.4.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.17",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^4.4.1",
+    "tailwindcss": "^4.1.17",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}

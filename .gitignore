@@ -1,6 +1,6 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
-# dependencies
+# dependencies — npm workspaces hoist all package deps to the root.
 /node_modules
 /.pnp
 .pnp.*
@@ -12,13 +12,6 @@
 
 # testing
 /coverage
-
-# legacy Next.js artifacts (kept ignored until package.json is rewritten in
-# task #7; protects against accidental `npm run build` recreating them)
-/.next/
-/out/
-next-env.d.ts
-pnpm-lock.yaml
 
 # build artifacts
 /build
