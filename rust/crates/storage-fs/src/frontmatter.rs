@@ -15,6 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 
+#[allow(unused_imports)]
 use domain::{ForestError, ForestResult, NodeId, NodeType, Timestamp, TopicId};
 
 const FRONT_OPEN: &str = "---\n";
@@ -38,27 +39,17 @@ pub(crate) struct NodeFront {
   pub color: Option<String>,
 }
 
-/// Frontmatter shape for `_topic.md` — the topic root node plus
-/// topic-level fields (`bulletin`, `is_topic_root` discriminator).
+/// Frontmatter shape for `_topic.md` — **pure topic metadata**, no node
+/// fields. The root node lives in its own `<slug>--<ulid>.md` file just
+/// like any other node, so write_node has no special branch for it.
+/// The body of `_topic.md` is the topic's free-form bulletin (markdown).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct TopicFront {
-  pub id: NodeId,
-  pub topic: TopicId,
-  #[serde(default)]
-  pub parent: Option<NodeId>,
-  #[serde(default, rename = "type")]
-  pub node_type: NodeType,
+  pub slug: TopicId,
   pub title: String,
-  #[serde(default)]
-  pub links: Vec<NodeId>,
+  pub root_node_id: NodeId,
   pub created_at: Timestamp,
   pub updated_at: Timestamp,
-  #[serde(default, skip_serializing_if = "String::is_empty")]
-  pub bulletin: String,
-  #[serde(default)]
-  pub is_topic_root: bool,
-  #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub color: Option<String>,
 }
 
 /// Split a markdown file into (yaml_str, body_str). Body has its leading

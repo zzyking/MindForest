@@ -1,0 +1,1 @@
+- [Don't ship shortcuts I'm already aware of](feedback_strict_quality.md) — fix self-flagged design caveats in the same commit instead of punting to review

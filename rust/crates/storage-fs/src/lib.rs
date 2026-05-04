@@ -5,16 +5,22 @@
 //! ```text
 //! vault/
 //! ├─ deep-learning/
-//! │  ├─ _topic.md                       topic root + metadata + bulletin
-//! │  ├─ backprop--01HV6Q...md           regular node
-//! │  └─ chain-rule--01HV6R...md
+//! │  ├─ _topic.md                       pure topic metadata + bulletin (body)
+//! │  ├─ deep-learning--01HV6Q...md      root node — a regular node file
+//! │  ├─ backprop--01HV6R...md           child node
+//! │  └─ chain-rule--01HV6S...md
 //! └─ linear-algebra/
 //!    └─ ...
 //! ```
 //!
-//! Files are the authoritative state; an in-memory `id → (topic, path)`
-//! cache speeds up lookups and is rebuilt lazily on miss. The watcher
-//! actor (separate commit) keeps the cache fresh against external edits.
+//! Files are the authoritative state. Every node — including the topic
+//! root — uses the same `<slug>--<ulid>.md` convention and the same
+//! frontmatter shape, so read/write paths are uniform with no `is_root`
+//! branches. `_topic.md` is *not* a node; it carries title + root pointer
+//! + bulletin and is read only via `get_topic` / `list_topics`.
+//!
+//! The `id → (topic, path)` cache is rebuilt lazily on miss; the watcher
+//! (see [`watch_vault`]) keeps it fresh against external edits.
 
 mod frontmatter;
 mod paths;
@@ -48,7 +54,11 @@ pub struct FsRepository {
 #[derive(Debug)]
 struct Inner {
   vault: PathBuf,
+  /// node id → on-disk location.
   cache: RwLock<HashMap<NodeId, NodeLocation>>,
+  /// topic id → its root node id. Used to guard delete_node against
+  /// removing a topic's root (which would orphan `_topic.md`).
+  topic_roots: RwLock<HashMap<TopicId, NodeId>>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,8 +68,7 @@ struct NodeLocation {
 }
 
 impl FsRepository {
-  /// Open (creating if missing) a vault at `vault`. The directory is
-  /// created with `create_dir_all`; existing contents are preserved.
+  /// Open (creating if missing) a vault at `vault`.
   pub async fn open(vault: impl Into<PathBuf>) -> ForestResult<Self> {
     let vault: PathBuf = vault.into();
     fs::create_dir_all(&vault)
@@ -69,6 +78,7 @@ impl FsRepository {
       inner: Arc::new(Inner {
         vault,
         cache: RwLock::new(HashMap::new()),
+        topic_roots: RwLock::new(HashMap::new()),
       }),
     })
   }
@@ -79,17 +89,15 @@ impl FsRepository {
 
   /// Begin watching the vault for filesystem changes. Returns a handle
   /// whose `events` receiver yields `WatchEvent`s; dropping the handle
-  /// stops the watcher. Consumers should re-read affected files via
-  /// `read_node` and dedupe via content-hash before re-indexing.
+  /// stops the watcher.
   pub fn watch(&self) -> ForestResult<WatcherHandle> {
     watch_vault(&self.inner.vault)
   }
 
-  /// Walk all topics, repopulating the in-memory location cache from disk.
-  /// Idempotent. Used on cache miss; the watcher will call this on directory
-  /// shape changes too.
+  /// Walk all topics, repopulating the in-memory caches from disk.
   pub async fn rebuild_cache(&self) -> ForestResult<()> {
     let mut new_cache: HashMap<NodeId, NodeLocation> = HashMap::new();
+    let mut new_roots: HashMap<TopicId, NodeId> = HashMap::new();
     let mut entries = fs::read_dir(&self.inner.vault)
       .await
       .map_err(|e| ForestError::Storage(format!("read_dir {:?}: {e}", self.inner.vault)))?;
@@ -107,10 +115,10 @@ impl FsRepository {
         _ => continue,
       };
       let Ok(topic) = TopicId::new(dir_name) else { continue };
-      scan_topic_dir(&topic, &path, &mut new_cache).await;
+      scan_topic_dir(&topic, &path, &mut new_cache, &mut new_roots).await;
     }
-    let mut cache = self.inner.cache.write().await;
-    *cache = new_cache;
+    *self.inner.cache.write().await = new_cache;
+    *self.inner.topic_roots.write().await = new_roots;
     Ok(())
   }
 
@@ -128,9 +136,35 @@ impl FsRepository {
       .cloned()
       .ok_or(ForestError::NodeNotFound(*id))
   }
+
+  async fn topic_root_id(&self, topic: &TopicId) -> ForestResult<NodeId> {
+    if let Some(id) = self.inner.topic_roots.read().await.get(topic).copied() {
+      return Ok(id);
+    }
+    // Cold path: read _topic.md directly and cache.
+    let path = topic_file(&self.inner.vault, topic);
+    let (front, _) = read_topic_file(&path).await.map_err(|e| match e {
+      ForestError::Storage(msg) if msg.contains("No such file") => {
+        ForestError::TopicNotFound(topic.clone())
+      }
+      other => other,
+    })?;
+    self
+      .inner
+      .topic_roots
+      .write()
+      .await
+      .insert(topic.clone(), front.root_node_id);
+    Ok(front.root_node_id)
+  }
 }
 
-async fn scan_topic_dir(topic: &TopicId, topic_path: &Path, out: &mut HashMap<NodeId, NodeLocation>) {
+async fn scan_topic_dir(
+  topic: &TopicId,
+  topic_path: &Path,
+  cache_out: &mut HashMap<NodeId, NodeLocation>,
+  roots_out: &mut HashMap<TopicId, NodeId>,
+) {
   let mut files = match fs::read_dir(topic_path).await {
     Ok(f) => f,
     Err(e) => {
@@ -144,20 +178,18 @@ async fn scan_topic_dir(topic: &TopicId, topic_path: &Path, out: &mut HashMap<No
     if !name.ends_with(".md") {
       continue;
     }
-    let id = if name == TOPIC_FILE {
-      match read_topic_file_id(&path).await {
-        Ok(id) => id,
-        Err(e) => {
-          tracing::warn!("malformed {path:?}: {e}");
-          continue;
+    if name == TOPIC_FILE {
+      // Topic metadata — extract root_node_id, don't add to node cache.
+      match read_topic_file(&path).await {
+        Ok((front, _)) => {
+          roots_out.insert(topic.clone(), front.root_node_id);
         }
+        Err(e) => tracing::warn!("malformed {path:?}: {e}"),
       }
-    } else if let Some(id) = id_from_filename(name) {
-      id
-    } else {
       continue;
-    };
-    out.insert(
+    }
+    let Some(id) = id_from_filename(name) else { continue };
+    cache_out.insert(
       id,
       NodeLocation {
         topic: topic.clone(),
@@ -165,14 +197,6 @@ async fn scan_topic_dir(topic: &TopicId, topic_path: &Path, out: &mut HashMap<No
       },
     );
   }
-}
-
-async fn read_topic_file_id(path: &Path) -> ForestResult<NodeId> {
-  let text = fs::read_to_string(path)
-    .await
-    .map_err(|e| ForestError::Storage(format!("read {path:?}: {e}")))?;
-  let (yaml, _) = frontmatter::split_frontmatter(&text)?;
-  Ok(parse_topic_front(yaml)?.id)
 }
 
 async fn read_node_file(path: &Path) -> ForestResult<(NodeFront, String)> {
@@ -184,7 +208,7 @@ async fn read_node_file(path: &Path) -> ForestResult<(NodeFront, String)> {
   Ok((front, body.trim_end_matches('\n').to_string()))
 }
 
-async fn read_topic_file_full(path: &Path) -> ForestResult<(TopicFront, String)> {
+async fn read_topic_file(path: &Path) -> ForestResult<(TopicFront, String)> {
   let text = fs::read_to_string(path)
     .await
     .map_err(|e| ForestError::Storage(format!("read {path:?}: {e}")))?;
@@ -244,9 +268,9 @@ impl ForestRepository for FsRepository {
       };
       let Ok(topic_id) = TopicId::new(dir_name) else { continue };
       let topic_path = topic_file(&self.inner.vault, &topic_id);
-      let (front, _) = match read_topic_file_full(&topic_path).await {
+      let (front, _) = match read_topic_file(&topic_path).await {
         Ok(x) => x,
-        Err(_) => continue, // dir without _topic.md isn't a topic
+        Err(_) => continue,
       };
       let count = count_node_files(&path).await;
       topics.push(TopicSummary {
@@ -262,7 +286,7 @@ impl ForestRepository for FsRepository {
 
   async fn get_topic(&self, id: &TopicId) -> ForestResult<Topic> {
     let path = topic_file(&self.inner.vault, id);
-    let (front, _) = read_topic_file_full(&path).await.map_err(|e| match e {
+    let (front, body) = read_topic_file(&path).await.map_err(|e| match e {
       ForestError::Storage(msg) if msg.contains("No such file") => {
         ForestError::TopicNotFound(id.clone())
       }
@@ -271,8 +295,8 @@ impl ForestRepository for FsRepository {
     Ok(Topic {
       id: id.clone(),
       title: front.title,
-      root_node_id: front.id,
-      bulletin: front.bulletin,
+      root_node_id: front.root_node_id,
+      bulletin: body,
       created_at: front.created_at,
       updated_at: front.updated_at,
     })
@@ -281,7 +305,9 @@ impl ForestRepository for FsRepository {
   async fn create_topic(&self, new_topic: NewTopic) -> ForestResult<Topic> {
     let title = new_topic.title.trim().to_string();
     if title.is_empty() {
-      return Err(ForestError::InvalidInput("topic title must not be empty".into()));
+      return Err(ForestError::InvalidInput(
+        "topic title must not be empty".into(),
+      ));
     }
     let slug = match new_topic.slug {
       Some(s) => s,
@@ -304,7 +330,24 @@ impl ForestRepository for FsRepository {
       .map_err(|e| ForestError::Storage(format!("create_dir {dir:?}: {e}")))?;
     let now = Utc::now();
     let root_id = NodeId::new();
-    let front = TopicFront {
+
+    // 1. _topic.md — pure topic metadata. Body = bulletin (empty initially).
+    let topic_front = TopicFront {
+      slug: id.clone(),
+      title: title.clone(),
+      root_node_id: root_id,
+      created_at: now,
+      updated_at: now,
+    };
+    let topic_path = topic_file(&self.inner.vault, &id);
+    atomic_write(
+      &topic_path,
+      &frontmatter::render_topic_file(&topic_front, "")?,
+    )
+    .await?;
+
+    // 2. Root node — a regular node file, no special-case shape.
+    let root_front = NodeFront {
       id: root_id,
       topic: id.clone(),
       parent: None,
@@ -313,20 +356,26 @@ impl ForestRepository for FsRepository {
       links: vec![],
       created_at: now,
       updated_at: now,
-      bulletin: String::new(),
-      is_topic_root: true,
       color: None,
     };
-    let path = topic_file(&self.inner.vault, &id);
-    let contents = frontmatter::render_topic_file(&front, "")?;
-    atomic_write(&path, &contents).await?;
+    let root_path = dir.join(new_node_filename(&title, &root_id));
+    atomic_write(&root_path, &frontmatter::render_node_file(&root_front, "")?).await?;
+
+    // Update caches.
     self.inner.cache.write().await.insert(
       root_id,
       NodeLocation {
         topic: id.clone(),
-        path,
+        path: root_path,
       },
     );
+    self
+      .inner
+      .topic_roots
+      .write()
+      .await
+      .insert(id.clone(), root_id);
+
     Ok(Topic {
       id,
       title,
@@ -345,46 +394,31 @@ impl ForestRepository for FsRepository {
     fs::remove_dir_all(&dir)
       .await
       .map_err(|e| ForestError::Storage(format!("remove_dir_all: {e}")))?;
-    self.inner.cache.write().await.retain(|_, loc| loc.topic != *id);
+    self
+      .inner
+      .cache
+      .write()
+      .await
+      .retain(|_, loc| loc.topic != *id);
+    self.inner.topic_roots.write().await.remove(id);
     Ok(())
   }
 
   async fn read_node(&self, id: &NodeId) -> ForestResult<Node> {
     let loc = self.locate(id).await?;
-    let is_root = loc
-      .path
-      .file_name()
-      .map(|n| n == TOPIC_FILE)
-      .unwrap_or(false);
-    if is_root {
-      let (front, body) = read_topic_file_full(&loc.path).await?;
-      Ok(Node {
-        id: front.id,
-        topic: loc.topic,
-        parent: front.parent,
-        node_type: front.node_type,
-        title: front.title,
-        content: body,
-        links: front.links,
-        created_at: front.created_at,
-        updated_at: front.updated_at,
-        color: front.color,
-      })
-    } else {
-      let (front, body) = read_node_file(&loc.path).await?;
-      Ok(Node {
-        id: front.id,
-        topic: loc.topic,
-        parent: front.parent,
-        node_type: front.node_type,
-        title: front.title,
-        content: body,
-        links: front.links,
-        created_at: front.created_at,
-        updated_at: front.updated_at,
-        color: front.color,
-      })
-    }
+    let (front, body) = read_node_file(&loc.path).await?;
+    Ok(Node {
+      id: front.id,
+      topic: loc.topic,
+      parent: front.parent,
+      node_type: front.node_type,
+      title: front.title,
+      content: body,
+      links: front.links,
+      created_at: front.created_at,
+      updated_at: front.updated_at,
+      color: front.color,
+    })
   }
 
   async fn write_node(&self, node: &Node) -> ForestResult<()> {
@@ -392,7 +426,6 @@ impl ForestRepository for FsRepository {
     let path = match existing {
       Some(loc) => loc.path,
       None => {
-        // New regular node — _topic.md is created via create_topic only.
         let dir = topic_dir(&self.inner.vault, &node.topic);
         if !dir.exists() {
           return Err(ForestError::TopicNotFound(node.topic.clone()));
@@ -400,33 +433,18 @@ impl ForestRepository for FsRepository {
         dir.join(new_node_filename(&node.title, &node.id))
       }
     };
-    let is_root = path.file_name().map(|n| n == TOPIC_FILE).unwrap_or(false);
-    if is_root {
-      // Preserve `bulletin` and `is_topic_root` flag — Node doesn't carry them.
-      let (mut tf, _) = read_topic_file_full(&path).await?;
-      tf.title = node.title.clone();
-      tf.node_type = node.node_type;
-      tf.links = node.links.clone();
-      tf.parent = node.parent;
-      tf.updated_at = node.updated_at;
-      tf.color = node.color.clone();
-      let contents = frontmatter::render_topic_file(&tf, &node.content)?;
-      atomic_write(&path, &contents).await?;
-    } else {
-      let nf = NodeFront {
-        id: node.id,
-        topic: node.topic.clone(),
-        parent: node.parent,
-        node_type: node.node_type,
-        title: node.title.clone(),
-        links: node.links.clone(),
-        created_at: node.created_at,
-        updated_at: node.updated_at,
-        color: node.color.clone(),
-      };
-      let contents = frontmatter::render_node_file(&nf, &node.content)?;
-      atomic_write(&path, &contents).await?;
-    }
+    let nf = NodeFront {
+      id: node.id,
+      topic: node.topic.clone(),
+      parent: node.parent,
+      node_type: node.node_type,
+      title: node.title.clone(),
+      links: node.links.clone(),
+      created_at: node.created_at,
+      updated_at: node.updated_at,
+      color: node.color.clone(),
+    };
+    atomic_write(&path, &frontmatter::render_node_file(&nf, &node.content)?).await?;
     self.inner.cache.write().await.insert(
       node.id,
       NodeLocation {
@@ -439,7 +457,10 @@ impl ForestRepository for FsRepository {
 
   async fn delete_node(&self, id: &NodeId) -> ForestResult<()> {
     let loc = self.locate(id).await?;
-    if loc.path.file_name().map(|n| n == TOPIC_FILE).unwrap_or(false) {
+    // Guard: don't allow deleting a topic's root via this method;
+    // _topic.md would still point to it. Use delete_topic instead.
+    let root_id = self.topic_root_id(&loc.topic).await?;
+    if root_id == *id {
       return Err(ForestError::InvalidInput(
         "cannot delete topic root via delete_node; use delete_topic".into(),
       ));
@@ -471,11 +492,11 @@ impl ForestRepository for FsRepository {
     {
       let path = entry.path();
       let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
-      if !name.ends_with(".md") {
+      if !name.ends_with(".md") || name == TOPIC_FILE {
         continue;
       }
-      let node_result = if name == TOPIC_FILE {
-        read_topic_file_full(&path).await.map(|(front, body)| Node {
+      match read_node_file(&path).await {
+        Ok((front, body)) => nodes.push(Node {
           id: front.id,
           topic: topic.clone(),
           parent: front.parent,
@@ -486,23 +507,7 @@ impl ForestRepository for FsRepository {
           created_at: front.created_at,
           updated_at: front.updated_at,
           color: front.color,
-        })
-      } else {
-        read_node_file(&path).await.map(|(front, body)| Node {
-          id: front.id,
-          topic: topic.clone(),
-          parent: front.parent,
-          node_type: front.node_type,
-          title: front.title,
-          content: body,
-          links: front.links,
-          created_at: front.created_at,
-          updated_at: front.updated_at,
-          color: front.color,
-        })
-      };
-      match node_result {
-        Ok(node) => nodes.push(node),
+        }),
         Err(e) => tracing::warn!("skipping {path:?}: {e}"),
       }
     }
@@ -511,12 +516,14 @@ impl ForestRepository for FsRepository {
 }
 
 async fn count_node_files(dir: &Path) -> usize {
-  let Ok(mut files) = fs::read_dir(dir).await else { return 0 };
+  let Ok(mut files) = fs::read_dir(dir).await else {
+    return 0;
+  };
   let mut count = 0usize;
   while let Ok(Some(entry)) = files.next_entry().await {
     let name = entry.file_name();
     let s = name.to_string_lossy();
-    if s.ends_with(".md") {
+    if s.ends_with(".md") && s != TOPIC_FILE {
       count += 1;
     }
   }
@@ -536,7 +543,7 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn create_topic_writes_files_and_returns_topic() {
+  async fn create_topic_writes_metadata_and_root_files() {
     let (_tmp, repo) = fixture().await;
     let topic = repo
       .create_topic(NewTopic {
@@ -547,17 +554,24 @@ mod tests {
       .unwrap();
 
     assert_eq!(topic.id.as_str(), "deep-learning");
-    assert_eq!(topic.title, "Deep Learning");
-    assert!(repo.vault_dir().join("deep-learning").join("_topic.md").exists());
+    let dir = repo.vault_dir().join("deep-learning");
+    assert!(dir.join("_topic.md").exists(), "_topic.md should exist");
+
+    // Root node lives in its own regular `<slug>--<ulid>.md` file.
+    let root_filename = format!("deep-learning--{}.md", topic.root_node_id);
+    assert!(
+      dir.join(&root_filename).exists(),
+      "root node file should exist at {root_filename}"
+    );
 
     let listed = repo.list_topics().await.unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].title, "Deep Learning");
-    assert_eq!(listed[0].node_count, 1); // root counts
+    assert_eq!(listed[0].node_count, 1, "node_count should not include _topic.md");
   }
 
   #[tokio::test]
-  async fn get_topic_recovers_round_trip() {
+  async fn get_topic_round_trip_with_bulletin() {
     let (_tmp, repo) = fixture().await;
     let created = repo
       .create_topic(NewTopic {
@@ -566,9 +580,29 @@ mod tests {
       })
       .await
       .unwrap();
+    assert_eq!(created.bulletin, "");
+
     let fetched = repo.get_topic(&created.id).await.unwrap();
     assert_eq!(fetched.title, "Linear Algebra");
     assert_eq!(fetched.root_node_id, created.root_node_id);
+    assert_eq!(fetched.bulletin, "");
+  }
+
+  #[tokio::test]
+  async fn root_node_reads_via_read_node_uniformly() {
+    let (_tmp, repo) = fixture().await;
+    let topic = repo
+      .create_topic(NewTopic {
+        title: "Test".into(),
+        slug: None,
+      })
+      .await
+      .unwrap();
+    let root = repo.read_node(&topic.root_node_id).await.unwrap();
+    assert_eq!(root.id, topic.root_node_id);
+    assert_eq!(root.title, "Test");
+    assert_eq!(root.parent, None);
+    assert_eq!(root.topic, topic.id);
   }
 
   #[tokio::test]
@@ -633,7 +667,7 @@ mod tests {
         .unwrap();
     }
     let nodes = repo.list_nodes_in_topic(&topic.id).await.unwrap();
-    assert_eq!(nodes.len(), 4); // root + A + B + C
+    assert_eq!(nodes.len(), 4);
     let mut titles: Vec<_> = nodes.iter().map(|n| n.title.clone()).collect();
     titles.sort();
     assert_eq!(titles, vec!["A", "B", "C", "Test"]);
@@ -674,7 +708,7 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn delete_node_refuses_topic_root() {
+  async fn delete_node_refuses_topic_root_by_id() {
     let (_tmp, repo) = fixture().await;
     let topic = repo
       .create_topic(NewTopic {
@@ -687,6 +721,9 @@ mod tests {
       repo.delete_node(&topic.root_node_id).await,
       Err(ForestError::InvalidInput(_))
     ));
+    // Root node file should still exist.
+    let root_filename = format!("test--{}.md", topic.root_node_id);
+    assert!(repo.vault_dir().join("test").join(&root_filename).exists());
   }
 
   #[tokio::test]
@@ -720,7 +757,6 @@ mod tests {
       })
       .await
       .unwrap();
-    // Simulate external write: drop a manually-crafted .md file in the topic dir.
     let now = Utc::now();
     let id = NodeId::new();
     let nf = frontmatter::NodeFront {
@@ -747,7 +783,7 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn delete_topic_removes_dir_and_cache() {
+  async fn delete_topic_removes_dir_and_caches() {
     let (_tmp, repo) = fixture().await;
     let topic = repo
       .create_topic(NewTopic {
@@ -761,6 +797,11 @@ mod tests {
     assert!(matches!(
       repo.get_topic(&topic.id).await,
       Err(ForestError::TopicNotFound(_))
+    ));
+    // Root node should also be uncached.
+    assert!(matches!(
+      repo.read_node(&topic.root_node_id).await,
+      Err(ForestError::NodeNotFound(_))
     ));
   }
 }
