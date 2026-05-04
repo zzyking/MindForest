@@ -12,3 +12,13 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+interface Window {
+  /**
+   * In-process API base URL injected by the Tauri shell's initialization
+   * script. Format: `http://127.0.0.1:<port>`. Absent in plain `npm run
+   * dev` and in the standalone web build, where `VITE_API_BASE` (or the
+   * default) takes over.
+   */
+  __MINDFOREST_API_BASE__?: string;
+}

@@ -27,7 +27,16 @@ import type {
   TopicSummary,
 } from "./types";
 
-const BASE = (import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8787").replace(/\/$/, "");
+// Resolution order (first hit wins):
+// 1. `window.__MINDFOREST_API_BASE__` — Tauri shell injects this via an
+//    initialization script with the OS-assigned in-process port.
+// 2. `import.meta.env.VITE_API_BASE` — explicit override for `npm run dev`.
+// 3. `http://127.0.0.1:8787` — the dev binary's default address.
+const BASE = (
+  (typeof window !== "undefined" && window.__MINDFOREST_API_BASE__) ||
+  import.meta.env.VITE_API_BASE ||
+  "http://127.0.0.1:8787"
+).replace(/\/$/, "");
 
 export class ApiError extends Error {
   readonly status: number;

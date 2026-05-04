@@ -55,18 +55,32 @@ pub fn router(state: AppState) -> Router {
 /// is cancelled. The watcher's debouncer is held alive by this function's
 /// stack until the server shuts down — see `Bootstrap` docs.
 pub async fn run(config: ApiConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-  let Bootstrap { service, watcher } = bootstrap(config.vault_dir.clone()).await?;
+  let listener = tokio::net::TcpListener::bind(config.addr).await?;
+  serve_with_listener(listener, config.vault_dir).await
+}
+
+/// Same as `run`, but takes a pre-bound `TcpListener`. The Tauri shell
+/// uses this so it can bind `127.0.0.1:0`, observe the OS-assigned port
+/// *before* serving starts, and inject the resulting URL into the
+/// webview via an initialization script — avoiding the dev-server
+/// port-collision footgun and the need for a fixed well-known port.
+pub async fn serve_with_listener(
+  listener: tokio::net::TcpListener,
+  vault_dir: PathBuf,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+  let local_addr = listener.local_addr()?;
+
+  let Bootstrap { service, watcher } = bootstrap(vault_dir.clone()).await?;
   // Partial-moving `watcher.events` leaves the private `_debouncer` field
   // bound to `watcher` until end of scope; that's what keeps the notify
   // watcher running for the lifetime of `axum::serve` below.
   service.clone().spawn_watcher(watcher.events);
 
   let app = router(service);
-  let listener = tokio::net::TcpListener::bind(config.addr).await?;
   tracing::info!(
     "api listening on {} (vault={})",
-    config.addr,
-    config.vault_dir.display()
+    local_addr,
+    vault_dir.display()
   );
   axum::serve(listener, app).await?;
   Ok(())
