@@ -422,17 +422,32 @@ impl ForestRepository for FsRepository {
   }
 
   async fn write_node(&self, node: &Node) -> ForestResult<()> {
+    let dir = topic_dir(&self.inner.vault, &node.topic);
+    if !dir.exists() {
+      return Err(ForestError::TopicNotFound(node.topic.clone()));
+    }
+
+    let desired_path = dir.join(new_node_filename(&node.title, &node.id));
     let existing = self.inner.cache.read().await.get(&node.id).cloned();
-    let path = match existing {
-      Some(loc) => loc.path,
-      None => {
-        let dir = topic_dir(&self.inner.vault, &node.topic);
-        if !dir.exists() {
-          return Err(ForestError::TopicNotFound(node.topic.clone()));
-        }
-        dir.join(new_node_filename(&node.title, &node.id))
+
+    // If the slug derived from the title (or topic) changed, rename the file
+    // first so the on-disk name stays in sync with the title. fs::rename is
+    // atomic within the same filesystem; cross-topic moves are uncommon but
+    // also handled (rename across dirs in the same vault). The subsequent
+    // atomic_write then refreshes the body — if the rename succeeds and the
+    // write fails, the file still exists at the new path with stale content,
+    // and a retry will fix it; we never end up with two files for one node.
+    if let Some(loc) = &existing {
+      if loc.path != desired_path {
+        fs::rename(&loc.path, &desired_path).await.map_err(|e| {
+          ForestError::Storage(format!(
+            "rename {:?} → {:?}: {e}",
+            loc.path, desired_path
+          ))
+        })?;
       }
-    };
+    }
+
     let nf = NodeFront {
       id: node.id,
       topic: node.topic.clone(),
@@ -444,12 +459,16 @@ impl ForestRepository for FsRepository {
       updated_at: node.updated_at,
       color: node.color.clone(),
     };
-    atomic_write(&path, &frontmatter::render_node_file(&nf, &node.content)?).await?;
+    atomic_write(
+      &desired_path,
+      &frontmatter::render_node_file(&nf, &node.content)?,
+    )
+    .await?;
     self.inner.cache.write().await.insert(
       node.id,
       NodeLocation {
         topic: node.topic.clone(),
-        path,
+        path: desired_path,
       },
     );
     Ok(())
@@ -780,6 +799,114 @@ mod tests {
     let read = repo.read_node(&id).await.unwrap();
     assert_eq!(read.title, "External");
     assert_eq!(read.content, "via VS Code");
+  }
+
+  #[tokio::test]
+  async fn write_node_renames_file_when_title_changes() {
+    let (_tmp, repo) = fixture().await;
+    let topic = repo
+      .create_topic(NewTopic {
+        title: "Test".into(),
+        slug: None,
+      })
+      .await
+      .unwrap();
+    let now = Utc::now();
+    let id = NodeId::new();
+    let dir = repo.vault_dir().join(topic.id.as_str());
+
+    repo
+      .write_node(&Node {
+        id,
+        topic: topic.id.clone(),
+        parent: Some(topic.root_node_id),
+        node_type: NodeType::Concept,
+        title: "Backpropagation".into(),
+        content: "v1".into(),
+        links: vec![],
+        created_at: now,
+        updated_at: now,
+        color: None,
+      })
+      .await
+      .unwrap();
+    let original_path = dir.join(format!("backpropagation--{id}.md"));
+    assert!(original_path.exists(), "initial file should be at original path");
+
+    // Rename the title — the slug part of the filename should follow.
+    repo
+      .write_node(&Node {
+        id,
+        topic: topic.id.clone(),
+        parent: Some(topic.root_node_id),
+        node_type: NodeType::Concept,
+        title: "Backprop".into(),
+        content: "v2".into(),
+        links: vec![],
+        created_at: now,
+        updated_at: now,
+        color: None,
+      })
+      .await
+      .unwrap();
+    let new_path = dir.join(format!("backprop--{id}.md"));
+    assert!(new_path.exists(), "file should be at the new slug path");
+    assert!(!original_path.exists(), "old slug path should be gone");
+
+    // read_node still works.
+    let read = repo.read_node(&id).await.unwrap();
+    assert_eq!(read.title, "Backprop");
+    assert_eq!(read.content, "v2");
+  }
+
+  #[tokio::test]
+  async fn write_node_renames_with_unicode_title() {
+    let (_tmp, repo) = fixture().await;
+    let topic = repo
+      .create_topic(NewTopic {
+        title: "Test".into(),
+        slug: None,
+      })
+      .await
+      .unwrap();
+    let now = Utc::now();
+    let id = NodeId::new();
+    let dir = repo.vault_dir().join(topic.id.as_str());
+
+    repo
+      .write_node(&Node {
+        id,
+        topic: topic.id.clone(),
+        parent: Some(topic.root_node_id),
+        node_type: NodeType::Concept,
+        title: "线性代数".into(),
+        content: "".into(),
+        links: vec![],
+        created_at: now,
+        updated_at: now,
+        color: None,
+      })
+      .await
+      .unwrap();
+    assert!(dir.join(format!("线性代数--{id}.md")).exists());
+
+    repo
+      .write_node(&Node {
+        id,
+        topic: topic.id.clone(),
+        parent: Some(topic.root_node_id),
+        node_type: NodeType::Concept,
+        title: "矩阵".into(),
+        content: "".into(),
+        links: vec![],
+        created_at: now,
+        updated_at: now,
+        color: None,
+      })
+      .await
+      .unwrap();
+    assert!(dir.join(format!("矩阵--{id}.md")).exists());
+    assert!(!dir.join(format!("线性代数--{id}.md")).exists());
   }
 
   #[tokio::test]
