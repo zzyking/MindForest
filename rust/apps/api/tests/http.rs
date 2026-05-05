@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use api::router;
-use app_core::{ForestService, FsRepository, SqliteIndex};
+use app_core::{ForestService, FsRepository, SqliteIndex, StubEmbedder, EMBED_DIM};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -20,7 +20,8 @@ async fn fixture() -> (TempDir, axum::Router) {
   let tmp = TempDir::new().unwrap();
   let repo = Arc::new(FsRepository::open(tmp.path()).await.unwrap());
   let index = Arc::new(SqliteIndex::open_in_memory().await.unwrap());
-  let svc = Arc::new(ForestService::new(repo, index));
+  let embedder = Arc::new(StubEmbedder::new(EMBED_DIM));
+  let svc = Arc::new(ForestService::new(repo, index, embedder));
   (tmp, router(svc))
 }
 

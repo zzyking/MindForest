@@ -278,6 +278,16 @@ pub trait ForestRepository: Send + Sync {
 // Indexer — derived FTS + vector index (index-sqlite)
 // ─────────────────────────────────────────────────────────────────────
 
+/// A pending embedding job — one per node whose content (title or body)
+/// changed since its last embedding was stored. The worker (`app-core`)
+/// reads these, calls the `Embedder`, and writes the resulting vector
+/// back via `upsert_embedding`.
+#[derive(Debug, Clone)]
+pub struct EmbedJob {
+  pub id: NodeId,
+  pub content_hash: String,
+}
+
 /// Search and indexing operations. Fully rebuildable from a `ForestRepository`.
 #[async_trait]
 pub trait Indexer: Send + Sync {
@@ -301,6 +311,24 @@ pub trait Indexer: Send + Sync {
   async fn status(&self) -> ForestResult<IndexStatus>;
 
   async fn rebuild_from(&self, repo: &dyn ForestRepository) -> ForestResult<()>;
+
+  /// Install (or replace) a pre-computed embedding. The `content_hash`
+  /// must match the one in the corresponding `embed_jobs` row — if it
+  /// doesn't, the node has changed since enqueue and the worker should
+  /// drop this result rather than mark the job done.
+  async fn upsert_embedding(
+    &self,
+    id: &NodeId,
+    content_hash: &str,
+    embedding: &[f32],
+  ) -> ForestResult<()>;
+
+  /// Mark an embed job errored (so the worker doesn't immediately retry).
+  /// A subsequent content change re-enqueues the node automatically.
+  async fn mark_embed_error(&self, id: &NodeId, message: &str) -> ForestResult<()>;
+
+  /// Fetch up to `limit` pending embedding jobs.
+  async fn pending_embed_jobs(&self, limit: usize) -> ForestResult<Vec<EmbedJob>>;
 }
 
 // ─────────────────────────────────────────────────────────────────────

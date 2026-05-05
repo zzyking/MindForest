@@ -84,6 +84,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "domain",
+ "embed",
  "index-sqlite",
  "storage-fs",
  "tempfile",
@@ -811,7 +812,15 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 name = "embed"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "blake3",
  "domain",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1672,9 +1681,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "blake3",
+ "bytemuck",
  "chrono",
  "domain",
  "rusqlite",
+ "sqlite-vec",
  "storage-fs",
  "tempfile",
  "thiserror 1.0.69",
@@ -3497,6 +3508,15 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
+]
+
+[[package]]
+name = "sqlite-vec"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0ba424237a9a5db2f6071f193319e2b6a32f7f3961debb2fbbfe67067abce3f"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

@@ -14,7 +14,7 @@ use axum::Router;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
-use app_core::{bootstrap, Bootstrap, ForestService};
+use app_core::{bootstrap, Bootstrap, EmbedMode, ForestService};
 
 pub mod error;
 pub mod routes;
@@ -64,17 +64,22 @@ pub async fn run(config: ApiConfig) -> Result<(), Box<dyn std::error::Error + Se
 /// *before* serving starts, and inject the resulting URL into the
 /// webview via an initialization script — avoiding the dev-server
 /// port-collision footgun and the need for a fixed well-known port.
+///
+/// The embed mode is read from `MINDFOREST_EMBED_MODE` (see
+/// `embed::EmbedMode::from_env`) — `off` / `stub` / `sidecar`.
 pub async fn serve_with_listener(
   listener: tokio::net::TcpListener,
   vault_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
   let local_addr = listener.local_addr()?;
+  let embed_mode = EmbedMode::from_env();
 
-  let Bootstrap { service, watcher } = bootstrap(vault_dir.clone()).await?;
+  let Bootstrap { service, watcher } = bootstrap(vault_dir.clone(), embed_mode).await?;
   // Partial-moving `watcher.events` leaves the private `_debouncer` field
   // bound to `watcher` until end of scope; that's what keeps the notify
   // watcher running for the lifetime of `axum::serve` below.
   service.clone().spawn_watcher(watcher.events);
+  service.clone().spawn_embed_worker();
 
   let app = router(service);
   tracing::info!(

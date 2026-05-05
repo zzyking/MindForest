@@ -7,13 +7,26 @@
 //!   content_hash). Indexed by topic + parent for O(1) tree walks.
 //! - `links`     — directed edge list, both directions stored as separate rows.
 //! - `nodes_fts` — FTS5 virtual table over (title, content) for keyword search.
-//! - `embed_jobs`— work queue for the Phase 3 embedding pipeline.
+//! - `nodes_vec` — sqlite-vec virtual table over fixed-dim float embeddings.
+//! - `embed_jobs`— work queue for the embedding pipeline.
 //! - `meta`      — kv (schema_version, last_full_scan).
 //!
-//! Phase 1 ships only FTS5; `search_vec` returns `EmbedUnavailable` until
-//! sqlite-vec and the MLX sidecar land in Phase 3.
+//! Vector search uses cosine distance (sqlite-vec native). The extension
+//! is registered once via `sqlite3_auto_extension` on first `SqliteIndex`
+//! open — every subsequent connection inherits it. Embeddings are stored
+//! as raw f32 bytes; we cast through `bytemuck` so the trip into and out
+//! of SQLite is zero-copy.
+//!
+//! Embedding writes are decoupled from node writes: `upsert` enqueues an
+//! `embed_jobs` row tagged with the new `content_hash` and leaves vector
+//! computation to the embed worker (see `app-core`). The worker calls
+//! `upsert_embedding` to install the result.
+//!
+//! Search composition (`hybrid`) is done one layer up in `app-core` so
+//! this crate stays narrow: FTS in, vec in, ids out.
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
@@ -21,11 +34,12 @@ use rusqlite::params;
 use tokio_rusqlite::Connection;
 
 use domain::{
-  ForestError, ForestRepository, ForestResult, IndexStatus, Indexer, Node, NodeId, NodeType,
-  SearchHit, TopicId,
+  EmbedJob, ForestError, ForestRepository, ForestResult, IndexStatus, Indexer, Node, NodeId,
+  NodeType, SearchHit, TopicId,
 };
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
+pub const EMBED_DIM: usize = 768;
 
 const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS nodes (
@@ -59,10 +73,21 @@ CREATE TABLE IF NOT EXISTS embed_jobs (
     status       TEXT NOT NULL,
     error        TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_embed_jobs_status ON embed_jobs(status);
 
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+"#;
+
+/// Schema for the vec0 virtual table — kept separate because it depends
+/// on the sqlite-vec extension being loaded (auto-extension is registered
+/// in `register_vec_extension` before any connection opens).
+const VEC_SCHEMA_SQL: &str = r#"
+CREATE VIRTUAL TABLE IF NOT EXISTS nodes_vec USING vec0(
+    id TEXT PRIMARY KEY,
+    embedding float[768] distance_metric=cosine
 );
 "#;
 
@@ -75,6 +100,7 @@ impl SqliteIndex {
   /// Open (creating if missing) the index database at `path`.
   /// Parent directory is created if it doesn't exist.
   pub async fn open(path: impl Into<PathBuf>) -> ForestResult<Self> {
+    register_vec_extension();
     let path = path.into();
     if let Some(parent) = path.parent() {
       tokio::fs::create_dir_all(parent)
@@ -91,6 +117,7 @@ impl SqliteIndex {
 
   /// Open an in-memory index — useful for tests and ephemeral setups.
   pub async fn open_in_memory() -> ForestResult<Self> {
+    register_vec_extension();
     let conn = Connection::open(":memory:")
       .await
       .map_err(|e| ForestError::Index(format!("open in-memory: {e}")))?;
@@ -104,8 +131,12 @@ impl SqliteIndex {
       .conn
       .call(|conn| {
         conn.execute_batch(SCHEMA_SQL)?;
+        // The vec0 schema runs in its own batch because errors here are
+        // useful to surface separately (sqlite-vec link missing → loud
+        // failure rather than silent FTS-only fallback).
+        conn.execute_batch(VEC_SCHEMA_SQL)?;
         conn.execute(
-          "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?1)",
+          "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?1)",
           params![SCHEMA_VERSION.to_string()],
         )?;
         Ok(())
@@ -113,6 +144,7 @@ impl SqliteIndex {
       .await
       .map_err(|e| ForestError::Index(format!("init schema: {e}")))
   }
+
 }
 
 #[async_trait]
@@ -126,7 +158,7 @@ impl Indexer for SqliteIndex {
     let content = node.content.clone();
     let created_ms = node.created_at.timestamp_millis();
     let updated_ms = node.updated_at.timestamp_millis();
-    let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+    let content_hash = content_hash_for(&title, &content);
     let links: Vec<String> = node.links.iter().map(|l| l.to_string()).collect();
 
     self
@@ -165,6 +197,30 @@ impl Indexer for SqliteIndex {
           )?;
         }
 
+        // Embed-jobs queue: enqueue iff the content hash changed (or the
+        // row is fresh / errored). If a 'done' row exists with the same
+        // hash we leave it alone to avoid re-embedding on no-op upserts.
+        let prior: Option<(String, String)> = conn_query_optional(
+          &tx,
+          "SELECT status, content_hash FROM embed_jobs WHERE id = ?1",
+          params![id],
+        )?;
+        let needs_enqueue = match prior {
+          None => true,
+          Some((status, hash)) => status != "done" || hash != content_hash,
+        };
+        if needs_enqueue {
+          tx.execute(
+            "INSERT INTO embed_jobs (id, content_hash, status, error)
+              VALUES (?1, ?2, 'pending', NULL)
+              ON CONFLICT(id) DO UPDATE SET
+                content_hash = excluded.content_hash,
+                status       = 'pending',
+                error        = NULL",
+            params![id, content_hash],
+          )?;
+        }
+
         tx.commit()?;
         Ok(())
       })
@@ -185,6 +241,8 @@ impl Indexer for SqliteIndex {
           params![id_str],
         )?;
         tx.execute("DELETE FROM embed_jobs WHERE id = ?1", params![id_str])?;
+        // Drop the vector too, if present. vec0 silently ignores missing rows.
+        tx.execute("DELETE FROM nodes_vec WHERE id = ?1", params![id_str])?;
         tx.commit()?;
         Ok(())
       })
@@ -265,14 +323,77 @@ impl Indexer for SqliteIndex {
 
   async fn search_vec(
     &self,
-    _embedding: &[f32],
-    _topic: Option<&TopicId>,
-    _k: usize,
+    embedding: &[f32],
+    topic: Option<&TopicId>,
+    k: usize,
   ) -> ForestResult<Vec<SearchHit>> {
-    // Phase 3 will load sqlite-vec and wire EmbeddingGemma via the MLX
-    // sidecar. Until then the Embedder reports unavailable; consumers
-    // (app-core) degrade hybrid search to FTS-only.
-    Err(ForestError::EmbedUnavailable)
+    if embedding.len() != EMBED_DIM {
+      return Err(ForestError::Embed(format!(
+        "search_vec dim mismatch: expected {EMBED_DIM}, got {}",
+        embedding.len()
+      )));
+    }
+    let bytes = bytemuck::cast_slice::<f32, u8>(embedding).to_vec();
+    let topic_str = topic.map(|t| t.as_str().to_string());
+    // Over-fetch when we have to filter by topic afterwards. vec0 doesn't
+    // mix free-form WHERE constraints with KNN cleanly, so we widen the
+    // candidate set instead and trim in Rust.
+    let candidate_k = if topic_str.is_some() { (k * 4).max(16) } else { k };
+    let candidate_k_i64 = candidate_k as i64;
+    let final_k = k;
+
+    let rows: Vec<(String, String, String, f64)> = self
+      .conn
+      .call(move |conn| {
+        // Pull KNN ids + distances first, then look up topic/title in
+        // `nodes`. vec0 doesn't allow auxiliary WHERE on the same query
+        // mixed with `MATCH`, but a JOIN is fine.
+        let mut stmt = conn.prepare(
+          "SELECT v.id, n.topic, n.title, v.distance
+             FROM nodes_vec v
+             JOIN nodes n ON n.id = v.id
+            WHERE v.embedding MATCH ?1 AND v.k = ?2
+            ORDER BY v.distance",
+        )?;
+        let it = stmt.query_map(params![bytes, candidate_k_i64], |r| {
+          Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, f64>(3)?,
+          ))
+        })?;
+        let collected = it.collect::<Result<Vec<_>, _>>()?;
+        Ok(collected)
+      })
+      .await
+      .map_err(|e| ForestError::Index(format!("search_vec: {e}")))?;
+
+    let mut hits: Vec<SearchHit> = Vec::with_capacity(final_k.min(rows.len()));
+    for (id_s, topic_s, title, distance) in rows {
+      if let Some(filter) = &topic_str {
+        if &topic_s != filter {
+          continue;
+        }
+      }
+      let id: NodeId = id_s.parse()?;
+      let topic = TopicId::new(topic_s)?;
+      // sqlite-vec's cosine distance is in [0, 2]; convert to similarity
+      // in [-1, 1] so callers can treat higher = better consistently
+      // with FTS scores.
+      let similarity = 1.0 - distance as f32;
+      hits.push(SearchHit {
+        id,
+        topic,
+        title,
+        snippet: String::new(),
+        score: similarity,
+      });
+      if hits.len() >= final_k {
+        break;
+      }
+    }
+    Ok(hits)
   }
 
   async fn status(&self) -> ForestResult<IndexStatus> {
@@ -306,8 +427,91 @@ impl Indexer for SqliteIndex {
       embed_pending: pending as usize,
       fts_dirty: false,
       last_scan,
+      // Whether the current Embedder is healthy is decided at the
+      // app-core layer; we just report the index's own readiness.
       embed_available: false,
     })
+  }
+
+  async fn upsert_embedding(
+    &self,
+    id: &NodeId,
+    content_hash: &str,
+    embedding: &[f32],
+  ) -> ForestResult<()> {
+    if embedding.len() != EMBED_DIM {
+      return Err(ForestError::Embed(format!(
+        "embedding dim mismatch: expected {EMBED_DIM}, got {}",
+        embedding.len()
+      )));
+    }
+    let id_str = id.to_string();
+    let content_hash = content_hash.to_string();
+    let bytes = bytemuck::cast_slice::<f32, u8>(embedding).to_vec();
+    self
+      .conn
+      .call(move |conn| {
+        let tx = conn.transaction()?;
+        // Replace-or-insert. vec0 has its own UPSERT semantics — DELETE
+        // then INSERT is the documented pattern for changes.
+        tx.execute("DELETE FROM nodes_vec WHERE id = ?1", params![id_str])?;
+        tx.execute(
+          "INSERT INTO nodes_vec (id, embedding) VALUES (?1, ?2)",
+          params![id_str, bytes],
+        )?;
+        // Only mark the job done if the hash still matches — guards
+        // against a stale worker reply for a since-edited node.
+        tx.execute(
+          "UPDATE embed_jobs SET status = 'done', error = NULL
+            WHERE id = ?1 AND content_hash = ?2",
+          params![id_str, content_hash],
+        )?;
+        tx.commit()?;
+        Ok(())
+      })
+      .await
+      .map_err(|e| ForestError::Index(format!("upsert_embedding: {e}")))
+  }
+
+  async fn mark_embed_error(&self, id: &NodeId, message: &str) -> ForestResult<()> {
+    let id_str = id.to_string();
+    let message = message.to_string();
+    self
+      .conn
+      .call(move |conn| {
+        conn.execute(
+          "UPDATE embed_jobs SET status = 'error', error = ?2 WHERE id = ?1",
+          params![id_str, message],
+        )?;
+        Ok(())
+      })
+      .await
+      .map_err(|e| ForestError::Index(format!("mark_embed_error: {e}")))
+  }
+
+  async fn pending_embed_jobs(&self, limit: usize) -> ForestResult<Vec<EmbedJob>> {
+    let limit = limit as i64;
+    let rows: Vec<(String, String)> = self
+      .conn
+      .call(move |conn| {
+        let mut stmt = conn.prepare(
+          "SELECT id, content_hash FROM embed_jobs
+            WHERE status = 'pending'
+            ORDER BY rowid
+            LIMIT ?1",
+        )?;
+        let it = stmt.query_map(params![limit], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let collected = it.collect::<Result<Vec<_>, _>>()?;
+        Ok(collected)
+      })
+      .await
+      .map_err(|e| ForestError::Index(format!("pending_embed_jobs: {e}")))?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, hash) in rows {
+      let id: NodeId = id.parse()?;
+      out.push(EmbedJob { id, content_hash: hash });
+    }
+    Ok(out)
   }
 
   async fn rebuild_from(&self, repo: &dyn ForestRepository) -> ForestResult<()> {
@@ -319,7 +523,8 @@ impl Indexer for SqliteIndex {
           "DELETE FROM nodes;
            DELETE FROM nodes_fts;
            DELETE FROM links;
-           DELETE FROM embed_jobs;",
+           DELETE FROM embed_jobs;
+           DELETE FROM nodes_vec;",
         )?;
         tx.commit()?;
         Ok(())
@@ -368,6 +573,65 @@ fn node_type_to_str(t: NodeType) -> &'static str {
     NodeType::Task => "task",
     NodeType::Misc => "misc",
   }
+}
+
+/// Hash of the embeddable payload (title + content). Title is included
+/// because it materially affects embeddings — renaming a node should
+/// re-embed even if the body is unchanged.
+pub fn content_hash_for(title: &str, content: &str) -> String {
+  let mut hasher = blake3::Hasher::new();
+  hasher.update(title.as_bytes());
+  hasher.update(b"\n");
+  hasher.update(content.as_bytes());
+  hasher.finalize().to_hex().to_string()
+}
+
+/// Run a `SELECT` that may return zero or one row; treat zero rows as
+/// `Ok(None)` rather than the rusqlite default of `Err(QueryReturnedNoRows)`.
+fn conn_query_optional<T>(
+  tx: &rusqlite::Transaction<'_>,
+  sql: &str,
+  params: impl rusqlite::Params,
+) -> rusqlite::Result<Option<(T, T)>>
+where
+  T: rusqlite::types::FromSql + 'static,
+{
+  let mut stmt = tx.prepare(sql)?;
+  let mut rows = stmt.query(params)?;
+  match rows.next()? {
+    Some(row) => Ok(Some((row.get(0)?, row.get(1)?))),
+    None => Ok(None),
+  }
+}
+
+/// Register sqlite-vec as a SQLite auto-extension. Idempotent — wrapped
+/// in a `OnceLock` so subsequent connections inherit the registration
+/// without re-installing.
+///
+/// `sqlite3_auto_extension` takes an `Option<unsafe extern "C" fn()>`,
+/// but `sqlite_vec::sqlite3_vec_init` carries the real entry-point
+/// signature `(*mut sqlite3, *mut *mut c_char, *const sqlite3_api_routines) -> c_int`.
+/// SQLite calls auto-extensions with the matching ABI regardless of the
+/// declared zero-arg type — the transmute is the documented bridge.
+fn register_vec_extension() {
+  static REGISTERED: OnceLock<()> = OnceLock::new();
+  REGISTERED.get_or_init(|| {
+    // SAFETY: we pass a static, never-freed function pointer to a
+    // SQLite C API that expects the auto-extension calling convention.
+    // The C ABI between sqlite-vec's `sqlite3_vec_init` and rusqlite's
+    // `xEntryPoint` slot agrees in practice (both are SQLite extension
+    // entrypoints) but the Rust types differ slightly (`*mut *const i8`
+    // vs `*mut *mut c_char`), so transmute is required.
+    unsafe {
+      type Entry = unsafe extern "C" fn(
+        *mut rusqlite::ffi::sqlite3,
+        *mut *const std::os::raw::c_char,
+        *const rusqlite::ffi::sqlite3_api_routines,
+      ) -> std::os::raw::c_int;
+      let entry: Entry = std::mem::transmute(sqlite_vec::sqlite3_vec_init as *const ());
+      rusqlite::ffi::sqlite3_auto_extension(Some(entry));
+    }
+  });
 }
 
 /// Build a safe FTS5 MATCH query from free-text user input.
@@ -495,6 +759,14 @@ mod tests {
     }
   }
 
+  fn unit_vec(seed: u8) -> Vec<f32> {
+    // Build a 768-dim vector that's mostly zero except for a single
+    // distinguishing feature; norm = 1 so cosine distance = 1 - dot.
+    let mut v = vec![0.0f32; EMBED_DIM];
+    v[seed as usize % EMBED_DIM] = 1.0;
+    v
+  }
+
   #[tokio::test]
   async fn open_in_memory_creates_schema() {
     let idx = SqliteIndex::open_in_memory().await.unwrap();
@@ -592,6 +864,10 @@ mod tests {
       })
       .await
       .unwrap();
+    idx
+      .upsert_embedding(&id, &content_hash_for("Backpropagation", "Gradient flows backwards through the network."), &unit_vec(7))
+      .await
+      .unwrap();
 
     idx.delete(&id).await.unwrap();
 
@@ -607,6 +883,17 @@ mod tests {
       .await
       .unwrap();
     assert_eq!(count, 0);
+
+    // Vector entry should be gone too.
+    let vec_count = idx
+      .conn
+      .call(move |conn| {
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM nodes_vec", [], |r| r.get(0))?;
+        Ok(n)
+      })
+      .await
+      .unwrap();
+    assert_eq!(vec_count, 0);
   }
 
   #[tokio::test]
@@ -617,15 +904,11 @@ mod tests {
       .await
       .unwrap();
 
-    // These would all error in raw FTS5 but our sanitizer handles them.
     let hits = idx.search_fts("backpropagation: (network)", None, 10).await.unwrap();
     assert_eq!(hits.len(), 1);
 
     let hits2 = idx.search_fts("****", None, 10).await.unwrap();
-    assert!(
-      hits2.is_empty(),
-      "all-special query should return no results without erroring"
-    );
+    assert!(hits2.is_empty());
   }
 
   #[test]
@@ -643,10 +926,7 @@ mod tests {
     assert_eq!(build_fts_query("   "), "");
     assert_eq!(build_fts_query("深度学习"), "\"深度学习\"");
     assert_eq!(build_fts_query("深度 学习"), "\"深度\" \"学习\"");
-    // Doubled `""` inside a phrase escapes a literal quote, then our
-    // stripper replaces it with a space.
     assert_eq!(build_fts_query("\"say \"\"hi\"\" loud\""), "\"say hi loud\"");
-    // Unclosed quote: read until end as phrase content.
     assert_eq!(build_fts_query("cat \"deep learn"), "\"cat\" \"deep learn\"");
   }
 
@@ -690,11 +970,9 @@ mod tests {
       .await
       .unwrap();
 
-    // Bare AND: both nodes contain both words, both match.
     let any_order = idx.search_fts("deep learning", None, 10).await.unwrap();
     assert_eq!(any_order.len(), 2);
 
-    // Phrase: only A has them adjacent.
     let adjacent = idx.search_fts("\"deep learning\"", None, 10).await.unwrap();
     assert_eq!(adjacent.len(), 1);
     assert_eq!(adjacent[0].id, id_a);
@@ -740,18 +1018,167 @@ mod tests {
       .await
       .unwrap();
 
-    // `"deep learning" rate` → phrase + bare AND: only the first matches
-    // (second has both words but not adjacent).
     let hits = idx.search_fts("\"deep learning\" rate", None, 10).await.unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].id, id_match);
   }
 
   #[tokio::test]
-  async fn search_vec_returns_unavailable_in_phase_1() {
+  async fn upsert_enqueues_embed_job_on_first_write() {
     let idx = SqliteIndex::open_in_memory().await.unwrap();
-    let result = idx.search_vec(&vec![0.0; 768], None, 10).await;
-    assert!(matches!(result, Err(ForestError::EmbedUnavailable)));
+    let topic = TopicId::new("test").unwrap();
+    let id = NodeId::new();
+    idx.upsert(&sample_node(id, topic.clone(), None)).await.unwrap();
+
+    let pending = idx.pending_embed_jobs(10).await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].id, id);
+  }
+
+  #[tokio::test]
+  async fn upsert_skips_enqueue_when_content_unchanged_after_done() {
+    let idx = SqliteIndex::open_in_memory().await.unwrap();
+    let topic = TopicId::new("test").unwrap();
+    let id = NodeId::new();
+    let node = sample_node(id, topic.clone(), None);
+    idx.upsert(&node).await.unwrap();
+
+    let hash = content_hash_for(&node.title, &node.content);
+    idx.upsert_embedding(&id, &hash, &unit_vec(1)).await.unwrap();
+
+    // Re-upsert identical content. Job should stay 'done', no re-queue.
+    idx.upsert(&node).await.unwrap();
+    let pending = idx.pending_embed_jobs(10).await.unwrap();
+    assert!(pending.is_empty(), "no-op re-upsert should not re-queue");
+  }
+
+  #[tokio::test]
+  async fn upsert_reenqueues_when_content_changes_after_done() {
+    let idx = SqliteIndex::open_in_memory().await.unwrap();
+    let topic = TopicId::new("test").unwrap();
+    let id = NodeId::new();
+    let node = sample_node(id, topic.clone(), None);
+    idx.upsert(&node).await.unwrap();
+
+    let hash_v1 = content_hash_for(&node.title, &node.content);
+    idx.upsert_embedding(&id, &hash_v1, &unit_vec(1)).await.unwrap();
+
+    // Edit content — should re-queue.
+    let now = Utc::now();
+    idx
+      .upsert(&Node {
+        content: "fully revised body".into(),
+        updated_at: now,
+        ..node.clone()
+      })
+      .await
+      .unwrap();
+    let pending = idx.pending_embed_jobs(10).await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].id, id);
+    assert_ne!(pending[0].content_hash, hash_v1);
+  }
+
+  #[tokio::test]
+  async fn upsert_embedding_rejects_dim_mismatch() {
+    let idx = SqliteIndex::open_in_memory().await.unwrap();
+    let id = NodeId::new();
+    let bad = idx.upsert_embedding(&id, "deadbeef", &[0.0; 7]).await;
+    assert!(matches!(bad, Err(ForestError::Embed(_))));
+  }
+
+  #[tokio::test]
+  async fn search_vec_returns_topk_by_cosine_similarity() {
+    let idx = SqliteIndex::open_in_memory().await.unwrap();
+    let topic = TopicId::new("test").unwrap();
+    let now = Utc::now();
+
+    // Three nodes with orthogonal "feature" vectors. The query vector
+    // matches node_b exactly, so it should rank first.
+    let id_a = NodeId::new();
+    let id_b = NodeId::new();
+    let id_c = NodeId::new();
+    for (id, vec_seed) in [(id_a, 0u8), (id_b, 1), (id_c, 2)] {
+      let n = Node {
+        id,
+        topic: topic.clone(),
+        parent: None,
+        node_type: NodeType::Concept,
+        title: format!("node-{id}"),
+        content: format!("body-{id}"),
+        links: vec![],
+        created_at: now,
+        updated_at: now,
+        color: None,
+      };
+      idx.upsert(&n).await.unwrap();
+      let h = content_hash_for(&n.title, &n.content);
+      idx.upsert_embedding(&id, &h, &unit_vec(vec_seed)).await.unwrap();
+    }
+
+    let hits = idx.search_vec(&unit_vec(1), None, 3).await.unwrap();
+    assert_eq!(hits.len(), 3);
+    assert_eq!(hits[0].id, id_b, "exact match should rank first");
+    // cosine similarity of orthogonal unit vectors is 0; same-direction is 1.
+    assert!(hits[0].score > 0.99);
+    assert!(hits[1].score < 0.5);
+  }
+
+  #[tokio::test]
+  async fn search_vec_filters_by_topic() {
+    let idx = SqliteIndex::open_in_memory().await.unwrap();
+    let now = Utc::now();
+    let topic_a = TopicId::new("alpha").unwrap();
+    let topic_b = TopicId::new("beta").unwrap();
+    for (topic, id) in [(topic_a.clone(), NodeId::new()), (topic_b.clone(), NodeId::new())] {
+      let n = Node {
+        id,
+        topic: topic.clone(),
+        parent: None,
+        node_type: NodeType::Concept,
+        title: format!("n-{id}"),
+        content: format!("body-{id}"),
+        links: vec![],
+        created_at: now,
+        updated_at: now,
+        color: None,
+      };
+      idx.upsert(&n).await.unwrap();
+      let h = content_hash_for(&n.title, &n.content);
+      idx.upsert_embedding(&id, &h, &unit_vec(5)).await.unwrap();
+    }
+
+    let only_alpha = idx.search_vec(&unit_vec(5), Some(&topic_a), 10).await.unwrap();
+    assert_eq!(only_alpha.len(), 1);
+    assert_eq!(only_alpha[0].topic, topic_a);
+  }
+
+  #[tokio::test]
+  async fn search_vec_dim_mismatch_errors() {
+    let idx = SqliteIndex::open_in_memory().await.unwrap();
+    let bad = idx.search_vec(&[0.0; 7], None, 5).await;
+    assert!(matches!(bad, Err(ForestError::Embed(_))));
+  }
+
+  #[tokio::test]
+  async fn rebuild_clears_vec_table() {
+    let idx = SqliteIndex::open_in_memory().await.unwrap();
+    let topic = TopicId::new("test").unwrap();
+    let id = NodeId::new();
+    let n = sample_node(id, topic.clone(), None);
+    idx.upsert(&n).await.unwrap();
+    let h = content_hash_for(&n.title, &n.content);
+    idx.upsert_embedding(&id, &h, &unit_vec(11)).await.unwrap();
+
+    let tmp = TempDir::new().unwrap();
+    let repo = FsRepository::open(tmp.path()).await.unwrap();
+    idx.rebuild_from(&repo).await.unwrap();
+    let after = idx
+      .conn
+      .call(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM nodes_vec", [], |r| r.get::<_, i64>(0))?))
+      .await
+      .unwrap();
+    assert_eq!(after, 0);
   }
 
   #[tokio::test]
@@ -795,5 +1222,9 @@ mod tests {
 
     let status = idx.status().await.unwrap();
     assert!(status.last_scan.is_some(), "rebuild should set last_full_scan");
+
+    // After rebuild, every node is queued for embedding.
+    let pending = idx.pending_embed_jobs(100).await.unwrap();
+    assert_eq!(pending.len(), 4); // root + Alpha/Beta/Gamma
   }
 }

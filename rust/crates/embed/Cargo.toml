@@ -4,8 +4,20 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
-# Real impl in Phase 3:
-# SidecarEmbedder client — spawns Swift `mindforest-embed` (MLX-Swift),
-# stdio newline-JSON protocol, exponential-backoff restart, Apple Silicon gate.
+# Embedder implementations:
+# - StubEmbedder        deterministic, normalized vectors (test/dev)
+# - SidecarEmbedder     spawns Swift `mindforest-embed` (MLX-Swift),
+#                       stdio newline-JSON protocol, exponential-backoff restart
+# - UnavailableEmbedder reports unavailable; consumers degrade to FTS-only
 [dependencies]
+async-trait = { workspace = true }
+blake3 = { workspace = true }
 domain = { path = "../domain" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -4,16 +4,20 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
-# Derived FTS5 + (eventually) vector index over the markdown vault.
-# Phase 1: nodes / links / nodes_fts (FTS5) / embed_jobs / meta tables;
-# upsert / delete / search_fts / rebuild_from. search_vec returns
-# EmbedUnavailable until Phase 3 wires sqlite-vec + the MLX sidecar.
+# Derived FTS5 + vector index over the markdown vault.
+# - nodes / links / nodes_fts (FTS5) / nodes_vec (sqlite-vec) / embed_jobs / meta
+# - upsert / delete / search_fts / search_vec / upsert_embedding
+# - rebuild_from for full re-index
+# sqlite-vec is statically linked via the `sqlite-vec` crate and registered
+# as a SQLite auto-extension once at process start (see `register_vec_extension`).
 [dependencies]
 async-trait = { workspace = true }
 blake3 = { workspace = true }
+bytemuck = { workspace = true }
 chrono = { workspace = true }
 domain = { path = "../domain" }
 rusqlite = { workspace = true }
+sqlite-vec = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-rusqlite = { workspace = true }

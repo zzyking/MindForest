@@ -4,14 +4,16 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
-# Composes domain + storage-fs + index-sqlite (and, in P3, embed) into
-# ForestService — the surface the HTTP layer (apps/api) talks to.
-# Owns the transactional boundary for file + index writes, plus the
-# watcher loop that keeps the index in sync against external edits.
+# Composes domain + storage-fs + index-sqlite + embed into ForestService
+# — the surface the HTTP layer (apps/api) talks to. Owns the transactional
+# boundary for file + index writes, the watcher loop that keeps the index
+# in sync against external edits, the embed worker that drains pending
+# embedding jobs, and the hybrid search composition (FTS + vec via RRF).
 [dependencies]
 async-trait = { workspace = true }
 chrono = { workspace = true }
 domain = { path = "../domain" }
+embed = { path = "../embed" }
 index-sqlite = { path = "../index-sqlite" }
 storage-fs = { path = "../storage-fs" }
 tokio = { workspace = true }
