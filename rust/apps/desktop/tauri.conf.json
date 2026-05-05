@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.mindforest.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev --prefix ../../..",
-    "beforeBuildCommand": "npm run build --prefix ../../..",
+    "beforeDevCommand": "npm run dev --prefix ../..",
+    "beforeBuildCommand": "npm run build --prefix ../..",
     "devUrl": "http://localhost:13000",
     "frontendDist": "../../../web/dist"
   },
