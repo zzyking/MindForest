@@ -26,6 +26,7 @@
 //! choice is observable: `Embedder::available()` flips `IndexStatus`'s
 //! `embed_available` flag the frontend reads.
 
+pub mod download;
 pub mod sidecar;
 pub mod stub;
 pub mod unavailable;

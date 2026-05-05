@@ -23,8 +23,13 @@ blake3 = "1"
 bytemuck = "1.18"
 chrono = { version = "0.4", features = ["serde"] }
 governor = "0.7"
+futures = "0.3"
 notify = "6"
 notify-debouncer-full = "0.3"
+# Default-disabled rustls — we opt into the system's TLS via
+# rustls-tls-native-roots so reqwest doesn't pull aws-lc-rs and friends
+# (lighter binary, fewer transitive deps).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "stream", "json"] }
 # `bundled` ships SQLite at a known version (avoids divergence with the
 # system lib). sqlite-vec registers itself via sqlite3_auto_extension at
 # process startup, so we don't need rusqlite's `load_extension` feature.
@@ -35,6 +40,7 @@ sqlite-vec = "0.1"
 thiserror = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-rusqlite = "0.5"
+tokio-stream = "0.1"
 serde_yml = "0.0.12"
 tempfile = "3"
 tower-http = { version = "0.5", features = ["cors", "trace", "fs"] }

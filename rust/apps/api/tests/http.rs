@@ -8,7 +8,9 @@
 use std::sync::Arc;
 
 use api::router;
-use app_core::{ForestService, FsRepository, SqliteIndex, StubEmbedder, EMBED_DIM};
+use app_core::{
+  EmbedMode, ForestService, FsRepository, ModelDownloader, SqliteIndex, StubEmbedder, EMBED_DIM,
+};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -21,7 +23,10 @@ async fn fixture() -> (TempDir, axum::Router) {
   let repo = Arc::new(FsRepository::open(tmp.path()).await.unwrap());
   let index = Arc::new(SqliteIndex::open_in_memory().await.unwrap());
   let embedder = Arc::new(StubEmbedder::new(EMBED_DIM));
-  let svc = Arc::new(ForestService::new(repo, index, embedder));
+  let downloader = ModelDownloader::new(tmp.path().join("models"));
+  let svc = Arc::new(ForestService::new(
+    repo, index, embedder, EmbedMode::Stub, downloader,
+  ));
   (tmp, router(svc))
 }
 
@@ -345,6 +350,18 @@ async fn index_status_and_rebuild() {
     .await
     .unwrap();
   assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn embed_model_status_reports_missing_initially() {
+  let (_tmp, app) = fixture().await;
+  let resp = app.oneshot(req_get("/v1/embed/model/status")).await.unwrap();
+  assert_eq!(resp.status(), StatusCode::OK);
+  let body = json_body(resp).await;
+  assert_eq!(body["embed_mode"], "stub");
+  assert_eq!(body["present"], false);
+  assert!(body["repo_id"].as_str().unwrap().contains("embeddinggemma"));
+  assert!(body["files"].as_array().unwrap().len() >= 5);
 }
 
 #[tokio::test]

@@ -14,7 +14,9 @@
 
 import type {
   ApiErrorBody,
+  DownloadEvent,
   IndexStatus,
+  ModelStatusResponse,
   NewNode,
   NewTopic,
   Node,
@@ -154,4 +156,106 @@ export function getIndexStatus(): Promise<IndexStatus> {
 
 export function rebuildIndex(): Promise<void> {
   return request<void>("/v1/index/rebuild", { method: "POST" });
+}
+
+// ─── Embed model ────────────────────────────────────────────────────
+
+export function getModelStatus(): Promise<ModelStatusResponse> {
+  return request<ModelStatusResponse>("/v1/embed/model/status");
+}
+
+/**
+ * Stream the EmbeddingGemma download. The server sends Server-Sent
+ * Events (POST endpoint, so we use `fetch` + a manual SSE parser rather
+ * than EventSource — EventSource is GET-only).
+ *
+ * Returns an async iterator that yields one `DownloadEvent` per server
+ * event. The caller can stop early by calling the returned `cancel()`.
+ *
+ * Error model:
+ * - Network/HTTP failures throw from the initial `fetch`.
+ * - Server-emitted errors arrive as `{ kind: "error", message }` events
+ *   followed by stream close. The iterator handles this naturally.
+ * - Aborting via `cancel()` closes the underlying fetch — the server's
+ *   `mpsc::UnboundedSender` is dropped and the download task tears down
+ *   in O(1).
+ */
+export function downloadModel(
+  signal?: AbortSignal,
+): { events: AsyncIterable<DownloadEvent>; cancel: () => void } {
+  const controller = new AbortController();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+  const events = consumeSseStream(controller.signal);
+  return { events, cancel: () => controller.abort() };
+}
+
+async function* consumeSseStream(
+  signal: AbortSignal,
+): AsyncGenerator<DownloadEvent, void, void> {
+  const resp = await fetch(`${BASE}/v1/embed/model/download`, {
+    method: "POST",
+    headers: { Accept: "text/event-stream" },
+    signal,
+  });
+  if (!resp.ok || !resp.body) {
+    throw new ApiError(
+      resp.status,
+      `http_${resp.status}`,
+      `download stream failed: ${resp.statusText}`,
+    );
+  }
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      buffer += decoder.decode(value, { stream: true });
+      // SSE frames are terminated by a blank line (`\n\n`). The server
+      // may send `\r\n\r\n` on some proxies; handle both.
+      let idx;
+      while ((idx = nextFrameBoundary(buffer)) !== -1) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx).replace(/^(\r?\n){1,2}/, "");
+        const ev = parseSseFrame(frame);
+        if (ev) yield ev;
+      }
+    }
+  } finally {
+    // Make the abort visible to the runtime even when the consumer
+    // didn't explicitly call cancel — generators that exit early via
+    // `break` route through this finally.
+    reader.cancel().catch(() => {});
+  }
+}
+
+function nextFrameBoundary(s: string): number {
+  const a = s.indexOf("\n\n");
+  const b = s.indexOf("\r\n\r\n");
+  if (a === -1) return b;
+  if (b === -1) return a;
+  return Math.min(a, b);
+}
+
+function parseSseFrame(frame: string): DownloadEvent | null {
+  // Minimal SSE parser: event lines start with `event:`, data lines with
+  // `data:`. Comments (`:`) and `id:` are ignored. We only care about
+  // the JSON `data:` payload — the variant is already in the payload's
+  // `kind` field, so we can drop the `event:` line.
+  let data = "";
+  for (const line of frame.split(/\r?\n/)) {
+    if (line.startsWith("data:")) {
+      data += line.slice(5).trimStart();
+    }
+  }
+  if (!data) return null;
+  try {
+    return JSON.parse(data) as DownloadEvent;
+  } catch {
+    return null;
+  }
 }

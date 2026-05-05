@@ -11,6 +11,7 @@ license.workspace = true
 app-core = { path = "../../crates/app-core" }
 axum = { workspace = true }
 domain = { path = "../../crates/domain" }
+futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

@@ -14,7 +14,9 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 domain = { path = "../domain" }
 embed = { path = "../embed" }
+futures = { workspace = true }
 index-sqlite = { path = "../index-sqlite" }
+serde = { workspace = true }
 storage-fs = { path = "../storage-fs" }
 tokio = { workspace = true }
 tracing = { workspace = true }

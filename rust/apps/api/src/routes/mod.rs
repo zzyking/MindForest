@@ -8,6 +8,7 @@ use serde_json::json;
 
 use crate::AppState;
 
+pub mod embed_admin;
 pub mod index_admin;
 pub mod nodes;
 pub mod search;
@@ -29,4 +30,6 @@ pub fn v1() -> Router<AppState> {
     .route("/search", get(search::search))
     .route("/index/status", get(index_admin::status))
     .route("/index/rebuild", post(index_admin::rebuild))
+    .route("/embed/model/status", get(embed_admin::status))
+    .route("/embed/model/download", post(embed_admin::download))
 }

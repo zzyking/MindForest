@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use futures::Stream;
 use tokio::sync::{mpsc, Notify};
 
 use domain::{
@@ -32,9 +33,28 @@ use domain::{
   Node, NodeId, NodePatch, SearchHit, Topic, TopicId, TopicSummary,
 };
 
+pub use embed::download::{DownloadEvent, FileStatus, ModelDownloader, ModelStatus};
 pub use embed::{EmbedMode, StubEmbedder, UnavailableEmbedder};
 pub use index_sqlite::{content_hash_for, SqliteIndex, EMBED_DIM};
 pub use storage_fs::{node_id_from_path, FsRepository, WatchEvent, WatcherHandle};
+
+/// The model the sidecar's MLX path expects. Hardcoded to keep the API
+/// surface narrow — the frontend never picks a model. If we ever need
+/// alternates we'll add a registry here.
+pub const EMBEDDING_MODEL_REPO: &str = "mlx-community/embeddinggemma-300m-4bit";
+
+/// Files we treat as "required" for the local model directory to be
+/// considered ready. EmbeddingGemma 300M 4-bit is small enough to fit
+/// in a single safetensors shard, so no `model-00001-of-N.safetensors`
+/// pattern needed. If the upstream switches to sharding, the download
+/// path still pulls everything; this list just gates the `present` flag.
+pub const EMBEDDING_MODEL_FILES: &[&str] = &[
+  "config.json",
+  "model.safetensors",
+  "tokenizer.json",
+  "tokenizer_config.json",
+  "special_tokens_map.json",
+];
 
 /// Wired-up service plus the watcher handle required to keep the index
 /// reactive to external edits. Callers must spawn the watcher loop
@@ -45,6 +65,28 @@ pub use storage_fs::{node_id_from_path, FsRepository, WatchEvent, WatcherHandle}
 pub struct Bootstrap {
   pub service: Arc<ForestService>,
   pub watcher: WatcherHandle,
+}
+
+/// HTTP-shaped model status reply — wraps `ModelStatus` with the local
+/// embed-mode label so the frontend can decide whether to surface the
+/// download UI at all.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ModelStatusResponse {
+  pub repo_id: String,
+  pub dir: PathBuf,
+  pub present: bool,
+  pub files: Vec<FileStatus>,
+  /// `"off"` / `"stub"` / `"sidecar"` — the user-visible name of the
+  /// embedder backend currently in play.
+  pub embed_mode: String,
+}
+
+fn embed_mode_label(mode: &EmbedMode) -> String {
+  match mode {
+    EmbedMode::Off => "off".into(),
+    EmbedMode::Stub => "stub".into(),
+    EmbedMode::Sidecar { .. } => "sidecar".into(),
+  }
 }
 
 /// Open the vault, prepare the derived SQLite index, build an embedder
@@ -67,8 +109,15 @@ pub async fn bootstrap(vault: PathBuf, embed_mode: EmbedMode) -> ForestResult<Bo
     index.rebuild_from(repo.as_ref()).await?;
   }
 
-  let embedder = embed::build_embedder(embed_mode);
-  let service = Arc::new(ForestService::new(repo.clone(), index, embedder));
+  let embedder = embed::build_embedder(embed_mode.clone());
+  let downloader = ModelDownloader::new(mindforest_dir.join("models"));
+  let service = Arc::new(ForestService::new(
+    repo.clone(),
+    index,
+    embedder,
+    embed_mode,
+    downloader,
+  ));
   let watcher = repo.watch()?;
   Ok(Bootstrap { service, watcher })
 }
@@ -82,6 +131,12 @@ pub struct ForestService {
   /// to a notify rather than poll, so newly-enqueued jobs land in the
   /// vector index without a 60s lag.
   embed_notify: Arc<Notify>,
+  /// Whether the embedder is `Off` / `Stub` / `Sidecar`. The frontend
+  /// reads this through `model_status()` to decide whether to surface
+  /// the download UX (no point asking a stub-only user to fetch a model
+  /// they won't use). Stored as a string for `Clone`-friendliness.
+  embed_mode_label: String,
+  downloader: ModelDownloader,
 }
 
 impl ForestService {
@@ -89,12 +144,16 @@ impl ForestService {
     repo: Arc<dyn ForestRepository>,
     index: Arc<dyn Indexer>,
     embedder: Arc<dyn Embedder>,
+    embed_mode: EmbedMode,
+    downloader: ModelDownloader,
   ) -> Self {
     Self {
       repo,
       index,
       embedder,
       embed_notify: Arc::new(Notify::new()),
+      embed_mode_label: embed_mode_label(&embed_mode),
+      downloader,
     }
   }
 
@@ -241,6 +300,35 @@ impl ForestService {
     status.embed_available = self.embedder.available();
     Ok(status)
   }
+
+  // ─── Model download ──────────────────────────────────────────────
+
+  /// Local snapshot of the EmbeddingGemma weights — does the model
+  /// directory contain every file we expect to hand to the sidecar?
+  /// Augmented with the embedder mode so the frontend can decide
+  /// whether the download UI is even relevant.
+  pub async fn model_status(&self) -> ForestResult<ModelStatusResponse> {
+    let local = self
+      .downloader
+      .local_status(EMBEDDING_MODEL_REPO, EMBEDDING_MODEL_FILES)
+      .await?;
+    Ok(ModelStatusResponse {
+      repo_id: local.repo_id,
+      dir: local.dir,
+      present: local.present,
+      files: local.files,
+      embed_mode: self.embed_mode_label.clone(),
+    })
+  }
+
+  /// Stream the EmbeddingGemma download. Each event is emitted exactly
+  /// once and the stream ends after `Done` (or `Error`). Caller is the
+  /// HTTP handler that turns events into SSE frames.
+  pub fn download_model(&self) -> impl Stream<Item = DownloadEvent> + Send + 'static {
+    self.downloader.download(EMBEDDING_MODEL_REPO.to_string())
+  }
+
+  // ─── Index ────────────────────────────────────────────────────────
 
   pub async fn rebuild_index(&self) -> ForestResult<()> {
     self.index.rebuild_from(self.repo.as_ref()).await?;
@@ -443,10 +531,13 @@ mod tests {
     let tmp = TempDir::new().unwrap();
     let repo = FsRepository::open(tmp.path()).await.unwrap();
     let index = SqliteIndex::open_in_memory().await.unwrap();
+    let downloader = ModelDownloader::new(tmp.path().join("models"));
     let svc = Arc::new(ForestService::new(
       Arc::new(repo),
       Arc::new(index),
       Arc::new(StubEmbedder::new(EMBED_DIM)),
+      EmbedMode::Stub,
+      downloader,
     ));
     (tmp, svc)
   }
@@ -455,10 +546,13 @@ mod tests {
     let tmp = TempDir::new().unwrap();
     let repo = FsRepository::open(tmp.path()).await.unwrap();
     let index = SqliteIndex::open_in_memory().await.unwrap();
+    let downloader = ModelDownloader::new(tmp.path().join("models"));
     let svc = Arc::new(ForestService::new(
       Arc::new(repo),
       Arc::new(index),
       Arc::new(UnavailableEmbedder::new(EMBED_DIM)),
+      EmbedMode::Off,
+      downloader,
     ));
     (tmp, svc)
   }
@@ -603,10 +697,13 @@ mod tests {
     let tmp = TempDir::new().unwrap();
     let repo = Arc::new(FsRepository::open(tmp.path()).await.unwrap());
     let index = Arc::new(SqliteIndex::open_in_memory().await.unwrap());
+    let downloader = ModelDownloader::new(tmp.path().join("models"));
     let svc = Arc::new(ForestService::new(
       repo.clone(),
       index.clone(),
       Arc::new(StubEmbedder::new(EMBED_DIM)),
+      EmbedMode::Stub,
+      downloader,
     ));
 
     let topic = svc
@@ -683,11 +780,11 @@ mod tests {
       .unwrap();
 
     let fresh = Arc::new(SqliteIndex::open_in_memory().await.unwrap());
-    let (repo_arc, embedder) = match Arc::try_unwrap(svc) {
-      Ok(s) => (s.repo, s.embedder),
-      Err(s) => (s.repo.clone(), s.embedder.clone()),
+    let (repo_arc, embedder, downloader) = match Arc::try_unwrap(svc) {
+      Ok(s) => (s.repo, s.embedder, s.downloader),
+      Err(s) => (s.repo.clone(), s.embedder.clone(), s.downloader.clone()),
     };
-    let svc2 = ForestService::new(repo_arc, fresh, embedder);
+    let svc2 = ForestService::new(repo_arc, fresh, embedder, EmbedMode::Stub, downloader);
     svc2.rebuild_index().await.unwrap();
     let hits = svc2.search("findme", None, 10).await.unwrap();
     assert!(hits.iter().any(|h| h.title == "Inner"));
@@ -776,6 +873,26 @@ mod tests {
     }
     let hits = svc.search("Gradient", None, 10).await.unwrap();
     assert!(hits.iter().any(|h| h.id == n.id));
+  }
+
+  #[tokio::test]
+  async fn model_status_reports_missing_until_files_present() {
+    let (tmp, svc) = fixture().await;
+    let status = svc.model_status().await.unwrap();
+    assert_eq!(status.embed_mode, "stub");
+    assert!(!status.present);
+    assert!(status.dir.starts_with(tmp.path()));
+    assert_eq!(status.files.len(), EMBEDDING_MODEL_FILES.len());
+    assert!(status.files.iter().all(|f| !f.present));
+
+    // Drop dummy files into the model dir; status flips to present.
+    tokio::fs::create_dir_all(&status.dir).await.unwrap();
+    for name in EMBEDDING_MODEL_FILES {
+      tokio::fs::write(status.dir.join(name), b"\0").await.unwrap();
+    }
+    let status2 = svc.model_status().await.unwrap();
+    assert!(status2.present);
+    assert!(status2.files.iter().all(|f| f.present));
   }
 
   #[tokio::test]

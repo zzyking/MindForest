@@ -15,6 +15,7 @@ import { cn } from "@/lib/cn";
 import { useWorkspaceUI } from "@/stores/workspaceUI";
 import { Dock } from "@/ui/Dock";
 import { Sidebar } from "@/ui/Sidebar";
+import { ModelDownloadCard } from "@/features/embed/ModelDownloadCard";
 import { SearchPalette } from "@/features/search/SearchPalette";
 
 interface Props {
@@ -51,7 +52,10 @@ export function WorkspaceShell({ children }: Props) {
         >
           <Sidebar />
         </aside>
-        <main className="flex-1 overflow-y-auto">{children}</main>
+        <main className="flex-1 overflow-y-auto">
+          <ModelDownloadCard />
+          {children}
+        </main>
       </div>
       <Dock />
       <SearchPalette />

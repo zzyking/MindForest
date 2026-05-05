@@ -103,3 +103,38 @@ export interface ApiErrorBody {
   error: string;
   message: string;
 }
+
+// ─── Embed model status / download ──────────────────────────────────
+
+export interface ModelFileStatus {
+  name: string;
+  present: boolean;
+  size: number | null;
+}
+
+/** Server reply for `GET /v1/embed/model/status`. */
+export interface ModelStatusResponse {
+  repo_id: string;
+  /** Absolute path on disk where the files live (or would live). */
+  dir: string;
+  present: boolean;
+  files: ModelFileStatus[];
+  /** "off" / "stub" / "sidecar" — which embedder backend is active. */
+  embed_mode: "off" | "stub" | "sidecar";
+}
+
+/** SSE events emitted by `POST /v1/embed/model/download`. */
+export type DownloadEvent =
+  | { kind: "started"; repo_id: string; total_files: number }
+  | { kind: "file_start"; name: string; size: number | null }
+  | {
+      kind: "progress";
+      name: string;
+      bytes_so_far: number;
+      file_total: number | null;
+      overall_so_far: number;
+      overall_total: number | null;
+    }
+  | { kind: "file_done"; name: string; size: number }
+  | { kind: "done" }
+  | { kind: "error"; message: string };
