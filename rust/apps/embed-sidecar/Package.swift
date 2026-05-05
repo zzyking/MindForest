@@ -41,11 +41,15 @@ let useMLX = (Context.environment["MINDFOREST_EMBED_MLX"] ?? "0") == "1"
 // instead of `config.intermediateSize` (1152), which prevents a
 // follow-up shape-mismatch on weight load.
 //
+// We host the pinned commit ourselves at `zzyking/mlx-swift-lm` on
+// branch `mindforest-pin/embeddinggemma-pr223` rather than depending
+// on the PR author's fork, so the upstream contributor can't pull the
+// commit out from under us once their PR merges and they clean up.
+// The branch is a verbatim push of `0xweb3r/mlx-swift-lm@16e8d1b4`
+// — same SHA, no rewrites — so reviewers can diff against the PR.
+//
 // TODO: revert to `from: "<next tag>"` once PR #223 is merged and a
-// new mlx-swift-lm release ships. Branch is reachable as
-// `fix/embeddinggemma-init-order` on the fork; we pin the commit
-// rather than the branch so an unexpected force-push can't yank the
-// build out from under us.
+// new mlx-swift-lm release ships.
 //
 // swift-transformers is required by the `#huggingFaceTokenizerLoader()`
 // macro: its expansion calls `Tokenizers.AutoTokenizer.from(modelFolder:)`
@@ -58,7 +62,7 @@ let mlxDeps: [Package.Dependency] = useMLX
         .upToNextMinor(from: "0.31.3")
       ),
       .package(
-        url: "https://github.com/0xweb3r/mlx-swift-lm",
+        url: "https://github.com/zzyking/mlx-swift-lm",
         revision: "16e8d1b49ff5b214d8604cf1739016ee16a44081"
       ),
       .package(
