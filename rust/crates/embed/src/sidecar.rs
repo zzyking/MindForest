@@ -68,12 +68,18 @@ struct EmbedRequest {
 impl SidecarEmbedder {
   /// Spawn the supervisor in the background. Returns immediately;
   /// `available()` will start out `false` and flip to `true` once the
-  /// health check passes (typically within a few hundred ms).
-  pub fn spawn(binary: PathBuf, dim: usize) -> Self {
+  /// health check passes.
+  ///
+  /// `model_dir`, when provided, is forwarded to the child as the
+  /// `MINDFOREST_MODEL_DIR` env var. The Swift side uses it to decide
+  /// between MLX inference (directory present with model files) and the
+  /// stub embedder (missing / invalid). Passing `None` means the sidecar
+  /// will run in stub mode regardless of how it was built.
+  pub fn spawn(binary: PathBuf, dim: usize, model_dir: Option<PathBuf>) -> Self {
     let (tx, rx) = mpsc::unbounded_channel::<EmbedRequest>();
     let available = Arc::new(AtomicBool::new(false));
     let av = Arc::clone(&available);
-    tokio::spawn(supervise(binary, rx, av, dim));
+    tokio::spawn(supervise(binary, rx, av, dim, model_dir));
     Self {
       requests: tx,
       available,
@@ -121,10 +127,11 @@ async fn supervise(
   mut requests: mpsc::UnboundedReceiver<EmbedRequest>,
   available: Arc<AtomicBool>,
   dim: usize,
+  model_dir: Option<PathBuf>,
 ) {
   let mut attempt: u32 = 0;
   loop {
-    match try_run_session(&binary, &mut requests, &available, dim).await {
+    match try_run_session(&binary, &mut requests, &available, dim, model_dir.as_deref()).await {
       SessionOutcome::Closed => {
         tracing::debug!("embed sidecar: caller dropped, supervisor exiting");
         return;
@@ -160,14 +167,18 @@ async fn try_run_session(
   requests: &mut mpsc::UnboundedReceiver<EmbedRequest>,
   available: &Arc<AtomicBool>,
   dim: usize,
+  model_dir: Option<&Path>,
 ) -> SessionOutcome {
-  let mut child = match Command::new(binary)
+  let mut cmd = Command::new(binary);
+  cmd
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
-    .kill_on_drop(true)
-    .spawn()
-  {
+    .kill_on_drop(true);
+  if let Some(d) = model_dir {
+    cmd.env("MINDFOREST_MODEL_DIR", d);
+  }
+  let mut child = match cmd.spawn() {
     Ok(c) => c,
     Err(e) => return SessionOutcome::Failed(format!("spawn {binary:?}: {e}")),
   };
@@ -180,16 +191,18 @@ async fn try_run_session(
   let mut reader = BufReader::new(stdout).lines();
 
   // Health check — proves the model is actually loaded before we say
-  // we're available. Hard timeout: 5s per design doc.
+  // we're available. The timeout is generous (30s) because the MLX
+  // path synchronously loads ~200MB of 4-bit weights and builds the
+  // tokenizer on first boot; subsequent reply turnaround is <1s.
   let health = serde_json::json!({"id": 0, "cmd": "health"}).to_string();
   if let Err(e) = stdin.write_all(format!("{health}\n").as_bytes()).await {
     return SessionOutcome::Failed(format!("write health: {e}"));
   }
-  let line = match tokio::time::timeout(Duration::from_secs(5), reader.next_line()).await {
+  let line = match tokio::time::timeout(Duration::from_secs(30), reader.next_line()).await {
     Ok(Ok(Some(l))) => l,
     Ok(Ok(None)) => return SessionOutcome::Failed("eof during health check".into()),
     Ok(Err(e)) => return SessionOutcome::Failed(format!("read health: {e}")),
-    Err(_) => return SessionOutcome::Failed("health check timeout (5s)".into()),
+    Err(_) => return SessionOutcome::Failed("health check timeout (30s)".into()),
   };
   let resp: serde_json::Value = match serde_json::from_str(&line) {
     Ok(v) => v,
@@ -308,7 +321,7 @@ mod tests {
     // confirm `available()` stays false and `embed()` returns
     // EmbedUnavailable.
     let path = PathBuf::from("/nonexistent/mindforest-embed-fake");
-    let e = SidecarEmbedder::spawn(path, 768);
+    let e = SidecarEmbedder::spawn(path, 768, None);
     assert!(!e.available());
     let result = e.embed(&["hello".into()]).await;
     assert!(matches!(result, Err(ForestError::EmbedUnavailable)));
@@ -319,7 +332,7 @@ mod tests {
     // Even when the supervisor hasn't connected, an empty batch should
     // succeed without requiring availability — the result is just empty.
     let path = PathBuf::from("/nonexistent/mindforest-embed-fake");
-    let e = SidecarEmbedder::spawn(path, 768);
+    let e = SidecarEmbedder::spawn(path, 768, None);
     // available is still false, so embed fast-paths — but our impl
     // checks available before short-circuiting on empty. With no
     // sidecar this returns Unavailable, which is fine.

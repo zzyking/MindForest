@@ -109,8 +109,11 @@ pub async fn bootstrap(vault: PathBuf, embed_mode: EmbedMode) -> ForestResult<Bo
     index.rebuild_from(repo.as_ref()).await?;
   }
 
-  let embedder = embed::build_embedder(embed_mode.clone());
   let downloader = ModelDownloader::new(mindforest_dir.join("models"));
+  let embedder = embed::build_embedder(
+    embed_mode.clone(),
+    Some(downloader.target_dir(EMBEDDING_MODEL_REPO)),
+  );
   let service = Arc::new(ForestService::new(
     repo.clone(),
     index,

@@ -20,9 +20,57 @@
 
 import Foundation
 
+// Pick an embedder once at startup. Order of preference:
+//
+//   1. MLXEmbedder — only when both (a) the binary was built with
+//      `MINDFOREST_EMBED_MLX=1` (so `MLX_INFERENCE` is defined here) and
+//      (b) the Rust side pointed us at a directory that actually has
+//      the model files. If construction throws (missing weights,
+//      corrupt tokenizer, etc.) we log and fall back to the stub
+//      rather than hanging the whole session.
+//   2. StubEmbedder — deterministic 768-d vectors, protocol-compatible,
+//      no model dependency. Used in CI, on Intel Macs, and any time
+//      MLX init failed.
+//
+// MLX init is the slow path — it synchronously loads ~200MB of 4-bit
+// weights and runs a warmup inference. This is intentional: the Rust
+// supervisor waits (with a 30s budget) for the health reply, so doing
+// the load before the first reply means callers never see an
+// "available but broken" state.
 let embedder: Embedder = {
-  // Future: select MLXEmbedder when MLX_INFERENCE is built and the
-  // model directory is reachable. For now the stub is the only path.
+  #if MLX_INFERENCE
+  if let modelPath = ProcessInfo.processInfo.environment["MINDFOREST_MODEL_DIR"],
+     !modelPath.isEmpty {
+    let dir = URL(fileURLWithPath: modelPath, isDirectory: true)
+    let configPath = dir.appendingPathComponent("config.json").path
+    if FileManager.default.fileExists(atPath: configPath) {
+      do {
+        FileHandle.standardError.write(
+          Data("mindforest-embed: loading MLX model from \(modelPath)\n".utf8)
+        )
+        let start = Date()
+        let m = try MLXEmbedder(modelDirectory: dir, dim: 768)
+        let ms = Int(Date().timeIntervalSince(start) * 1000)
+        FileHandle.standardError.write(
+          Data("mindforest-embed: MLX ready in \(ms)ms\n".utf8)
+        )
+        return m
+      } catch {
+        FileHandle.standardError.write(
+          Data("mindforest-embed: MLX load failed: \(error) — falling back to stub\n".utf8)
+        )
+      }
+    } else {
+      FileHandle.standardError.write(
+        Data("mindforest-embed: no config.json at \(modelPath) — falling back to stub\n".utf8)
+      )
+    }
+  } else {
+    FileHandle.standardError.write(
+      Data("mindforest-embed: MINDFOREST_MODEL_DIR unset — falling back to stub\n".utf8)
+    )
+  }
+  #endif
   return StubEmbedder(dim: 768)
 }()
 

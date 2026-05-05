@@ -1,9 +1,14 @@
-// Embedder abstraction. The default ("stub") build is the only one
-// compiled in on this commit; the real `MLXEmbedder` lands behind
-// `#if MLX_INFERENCE` in a follow-up once the MLXEmbedders API path
-// for EmbeddingGemma 300M 4-bit is fully validated against the real
-// weights. Until then the stub keeps the spawn / stdio / restart
-// pipeline exercised end-to-end.
+// Embedder abstraction. Two concrete implementations live alongside
+// this file:
+//
+//   - `StubEmbedder`: deterministic SHA-256-derived vectors, no model
+//     dependency. Always compiled, used in CI and as a fallback.
+//   - `MLXEmbedder` (`MLXEmbedder.swift`, `#if MLX_INFERENCE`): real
+//     EmbeddingGemma 4-bit inference via mlx-swift-lm. Only compiled
+//     when `MINDFOREST_EMBED_MLX=1` at build time.
+//
+// `main.swift` picks between them at startup based on whether MLX was
+// built in and whether `MINDFOREST_MODEL_DIR` points to valid weights.
 
 import Foundation
 import CryptoKit

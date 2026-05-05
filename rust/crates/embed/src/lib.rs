@@ -94,11 +94,17 @@ fn default_mode() -> EmbedMode {
 /// Build an embedder for the requested mode. Returns an `Arc<dyn Embedder>`
 /// since the supervisor task may outlive any single caller and we want
 /// cheap clones across `app-core` services.
-pub fn build_embedder(mode: EmbedMode) -> Arc<dyn Embedder> {
+///
+/// `model_dir` is only consulted by the sidecar path and is forwarded
+/// to the child as `MINDFOREST_MODEL_DIR`; the Swift binary uses it to
+/// pick MLX inference over its stub. Other modes ignore the argument.
+pub fn build_embedder(mode: EmbedMode, model_dir: Option<PathBuf>) -> Arc<dyn Embedder> {
   match mode {
     EmbedMode::Off => Arc::new(UnavailableEmbedder::new(domain_dim())),
     EmbedMode::Stub => Arc::new(StubEmbedder::new(domain_dim())),
-    EmbedMode::Sidecar { binary } => Arc::new(SidecarEmbedder::spawn(binary, domain_dim())),
+    EmbedMode::Sidecar { binary } => {
+      Arc::new(SidecarEmbedder::spawn(binary, domain_dim(), model_dir))
+    }
   }
 }
 
