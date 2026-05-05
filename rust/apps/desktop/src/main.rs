@@ -12,7 +12,16 @@
 //!   2. `<app_data_dir>/vault` (per-OS conventional location)
 //!   3. fail with a useful message
 //!
-//! Sidecar resolution (P3) will live here too; left as a TODO.
+//! Embed sidecar resolution (dev mode only for now):
+//!   - If `MINDFOREST_EMBED_BIN` is already set we leave it alone.
+//!   - Otherwise we look for the Swift-built binary at the
+//!     workspace-relative path `apps/embed-sidecar/.build/<triple>/{release,debug}/mindforest-embed`.
+//!     When found we set both `MINDFOREST_EMBED_BIN` and
+//!     `MINDFOREST_EMBED_MODE=sidecar` so the API picks it up at boot.
+//!   - When not found we leave env alone — `EmbedMode::from_env()` falls
+//!     through to its platform default (Stub on Apple Silicon, Off
+//!     elsewhere). Packaged-build resource resolution lives in P3c-4-2
+//!     (Tauri externalBin).
 
 use std::path::PathBuf;
 
@@ -26,6 +35,7 @@ fn main() {
   tauri::Builder::default()
     .setup(|app| {
       let vault_dir = resolve_vault_dir(app)?;
+      configure_embed_sidecar();
 
       // Bind synchronously so the OS-assigned port is known before the
       // webview is created — the init script depends on it. Using
@@ -102,6 +112,61 @@ fn main() {
     })
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
+}
+
+/// If `MINDFOREST_EMBED_BIN` is unset, try to point it at a freshly
+/// `swift build`-d sidecar binary in the workspace. Idempotent — if
+/// the user already set the env we don't override.
+///
+/// We resolve via `CARGO_MANIFEST_DIR` so the path is correct regardless
+/// of where `cargo tauri dev` is invoked from. macOS-only because the
+/// sidecar is only built on Apple Silicon (per design).
+fn configure_embed_sidecar() {
+  if std::env::var_os("MINDFOREST_EMBED_BIN").is_some() {
+    // Caller has chosen a binary path explicitly — respect it.
+    return;
+  }
+  let Some(path) = resolve_sidecar_binary() else {
+    tracing::debug!("embed sidecar binary not found in workspace; falling back to mode=stub/off");
+    return;
+  };
+  tracing::info!("embed sidecar resolved at {}", path.display());
+  std::env::set_var("MINDFOREST_EMBED_BIN", &path);
+  if std::env::var_os("MINDFOREST_EMBED_MODE").is_none() {
+    std::env::set_var("MINDFOREST_EMBED_MODE", "sidecar");
+  }
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_sidecar_binary() -> Option<PathBuf> {
+  // Map Rust's `target_arch` to Swift Package Manager's build-output
+  // directory naming (Rust uses `aarch64`, Swift uses `arm64`).
+  let triple = if cfg!(target_arch = "aarch64") {
+    "arm64-apple-macosx"
+  } else if cfg!(target_arch = "x86_64") {
+    "x86_64-apple-macosx"
+  } else {
+    return None;
+  };
+  let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    .parent() // apps/
+    .and_then(|p| p.parent())
+    .map(|p| p.to_path_buf())?;
+  let base = workspace_root.join("apps/embed-sidecar/.build").join(triple);
+  // Prefer release over debug — release is what we'd ship; if the user
+  // hasn't built either, neither path exists.
+  for flavor in ["release", "debug"] {
+    let candidate = base.join(flavor).join("mindforest-embed");
+    if candidate.exists() {
+      return Some(candidate);
+    }
+  }
+  None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn resolve_sidecar_binary() -> Option<PathBuf> {
+  None
 }
 
 fn resolve_vault_dir(app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Error>> {
