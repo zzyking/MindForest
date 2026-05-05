@@ -12,16 +12,22 @@
 //!   2. `<app_data_dir>/vault` (per-OS conventional location)
 //!   3. fail with a useful message
 //!
-//! Embed sidecar resolution (dev mode only for now):
+//! Embed sidecar resolution:
 //!   - If `MINDFOREST_EMBED_BIN` is already set we leave it alone.
-//!   - Otherwise we look for the Swift-built binary at the
-//!     workspace-relative path `apps/embed-sidecar/.build/<triple>/{release,debug}/mindforest-embed`.
-//!     When found we set both `MINDFOREST_EMBED_BIN` and
-//!     `MINDFOREST_EMBED_MODE=sidecar` so the API picks it up at boot.
-//!   - When not found we leave env alone — `EmbedMode::from_env()` falls
-//!     through to its platform default (Stub on Apple Silicon, Off
-//!     elsewhere). Packaged-build resource resolution lives in P3c-4-2
-//!     (Tauri externalBin).
+//!   - Packaged builds: look beside the desktop binary inside the
+//!     `.app/Contents/MacOS/` directory (`current_exe()` parent +
+//!     `mindforest-embed`). Tauri's `bundle.externalBin` lands the
+//!     Swift-built sidecar there at packaging time; the colocated
+//!     `mlx.metallib` lives in the same directory because mlx-swift
+//!     loads its Metal kernels by binary-relative path.
+//!   - Dev builds: look in the workspace at
+//!     `apps/embed-sidecar/.build/<triple>/{release,debug}/mindforest-embed`,
+//!     which is what `swift build` produces locally.
+//!   When found we set both `MINDFOREST_EMBED_BIN` and
+//!   `MINDFOREST_EMBED_MODE=sidecar` so the API picks it up at boot.
+//!   When not found we leave env alone — `EmbedMode::from_env()` falls
+//!   through to its platform default (Stub on Apple Silicon, Off
+//!   elsewhere).
 
 use std::path::PathBuf;
 
@@ -139,6 +145,21 @@ fn configure_embed_sidecar() {
 
 #[cfg(target_os = "macos")]
 fn resolve_sidecar_binary() -> Option<PathBuf> {
+  // Packaged builds: the Tauri bundler copies our externalBin entries
+  // into Contents/MacOS/ alongside the desktop binary itself. Look
+  // there first — if it exists, that's authoritative and we should
+  // not fall through to the workspace path (which won't exist on an
+  // end-user machine anyway).
+  if let Ok(exe) = std::env::current_exe() {
+    if let Some(dir) = exe.parent() {
+      let candidate = dir.join("mindforest-embed");
+      if candidate.exists() {
+        return Some(candidate);
+      }
+    }
+  }
+
+  // Dev builds: resolve out of the workspace `swift build` output.
   // Map Rust's `target_arch` to Swift Package Manager's build-output
   // directory naming (Rust uses `aarch64`, Swift uses `arm64`).
   let triple = if cfg!(target_arch = "aarch64") {
