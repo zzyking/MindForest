@@ -168,11 +168,9 @@ fn build_openai(cfg: &AgentOpenAIConfig) -> Option<OpenAICompatibleProposer> {
     .clone()
     .or_else(|| std::env::var("OPENAI_MODEL").ok())
     .unwrap_or_else(|| "gpt-4o-mini".into());
-  Some(OpenAICompatibleProposer::new(OpenAIConfig {
-    base_url,
-    api_key,
-    model,
-  }))
+  Some(OpenAICompatibleProposer::new(OpenAIConfig::new(
+    base_url, api_key, model,
+  )))
 }
 
 fn build_anthropic(cfg: &AgentAnthropicConfig) -> Option<AnthropicProposer> {
@@ -286,6 +284,28 @@ pub struct AgentRequest {
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub focused_node_id: Option<NodeId>,
   pub prompt: String,
+  /// Earlier turns in the same conversation, oldest first. Empty for
+  /// a fresh chat. The current `prompt` is the *next* user message; we
+  /// don't repeat it inside `history`.
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub history: Vec<AgentTurn>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentRole {
+  User,
+  Assistant,
+}
+
+/// One turn in the prior conversation. We carry plain text rather than
+/// structured events because the persisted assistant turn is the model's
+/// raw reply (prose preamble + the fenced JSON block) and replaying that
+/// verbatim keeps the model's stylistic memory intact.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTurn {
+  pub role: AgentRole,
+  pub text: String,
 }
 
 /// Boxed stream alias so the trait method signature stays readable.

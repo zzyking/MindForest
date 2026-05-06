@@ -201,8 +201,15 @@ export interface AgentConfig {
   anthropic: AgentAnthropicConfig;
 }
 
+export interface AgentTurn {
+  role: "user" | "assistant";
+  text: string;
+}
+
 export interface ProposeRequestBody {
   topic_id: TopicId;
   focused_node_id?: NodeId | null;
   prompt: string;
+  /** Earlier turns of this conversation. Empty for a fresh chat. */
+  history?: AgentTurn[];
 }

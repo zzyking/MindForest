@@ -19,7 +19,7 @@ use futures::stream::{Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 
-use app_core::{AgentConfig, AgentEvent};
+use app_core::{AgentConfig, AgentEvent, AgentTurn};
 use domain::{NodeId, TopicId};
 
 use crate::error::ApiError;
@@ -31,6 +31,10 @@ pub struct ProposeRequest {
   #[serde(default)]
   pub focused_node_id: Option<NodeId>,
   pub prompt: String,
+  /// Prior conversation turns, oldest first. Empty for a fresh chat.
+  /// Each turn is `{ role: "user" | "assistant", text }`.
+  #[serde(default)]
+  pub history: Vec<AgentTurn>,
 }
 
 pub async fn status(State(svc): State<AppState>) -> Json<serde_json::Value> {
@@ -62,7 +66,12 @@ pub async fn propose(
   Json(body): Json<ProposeRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
   let inner = svc
-    .propose(&body.topic_id, body.focused_node_id, body.prompt)
+    .propose(
+      &body.topic_id,
+      body.focused_node_id,
+      body.prompt,
+      body.history,
+    )
     .await?;
   let stream = inner.map(|ev| {
     let name = event_name(&ev);

@@ -25,6 +25,8 @@ export function DraftOverlay() {
   const proposals = useAgentSession((s) => s.proposals);
   const errors = useAgentSession((s) => s.errors);
   const prompt = useAgentSession((s) => s.prompt);
+  const history = useAgentSession((s) => s.history);
+  const turnCount = useAgentSession((s) => s.turnCount);
   const close = useAgentSession((s) => s.close);
   const setProposalStatus = useAgentSession((s) => s.setProposalStatus);
   const params = useParams({ strict: false }) as { topicId?: string };
@@ -85,16 +87,53 @@ export function DraftOverlay() {
       </header>
 
       <section className="flex-1 overflow-y-auto px-4 py-3">
-        <DraftText text={draft} streaming={streaming} />
+        {/* Confirmed prior turns. Each (user, assistant) pair becomes
+            two stacked bubbles so the user can scroll the conversation. */}
+        {history.length > 0 && (
+          <div className="mb-4 flex flex-col gap-3">
+            {pairTurns(history).map((pair, idx) => (
+              <TurnPair
+                key={idx}
+                turnIndex={idx + 1}
+                userText={pair.user}
+                assistantText={pair.assistant}
+                proposals={proposals.filter((p) => p.turnIndex === idx + 1)}
+                onAccept={acceptOne}
+                onReject={(id) => setProposalStatus(id, "rejected")}
+              />
+            ))}
+          </div>
+        )}
+        {/* Active (in-flight or just-finished) turn. */}
+        {(streaming || draft || proposals.some((p) => p.turnIndex === turnCount)) && (
+          <div className="border-forest-100 flex flex-col gap-2 border-t pt-3">
+            {history.length > 0 && (
+              <div className="text-forest-400 text-[10px] uppercase tracking-wider">
+                Turn {turnCount}
+              </div>
+            )}
+            {prompt && (
+              <div className="text-forest-700 text-xs">
+                <span className="text-forest-500 mr-1 font-medium">You:</span>
+                {prompt}
+              </div>
+            )}
+            <DraftText text={draft} streaming={streaming} />
+            {proposals.filter((p) => p.turnIndex === turnCount).length > 0 && (
+              <ProposalList
+                proposals={proposals.filter((p) => p.turnIndex === turnCount)}
+                onAccept={acceptOne}
+                onReject={(id) => setProposalStatus(id, "rejected")}
+              />
+            )}
+          </div>
+        )}
         {errors.length > 0 && (
           <div className="mt-3 rounded-md border border-rust-300 bg-rust-50 px-3 py-2 text-xs text-rust-800">
             {errors.map((m, i) => (
               <div key={i}>{m}</div>
             ))}
           </div>
-        )}
-        {proposals.length > 0 && (
-          <ProposalList proposals={proposals} onAccept={acceptOne} onReject={(id) => setProposalStatus(id, "rejected")} />
         )}
       </section>
 
@@ -117,6 +156,60 @@ export function DraftOverlay() {
         </button>
       </footer>
     </aside>
+  );
+}
+
+/**
+ * Pair user/assistant turns by walking the flat history array. Always
+ * emits user→assistant pairs; an unpaired trailing turn (shouldn't
+ * happen but defensive) is dropped.
+ */
+function pairTurns(
+  history: { role: "user" | "assistant"; text: string }[],
+): { user: string; assistant: string }[] {
+  const out: { user: string; assistant: string }[] = [];
+  for (let i = 0; i < history.length - 1; i += 2) {
+    const u = history[i];
+    const a = history[i + 1];
+    if (u?.role === "user" && a?.role === "assistant") {
+      out.push({ user: u.text, assistant: a.text });
+    }
+  }
+  return out;
+}
+
+function TurnPair({
+  turnIndex,
+  userText,
+  assistantText,
+  proposals,
+  onAccept,
+  onReject,
+}: {
+  turnIndex: number;
+  userText: string;
+  assistantText: string;
+  proposals: ProposalEntry[];
+  onAccept: (entry: ProposalEntry, table: ResolveTable) => Promise<ResolveTable>;
+  onReject: (id: string) => void;
+}) {
+  const visible = stripTrailingProposalsBlock(assistantText);
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-forest-400 text-[10px] uppercase tracking-wider">
+        Turn {turnIndex}
+      </div>
+      <div className="text-forest-700 text-xs">
+        <span className="text-forest-500 mr-1 font-medium">You:</span>
+        {userText}
+      </div>
+      <div className="text-forest-800 whitespace-pre-wrap text-sm leading-relaxed">
+        {visible || "(no reply text)"}
+      </div>
+      {proposals.length > 0 && (
+        <ProposalList proposals={proposals} onAccept={onAccept} onReject={onReject} />
+      )}
+    </div>
   );
 }
 

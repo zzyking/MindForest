@@ -17,7 +17,7 @@ use serde_json::json;
 
 use crate::prompt::{build_user_message, SYSTEM_PROMPT};
 use crate::sse::into_event_stream;
-use crate::{extract_proposals, AgentEvent, AgentProposer, AgentRequest, AgentStream};
+use crate::{extract_proposals, AgentEvent, AgentProposer, AgentRequest, AgentRole, AgentStream};
 
 const DEFAULT_API_BASE: &str = "https://api.anthropic.com/v1";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -29,8 +29,9 @@ pub struct AnthropicConfig {
   pub base_url: String,
   pub api_key: String,
   pub model: String,
-  /// Anthropic models require an explicit max_tokens; we default to 2k
-  /// which fits a few proposals + their reasoning comfortably.
+  /// Anthropic models require an explicit max_tokens. 8k fits a tree
+  /// of ~10–15 detailed proposals (each with 100–300 words of content)
+  /// plus the agent's reasoning preamble.
   pub max_tokens: u32,
 }
 
@@ -40,7 +41,7 @@ impl AnthropicConfig {
       base_url: DEFAULT_API_BASE.into(),
       api_key,
       model,
-      max_tokens: 2048,
+      max_tokens: 8192,
     }
   }
 }
@@ -66,14 +67,23 @@ impl AnthropicProposer {
 impl AgentProposer for AnthropicProposer {
   async fn propose(&self, req: AgentRequest) -> ForestResult<AgentStream> {
     let url = format!("{}/messages", self.cfg.base_url.trim_end_matches('/'));
+    let mut messages: Vec<serde_json::Value> = Vec::with_capacity(req.history.len() + 1);
+    for turn in &req.history {
+      messages.push(json!({
+        "role": match turn.role {
+          AgentRole::User => "user",
+          AgentRole::Assistant => "assistant",
+        },
+        "content": turn.text,
+      }));
+    }
+    messages.push(json!({ "role": "user", "content": build_user_message(&req) }));
     let body = json!({
       "model": self.cfg.model,
       "max_tokens": self.cfg.max_tokens,
       "stream": true,
       "system": SYSTEM_PROMPT,
-      "messages": [
-        { "role": "user", "content": build_user_message(&req) },
-      ],
+      "messages": messages,
     });
     let resp = self
       .client

@@ -88,6 +88,7 @@ mod tests {
       nodes: vec![],
       focused_node_id: None,
       prompt: "say something interesting".into(),
+      history: vec![],
     }
   }
 

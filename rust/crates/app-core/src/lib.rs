@@ -35,7 +35,7 @@ use domain::{
 
 pub use agent::{
   AgentAnthropicConfig, AgentConfig, AgentEvent, AgentOpenAIConfig, AgentProposer, AgentProvider,
-  AgentRequest, AgentStream,
+  AgentRequest, AgentRole, AgentStream, AgentTurn,
 };
 pub use embed::download::{DownloadEvent, FileStatus, ModelDownloader, ModelStatus};
 pub use embed::{EmbedMode, StubEmbedder, UnavailableEmbedder};
@@ -446,6 +446,7 @@ impl ForestService {
     topic_id: &TopicId,
     focused_node_id: Option<NodeId>,
     prompt: String,
+    history: Vec<agent::AgentTurn>,
   ) -> ForestResult<AgentStream> {
     let topic = self.repo.get_topic(topic_id).await?;
     let nodes = self.repo.list_nodes_in_topic(topic_id).await?;
@@ -454,6 +455,7 @@ impl ForestService {
       nodes,
       focused_node_id,
       prompt,
+      history,
     };
     let proposer = self.proposer.read().await.clone();
     proposer.propose(req).await

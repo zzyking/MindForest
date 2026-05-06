@@ -22,7 +22,7 @@ use serde_json::json;
 
 use crate::prompt::{build_user_message, SYSTEM_PROMPT};
 use crate::sse::into_event_stream;
-use crate::{extract_proposals, AgentEvent, AgentProposer, AgentRequest, AgentStream};
+use crate::{extract_proposals, AgentEvent, AgentProposer, AgentRequest, AgentRole, AgentStream};
 
 #[derive(Debug, Clone)]
 pub struct OpenAIConfig {
@@ -31,6 +31,21 @@ pub struct OpenAIConfig {
   pub base_url: String,
   pub api_key: String,
   pub model: String,
+  /// Cap on response tokens. 8k fits a meaningful topic tree (≈10–15
+  /// detailed add_node proposals plus the prose preamble) without
+  /// blowing through provider rate limits at the high end.
+  pub max_tokens: u32,
+}
+
+impl OpenAIConfig {
+  pub fn new(base_url: String, api_key: String, model: String) -> Self {
+    Self {
+      base_url,
+      api_key,
+      model,
+      max_tokens: 8192,
+    }
+  }
 }
 
 pub struct OpenAICompatibleProposer {
@@ -56,13 +71,22 @@ impl OpenAICompatibleProposer {
 impl AgentProposer for OpenAICompatibleProposer {
   async fn propose(&self, req: AgentRequest) -> ForestResult<AgentStream> {
     let url = format!("{}/chat/completions", self.cfg.base_url.trim_end_matches('/'));
+    let mut messages = vec![json!({ "role": "system", "content": SYSTEM_PROMPT })];
+    for turn in &req.history {
+      messages.push(json!({
+        "role": match turn.role {
+          AgentRole::User => "user",
+          AgentRole::Assistant => "assistant",
+        },
+        "content": turn.text,
+      }));
+    }
+    messages.push(json!({ "role": "user", "content": build_user_message(&req) }));
     let body = json!({
       "model": self.cfg.model,
       "stream": true,
-      "messages": [
-        { "role": "system", "content": SYSTEM_PROMPT },
-        { "role": "user", "content": build_user_message(&req) },
-      ],
+      "max_tokens": self.cfg.max_tokens,
+      "messages": messages,
     });
     let resp = self
       .client

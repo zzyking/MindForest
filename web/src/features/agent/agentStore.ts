@@ -1,10 +1,19 @@
 /**
- * Tiny zustand store driving the agent prompt bar + draft overlay.
+ * Zustand store driving the agent prompt bar + draft overlay.
  *
  * One pending session at a time. While `streaming` is true the bar
  * stays disabled and a Cancel button replaces Send. The overlay reads
  * `tokens` (concatenated draft text) and `proposals` (parsed structured
  * edits) and the user-applied flags per proposal.
+ *
+ * Multi-turn: the store tracks `history` — every prior turn in the
+ * current session. The first user prompt opens the session; follow-ups
+ * append to history (the previous user prompt + the streamed assistant
+ * draft) and ship that history with the next request. The model gets to
+ * see what it said last time and what the user said next.
+ *
+ * Closing the overlay (or hitting Reset) clears history; opening a
+ * fresh session starts a new conversation.
  *
  * Aborting mid-stream just closes the underlying fetch — the server
  * tears down its task on the next chunk because the SSE response is
@@ -17,6 +26,7 @@ import { streamAgentPropose } from "@/lib/api";
 import type {
   AgentEvent,
   AgentProposal,
+  AgentTurn,
   NodeId,
   TopicId,
 } from "@/lib/types";
@@ -27,17 +37,29 @@ export interface ProposalEntry {
   id: string;
   proposal: AgentProposal;
   status: ProposalStatus;
+  /** Which turn in the conversation produced this proposal. Lets the
+   *  overlay group proposals by turn for clarity in long sessions. */
+  turnIndex: number;
   error?: string;
 }
 
 interface AgentSessionState {
   open: boolean;
   streaming: boolean;
+  /** Most recent user prompt the bar issued. */
   prompt: string;
+  /** Live tokens for the *current* (in-flight) assistant turn only. */
   draft: string;
+  /** All proposals across the session, oldest first. */
   proposals: ProposalEntry[];
   errors: string[];
   abort: AbortController | null;
+  /** Confirmed conversation history — closed turns. The latest user
+   *  prompt + streamed draft become a pair of entries here when a turn
+   *  finishes successfully. */
+  history: AgentTurn[];
+  /** 1-based index of the in-flight turn (for grouping proposals). */
+  turnCount: number;
 
   startStream: (input: {
     topicId: TopicId;
@@ -58,6 +80,8 @@ const initial = {
   proposals: [] as ProposalEntry[],
   errors: [] as string[],
   abort: null as AbortController | null,
+  history: [] as AgentTurn[],
+  turnCount: 0,
 };
 
 let proposalCounter = 0;
@@ -71,18 +95,26 @@ export const useAgentSession = create<AgentSessionState>((set, get) => ({
 
   startStream: async ({ topicId, focusedNodeId, prompt }) => {
     // If a previous stream is still in flight, drop it before starting
-    // a new one — only one session at a time.
+    // a new one — only one in-flight stream at a time per session.
     get().abort?.abort();
     const controller = new AbortController();
-    set({
+    // Snapshot history at request time. The user's *new* prompt is
+    // attached separately on the request body; we don't double-include
+    // it in `history`.
+    const historyForRequest = get().history;
+    const turnIndex = get().turnCount + 1;
+    set((s) => ({
       open: true,
       streaming: true,
       prompt,
       draft: "",
-      proposals: [],
+      // Keep prior proposals so the user can still accept/reject them
+      // after asking a follow-up. Fresh ones land alongside.
+      proposals: s.proposals,
       errors: [],
       abort: controller,
-    });
+      turnCount: turnIndex,
+    }));
 
     let stream;
     try {
@@ -91,6 +123,7 @@ export const useAgentSession = create<AgentSessionState>((set, get) => ({
           topic_id: topicId,
           focused_node_id: focusedNodeId,
           prompt,
+          history: historyForRequest,
         },
         controller.signal,
       );
@@ -104,18 +137,26 @@ export const useAgentSession = create<AgentSessionState>((set, get) => ({
       return;
     }
 
+    let assistantText = "";
+    let sawDone = false;
     try {
       for await (const ev of stream.events as AsyncIterable<AgentEvent>) {
         if (controller.signal.aborted) break;
         switch (ev.kind) {
           case "token":
+            assistantText += ev.text;
             set((s) => ({ draft: s.draft + ev.text }));
             break;
           case "proposal":
             set((s) => ({
               proposals: [
                 ...s.proposals,
-                { id: nextProposalId(), proposal: ev.proposal, status: "pending" },
+                {
+                  id: nextProposalId(),
+                  proposal: ev.proposal,
+                  status: "pending",
+                  turnIndex,
+                },
               ],
             }));
             break;
@@ -123,7 +164,7 @@ export const useAgentSession = create<AgentSessionState>((set, get) => ({
             set((s) => ({ errors: [...s.errors, ev.message] }));
             break;
           case "done":
-            // Stream end — the loop exits naturally on the next read.
+            sawDone = true;
             break;
         }
       }
@@ -132,6 +173,18 @@ export const useAgentSession = create<AgentSessionState>((set, get) => ({
         set((s) => ({ errors: [...s.errors, errorMessage(e)] }));
       }
     } finally {
+      // Only commit the turn to history when we got at least the
+      // server's `done` and the request wasn't aborted. A canceled or
+      // crashed stream shouldn't be replayed verbatim next turn.
+      if (sawDone && !controller.signal.aborted && assistantText.length > 0) {
+        set((s) => ({
+          history: [
+            ...s.history,
+            { role: "user", text: prompt },
+            { role: "assistant", text: assistantText },
+          ],
+        }));
+      }
       set({ streaming: false, abort: null });
     }
   },
