@@ -30,6 +30,19 @@
      active dock items. Sparingly. */
   --color-accent: #d47a5d;
 
+  /* Rust scale — warm error / destructive / cancel state. Built around
+     the accent hue so warning UI doesn't clash with the rest of the
+     palette (no cobalt-blue / safety-red here). The 500 weight is
+     deliberately equal to --color-accent so existing accent rails and
+     rust-500 references render the same colour. */
+  --color-rust-50: #fbf2ec;
+  --color-rust-100: #f6e1d4;
+  --color-rust-300: #e3a98c;
+  --color-rust-500: #d47a5d;
+  --color-rust-600: #b9624a;
+  --color-rust-700: #9a4d3a;
+  --color-rust-800: #6e3729;
+
   /* Typography. Crimson Pro for serif headings, Inter for UI sans.
      Both are loaded from Google Fonts in `index.html`. */
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
