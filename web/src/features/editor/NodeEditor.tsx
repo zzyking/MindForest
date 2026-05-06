@@ -310,15 +310,18 @@ function Toolbar({
   canDelete,
   deleteArmed,
 }: ToolbarProps) {
+  // All toolbar buttons share the same vertical metrics so the row
+  // reads as a single horizontal rhythm — no pills, no boxed groups,
+  // just text buttons with consistent padding and a hairline divider
+  // between logical clusters.
   const navBtn =
-    "text-forest-600 hover:text-forest-900 disabled:text-forest-300 disabled:cursor-not-allowed px-2 py-1 text-sm transition-colors";
+    "text-forest-600 hover:text-forest-900 disabled:text-forest-300 disabled:cursor-not-allowed h-7 px-2 text-sm transition-colors inline-flex items-center";
   return (
     <div className="text-forest-600 flex items-center justify-between text-sm">
-      <div className="border-forest-200 flex items-center gap-0 rounded-full border px-1">
+      <div className="flex items-center">
         <button type="button" className={navBtn} onClick={onBack} disabled={!canBack} aria-label="Back">
           ← Back
         </button>
-        <span aria-hidden className="bg-forest-200/60 mx-0.5 h-4 w-px" />
         <button
           type="button"
           className={navBtn}
@@ -329,21 +332,18 @@ function Toolbar({
           Forward →
         </button>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1">
         <ModeToggle value={mode} onChange={onModeChange} />
-        <button
-          type="button"
-          className={cn(navBtn, "text-forest-500 hover:text-forest-800")}
-          onClick={onAddChild}
-        >
+        <span aria-hidden className="bg-forest-200/60 mx-1 h-4 w-px" />
+        <button type="button" className={navBtn} onClick={onAddChild}>
           + Add child
         </button>
         <button
           type="button"
           className={cn(
-            "px-2 py-1 text-sm",
-            canDelete ? "text-accent hover:underline" : "text-forest-200",
-            deleteArmed && "underline",
+            "h-7 px-2 text-sm inline-flex items-center transition-colors",
+            canDelete ? "text-accent hover:text-rust-700" : "text-forest-200 cursor-not-allowed",
+            deleteArmed && "underline underline-offset-4",
           )}
           onClick={onDelete}
           disabled={!canDelete}
@@ -357,23 +357,33 @@ function Toolbar({
 }
 
 function ModeToggle({ value, onChange }: { value: Mode; onChange: (m: Mode) => void }) {
+  // No pill, no rounded frame: each mode is a flat text button. The
+  // active mode is anchored visually by a 2px accent underline that
+  // sits below the baseline — same height as the rest of the toolbar
+  // so the row's vertical rhythm stays clean.
   return (
-    <div className="border-forest-200 inline-flex overflow-hidden rounded-full border">
-      {(["write", "read"] as const).map((m) => (
-        <button
-          key={m}
-          type="button"
-          onClick={() => onChange(m)}
-          className={cn(
-            "px-3 py-1 text-xs",
-            value === m
-              ? "bg-forest-800 text-sand-100"
-              : "text-forest-500 hover:text-forest-700 bg-transparent",
-          )}
-        >
-          {m === "write" ? "Write" : "Read"}
-        </button>
-      ))}
+    <div role="tablist" aria-label="View mode" className="inline-flex items-center">
+      {(["write", "read"] as const).map((m) => {
+        const active = value === m;
+        return (
+          <button
+            key={m}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(m)}
+            className={cn(
+              "relative h-7 px-2 text-sm inline-flex items-center transition-colors",
+              "after:absolute after:left-2 after:right-2 after:bottom-0.5 after:h-[2px] after:rounded-full after:transition-colors",
+              active
+                ? "text-forest-900 font-medium after:bg-accent"
+                : "text-forest-500 hover:text-forest-800 after:bg-transparent",
+            )}
+          >
+            {m === "write" ? "Write" : "Read"}
+          </button>
+        );
+      })}
     </div>
   );
 }
