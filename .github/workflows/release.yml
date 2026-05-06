@@ -1,0 +1,97 @@
+name: Release
+
+# Builds the macOS desktop bundle, signs it, and notarizes it. Triggers
+# on a tag push (`v0.1.0`, etc) or manually from the Actions UI.
+#
+# Required GitHub repo secrets (the workflow degrades gracefully when
+# they're missing — see the "Build (signed)" / "Build (unsigned)"
+# fallbacks below):
+#
+#   APPLE_CERTIFICATE          base64-encoded .p12 of the Developer ID Application cert
+#   APPLE_CERTIFICATE_PASSWORD password used when exporting the .p12
+#   APPLE_SIGNING_IDENTITY     "Developer ID Application: Your Name (TEAMID)"
+#   APPLE_ID                   Apple ID email used for notarization
+#   APPLE_PASSWORD             app-specific password from appleid.apple.com
+#   APPLE_TEAM_ID              10-char Apple Team ID
+#
+# Until those secrets are populated, the job will produce an UNSIGNED
+# .app/.dmg — useful for in-team testing but Gatekeeper will refuse to
+# launch it on other machines without `xattr -dr com.apple.quarantine`.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  macos:
+    name: macOS (universal)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install JS deps
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      # Build the Swift embed sidecar so externalBin can pick it up.
+      # On `macos-14` (Apple silicon) this produces an arm64 binary; the
+      # resulting bundle is therefore arm64-only. Multi-arch is a separate
+      # follow-up (the Swift package is single-arch by default).
+      - name: Build embed sidecar
+        working-directory: rust/apps/embed-sidecar
+        run: |
+          swift build -c release
+          ./scripts/stage-for-tauri.sh
+
+      # If signing secrets are present, build with codesign + notarize.
+      # Otherwise fall through to the unsigned branch below.
+      - name: Build (signed)
+        if: ${{ secrets.APPLE_SIGNING_IDENTITY != '' }}
+        working-directory: rust/apps/desktop
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # First-time notarization can take hours; later runs minutes.
+          # `--skip-stapling` lets the build complete without waiting.
+          # Drop it once notarization is reliably fast.
+        run: cargo tauri build --target universal-apple-darwin --ci
+
+      - name: Build (unsigned, signing secrets missing)
+        if: ${{ secrets.APPLE_SIGNING_IDENTITY == '' }}
+        working-directory: rust/apps/desktop
+        run: cargo tauri build --target universal-apple-darwin --no-sign --ci
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MindForest-macos
+          path: |
+            rust/target/universal-apple-darwin/release/bundle/macos/*.app
+            rust/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error

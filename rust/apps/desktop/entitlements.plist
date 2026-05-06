@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened runtime entitlements for MindForest desktop.
+  Required when notarizing with the Apple notary service.
+
+  We are NOT sandboxed — the user picks a vault directory which can be
+  anywhere on disk, and the embed sidecar needs to load MLX kernels by
+  binary-relative path. Hardened runtime is enabled (Apple notarization
+  requires it); the entries below relax the runtime only as much as
+  this design needs.
+-->
+<plist version="1.0">
+<dict>
+    <!--
+      WKWebView JIT compiles JavaScript bytecode to native — without
+      this entitlement the bundled webview can run, but anything
+      JIT-heavy (the editor, sigma rendering) takes a noticeable
+      slowdown.
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+
+    <!--
+      The Swift embed sidecar links against unsigned mlx-swift dylibs at
+      runtime (the wheel ships them; we don't re-sign each one). Without
+      this, dyld refuses to load them under a hardened runtime.
+    -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!--
+      Outbound network (HuggingFace model download, optional cloud
+      agent providers).
+    -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!--
+      The in-process axum API binds 127.0.0.1:0. Counts as a server
+      socket even though the loopback target makes it functionally a
+      local IPC channel.
+    -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+</dict>
+</plist>

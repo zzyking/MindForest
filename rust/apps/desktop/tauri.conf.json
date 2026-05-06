@@ -47,6 +47,10 @@
     "externalBin": [
       "binaries/mindforest-embed",
       "binaries/mlx.metallib"
-    ]
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "entitlements": "entitlements.plist"
+    }
   }
 }
