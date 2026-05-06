@@ -31,9 +31,12 @@ pub struct OpenAIConfig {
   pub base_url: String,
   pub api_key: String,
   pub model: String,
-  /// Cap on response tokens. 8k fits a meaningful topic tree (≈10–15
+  /// Cap on response tokens. 16k fits a meaningful topic tree (≈12–18
   /// detailed add_node proposals plus the prose preamble) without
-  /// blowing through provider rate limits at the high end.
+  /// pushing into provider rate-limit edges. Truncation is still
+  /// possible on long-tail replies; `extract_proposals` recovers the
+  /// closed-object prefix so the user gets partial output instead of
+  /// a parse failure.
   pub max_tokens: u32,
 }
 
@@ -43,7 +46,7 @@ impl OpenAIConfig {
       base_url,
       api_key,
       model,
-      max_tokens: 8192,
+      max_tokens: 16384,
     }
   }
 }

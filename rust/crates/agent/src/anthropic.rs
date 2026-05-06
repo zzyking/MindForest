@@ -29,9 +29,12 @@ pub struct AnthropicConfig {
   pub base_url: String,
   pub api_key: String,
   pub model: String,
-  /// Anthropic models require an explicit max_tokens. 8k fits a tree
-  /// of ~10–15 detailed proposals (each with 100–300 words of content)
-  /// plus the agent's reasoning preamble.
+  /// Anthropic models require an explicit max_tokens. 16k fits a tree
+  /// of ~12–18 detailed proposals (each with 100–300 words of content)
+  /// plus the agent's reasoning preamble. Even with the cap a long-tail
+  /// reply can still get truncated; `extract_proposals` salvages the
+  /// closed-object prefix so the user sees the work that did make it
+  /// through.
   pub max_tokens: u32,
 }
 
@@ -41,7 +44,7 @@ impl AnthropicConfig {
       base_url: DEFAULT_API_BASE.into(),
       api_key,
       model,
-      max_tokens: 8192,
+      max_tokens: 16384,
     }
   }
 }
