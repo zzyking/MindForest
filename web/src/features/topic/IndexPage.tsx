@@ -19,6 +19,8 @@ export function IndexPage() {
   const topicsLoading = useForestData((s) => s.loading.topics);
   const topicsError = useForestData((s) => s.errors.topics);
   const [bootError, setBootError] = useState<string | null>(null);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     void fetchTopics().catch((e) => {
@@ -36,24 +38,28 @@ export function IndexPage() {
     }
   }, [topics, navigate]);
 
-  const onCreate = async () => {
-    const title = window.prompt("Topic title");
-    if (!title?.trim()) return;
+  const onCreate = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    const title = draftTitle.trim();
+    if (!title || creating) return;
+    setCreating(true);
     try {
-      const topic = await createTopic(title.trim());
+      const topic = await createTopic(title);
       void navigate({
         to: "/$topicId/$nodeId",
         params: { topicId: topic.id, nodeId: topic.root_node_id },
         replace: true,
       });
-    } catch (e) {
+    } catch (err) {
       const msg =
-        e instanceof ApiError
-          ? `${e.code}: ${e.message}`
-          : e instanceof Error
-            ? e.message
-            : String(e);
+        err instanceof ApiError
+          ? `${err.code}: ${err.message}`
+          : err instanceof Error
+            ? err.message
+            : String(err);
       setBootError(msg);
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -84,13 +90,24 @@ export function IndexPage() {
         <p className="text-forest-500 max-w-prose">
           No topics yet. Create one to start a forest.
         </p>
-        <button
-          type="button"
-          onClick={onCreate}
-          className="bg-forest-800 text-sand-100 hover:bg-forest-700 rounded-full px-4 py-2 text-sm"
-        >
-          New topic
-        </button>
+        <form onSubmit={onCreate} className="flex w-full max-w-sm items-center gap-2">
+          <input
+            autoFocus
+            type="text"
+            value={draftTitle}
+            onChange={(e) => setDraftTitle(e.target.value)}
+            placeholder="Topic title"
+            disabled={creating}
+            className="border-forest-200 bg-sand-50 placeholder:text-forest-400 focus:border-forest-500 flex-1 rounded-full border px-4 py-2 text-sm focus:outline-none disabled:opacity-60"
+          />
+          <button
+            type="submit"
+            disabled={!draftTitle.trim() || creating}
+            className="bg-forest-800 text-sand-100 hover:bg-forest-700 disabled:opacity-50 rounded-full px-4 py-2 text-sm"
+          >
+            {creating ? "Creating…" : "Create"}
+          </button>
+        </form>
         {topicsError && (
           <p className="text-accent text-sm">Topics fetch error: {topicsError}</p>
         )}

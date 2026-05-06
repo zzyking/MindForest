@@ -137,9 +137,31 @@ export function NodeEditor({ nodeId }: Props) {
     }
   }, [node, flush, createNode, focusNode]);
 
+  // Two-click confirm: first click arms the button (label flips to
+  // "Click again to confirm"), second click within 3s actually deletes.
+  // Works around Tauri 2 disabling `window.confirm` and avoids piling on
+  // a modal dialog component for a single confirmation.
+  const [deleteArmed, setDeleteArmed] = useState(false);
+  const armResetRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (armResetRef.current != null) window.clearTimeout(armResetRef.current);
+    },
+    [],
+  );
   const onDelete = useCallback(async () => {
     if (!node || isRoot) return;
-    if (!window.confirm(`Delete "${node.title}"?`)) return;
+    if (!deleteArmed) {
+      setDeleteArmed(true);
+      if (armResetRef.current != null) window.clearTimeout(armResetRef.current);
+      armResetRef.current = window.setTimeout(() => setDeleteArmed(false), 3000);
+      return;
+    }
+    setDeleteArmed(false);
+    if (armResetRef.current != null) {
+      window.clearTimeout(armResetRef.current);
+      armResetRef.current = null;
+    }
     await flush();
     const parentId = node.parent;
     try {
@@ -153,7 +175,7 @@ export function NodeEditor({ nodeId }: Props) {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [node, isRoot, flush, deleteNode, focusNode]);
+  }, [node, isRoot, deleteArmed, flush, deleteNode, focusNode]);
 
   const onBack = useCallback(async () => {
     await flush();
@@ -199,6 +221,7 @@ export function NodeEditor({ nodeId }: Props) {
         onAddChild={onAddChild}
         onDelete={onDelete}
         canDelete={!isRoot}
+        deleteArmed={deleteArmed}
       />
       <Breadcrumb nodeId={node.id} topicId={node.topic} />
       <TitleInput
@@ -247,6 +270,7 @@ interface ToolbarProps {
   onAddChild: () => void;
   onDelete: () => void;
   canDelete: boolean;
+  deleteArmed: boolean;
 }
 
 function Toolbar({
@@ -259,6 +283,7 @@ function Toolbar({
   onAddChild,
   onDelete,
   canDelete,
+  deleteArmed,
 }: ToolbarProps) {
   const navBtn = "text-forest-500 hover:text-forest-800 disabled:text-forest-200 px-2 py-1 text-sm";
   return (
@@ -291,12 +316,13 @@ function Toolbar({
           className={cn(
             "px-2 py-1 text-sm",
             canDelete ? "text-accent hover:underline" : "text-forest-200",
+            deleteArmed && "underline",
           )}
           onClick={onDelete}
           disabled={!canDelete}
           title={canDelete ? "Delete this node" : "Topic root cannot be deleted"}
         >
-          Delete
+          {deleteArmed ? "Click again to confirm" : "Delete"}
         </button>
       </div>
     </div>
