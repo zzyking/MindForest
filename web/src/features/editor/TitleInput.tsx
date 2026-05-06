@@ -70,7 +70,7 @@ export function TitleInput({
       aria-label={ariaLabel}
       style={style}
       className={cn(
-        "w-full resize-none border-0 bg-transparent font-serif text-4xl leading-tight tracking-tight outline-none",
+        "w-full resize-none overflow-hidden border-0 bg-transparent font-serif text-4xl leading-tight tracking-tight outline-none",
         "placeholder:text-forest-300",
         className,
       )}
