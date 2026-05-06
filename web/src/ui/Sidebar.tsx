@@ -259,7 +259,7 @@ function NodeTree({ nodes, rootId, topicId, focusedNodeId }: NodeTreeProps) {
     });
 
   return (
-    <ul className="flex flex-col gap-0.5">
+    <ul className="flex flex-col">
       <NodeRow
         node={nodes.find((n) => n.id === rootId)!}
         depth={0}
@@ -297,6 +297,14 @@ function NodeRow({
   const isOpen = expanded.has(node.id);
   const isFocused = node.id === focusedNodeId;
 
+  // Indent guide lines: one per ancestor depth, pinned through the
+  // chevron column of that ancestor. Drawn as absolute spans inside the
+  // row so they stack continuously between rows (no row-gap → no
+  // visible breaks). Each chevron column is 1.5rem wide, sitting after
+  // the row's 0.25rem padding-left + (depth × 0.75rem) indent step, so
+  // the chevron centre at depth k lives at `k·0.75 + 1rem`.
+  const guides = Array.from({ length: depth }, (_, k) => k);
+
   return (
     <li>
       <div
@@ -312,29 +320,40 @@ function NodeRow({
         )}
         style={{ paddingLeft: `${depth * 0.75 + 0.25}rem` }}
       >
+        {guides.map((k) => (
+          <span
+            key={k}
+            aria-hidden
+            className="bg-forest-300/70 pointer-events-none absolute top-0 bottom-0 w-px"
+            style={{ left: `calc(${k * 0.75}rem + 1rem)` }}
+          />
+        ))}
         <button
           type="button"
           aria-label={children.length > 0 ? (isOpen ? "Collapse" : "Expand") : undefined}
           className={cn(
-            "text-forest-500 hover:text-forest-800 inline-flex h-6 w-6 flex-none items-center justify-center text-base leading-none",
+            "text-forest-500 hover:text-forest-800 relative inline-flex h-6 w-6 flex-none items-center justify-center text-base leading-none",
+            // Mask the guide line behind the chevron when the row is
+            // selected so the highlight surface reads as a unit.
+            children.length > 0 && "before:absolute before:inset-0 before:bg-inherit",
             children.length === 0 && "invisible",
           )}
           onClick={() => toggle(node.id)}
           tabIndex={children.length > 0 ? 0 : -1}
         >
-          {isOpen ? "▾" : "▸"}
+          <span className="relative">{isOpen ? "▾" : "▸"}</span>
         </button>
         <button
           type="button"
           onClick={() => focus(node.id, topicId)}
-          className="min-w-0 flex-1 truncate py-1 text-left"
+          className="relative min-w-0 flex-1 truncate py-1 text-left"
           title={node.title}
         >
           {node.title || "Untitled"}
         </button>
       </div>
       {isOpen && children.length > 0 && (
-        <ul className="flex flex-col gap-0.5">
+        <ul className="flex flex-col">
           {children.map((c) => (
             <NodeRow
               key={c.id}
