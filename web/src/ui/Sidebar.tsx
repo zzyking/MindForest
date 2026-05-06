@@ -162,11 +162,12 @@ export function Sidebar() {
                     await focus(detail.root_node_id, detail.id);
                   }}
                   className={cn(
-                    // Subtle accent rail on the left for the focused
-                    // topic — gives the eye a fixed anchor as the user
-                    // scans the list.
-                    "relative w-full truncate rounded px-2 py-1 pl-3 text-left text-sm transition-colors",
-                    "before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full",
+                    // Inset highlight: leave 1px breathing room either
+                    // side of the sidebar so the focused / hover surface
+                    // floats inside the column rather than seaming
+                    // edge-to-edge with the sidebar border.
+                    "relative -mx-1 w-[calc(100%+0.5rem)] truncate rounded-md px-3 py-1 text-left text-sm transition-colors",
+                    "before:absolute before:left-1 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full",
                     active
                       ? "bg-forest-100 text-forest-900 before:bg-accent"
                       : "text-forest-600 hover:bg-forest-100/50 before:bg-transparent",
@@ -312,20 +313,20 @@ function NodeRow({
           // Same treatment as topic rows: focused row carries a 2px
           // accent rail on the left so visual hierarchy stays consistent
           // when the eye drops from topic list to node tree.
-          "group relative flex items-center gap-1 rounded text-sm transition-colors",
-          "before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full",
+          "group relative -mx-1 flex w-[calc(100%+0.5rem)] items-center gap-1 rounded-md text-sm transition-colors",
+          "before:absolute before:left-1 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full",
           isFocused
             ? "bg-forest-100 text-forest-900 before:bg-accent"
             : "text-forest-600 hover:bg-forest-100/50 before:bg-transparent",
         )}
-        style={{ paddingLeft: `${depth * 0.75 + 0.25}rem` }}
+        style={{ paddingLeft: `${depth * 0.75 + 0.5}rem` }}
       >
         {guides.map((k) => (
           <span
             key={k}
             aria-hidden
-            className="bg-forest-300/70 pointer-events-none absolute top-0 bottom-0 w-px"
-            style={{ left: `calc(${k * 0.75}rem + 1rem)` }}
+            className="bg-forest-200/50 pointer-events-none absolute top-0 bottom-0 w-px"
+            style={{ left: `calc(${k * 0.75}rem + 1.25rem)` }}
           />
         ))}
         <button
