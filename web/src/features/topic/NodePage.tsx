@@ -28,7 +28,7 @@ export function NodePage() {
   const viewMode = useWorkspaceUI((s) => s.viewMode);
 
   if (viewMode === "forest") {
-    return <ForestView topicId={topicId} focusedNodeId={nodeId} />;
+    return <ForestView focusedTopicId={topicId} focusedNodeId={nodeId} />;
   }
   return <NodeEditor key={`${topicId}/${nodeId}`} nodeId={nodeId} />;
 }
