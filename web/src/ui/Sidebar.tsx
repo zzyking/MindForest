@@ -147,26 +147,33 @@ export function Sidebar() {
           <p className="text-accent mb-1 px-2 text-[10px]">{createError}</p>
         )}
         <ul className="flex flex-col gap-0.5">
-          {topicList.map((t) => (
-            <li key={t.id}>
-              <button
-                type="button"
-                onClick={async () => {
-                  const detail = await fetchTopic(t.id);
-                  await focus(detail.root_node_id, detail.id);
-                }}
-                className={cn(
-                  "w-full truncate rounded px-2 py-1 text-left text-sm",
-                  t.id === focusedTopicId
-                    ? "bg-forest-100 text-forest-800"
-                    : "text-forest-600 hover:bg-forest-100/50",
-                )}
-                title={`${t.title} (${t.node_count} nodes)`}
-              >
-                {t.title}
-              </button>
-            </li>
-          ))}
+          {topicList.map((t) => {
+            const active = t.id === focusedTopicId;
+            return (
+              <li key={t.id}>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const detail = await fetchTopic(t.id);
+                    await focus(detail.root_node_id, detail.id);
+                  }}
+                  className={cn(
+                    // Subtle accent rail on the left for the focused
+                    // topic — gives the eye a fixed anchor as the user
+                    // scans the list.
+                    "relative w-full truncate rounded px-2 py-1 pl-3 text-left text-sm transition-colors",
+                    "before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full",
+                    active
+                      ? "bg-forest-100 text-forest-900 before:bg-accent"
+                      : "text-forest-600 hover:bg-forest-100/50 before:bg-transparent",
+                  )}
+                  title={`${t.title} (${t.node_count} nodes)`}
+                >
+                  {t.title}
+                </button>
+              </li>
+            );
+          })}
         </ul>
       </section>
 

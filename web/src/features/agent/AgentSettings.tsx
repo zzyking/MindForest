@@ -106,13 +106,17 @@ export function AgentSettings({ open, onClose }: Props) {
       role="dialog"
       aria-modal="true"
       aria-label="Agent settings"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-forest-900/30 px-4 py-8 backdrop-blur-sm"
+      className={cn(
+        "fixed inset-0 z-50 flex items-center justify-center bg-forest-900/30 px-4 py-8 backdrop-blur-sm",
+        "animate-[fade-in_180ms_ease-out_both]",
+      )}
       onClick={onClose}
     >
       <div
         className={cn(
           "shadow-glass border-forest-200 bg-sand-50 max-h-[85vh] w-full max-w-lg",
           "flex flex-col gap-4 overflow-y-auto rounded-xl border p-5",
+          "animate-[scale-in_220ms_cubic-bezier(0.2,0.8,0.2,1)_both]",
         )}
         onClick={(e) => e.stopPropagation()}
       >

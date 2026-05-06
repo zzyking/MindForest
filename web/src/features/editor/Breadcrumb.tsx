@@ -62,7 +62,11 @@ export function Breadcrumb({ nodeId, topicId }: Props) {
                 {c.label}
               </span>
             )}
-            {!isLast && <span className="text-forest-300 select-none">/</span>}
+            {!isLast && (
+              <span aria-hidden className="text-forest-300 select-none px-0.5 text-xs">
+                ›
+              </span>
+            )}
           </span>
         );
       })}

@@ -15,6 +15,25 @@ body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  /* Inter ships several stylistic alternates that lift it out of the
+     "default UI font" bucket. cv11 = single-storey lowercase a (warmer,
+     more humanist), ss03 = curved l (clearer at small sizes), ss04 =
+     reshaped t/r corners. Combined they make Inter feel deliberately
+     chosen rather than defaulted into. */
+  font-feature-settings: "cv11", "ss03", "ss04", "kern", "calt";
+}
+
+/* Crimson Pro for serif headings — discretionary ligatures + old-style
+   figures so titles get the warm editorial feel the brand sets up. */
+.font-serif {
+  font-feature-settings: "kern", "liga", "dlig", "onum";
+}
+
+/* Tabular figures for any monospaced number context (timestamps,
+   counts, %): keeps digits aligned while values change without going
+   full mono. */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
 }
 
 body {
@@ -67,6 +86,42 @@ body {
   }
   100% {
     transform: translateX(300%);
+  }
+}
+
+/* DraftOverlay slides in from the right when a new agent session
+   opens. Pairs with `animate-[slide-in-right_…]` on the panel. */
+@keyframes slide-in-right {
+  from {
+    transform: translateX(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* Modal-style dialogs scale + fade in instead of popping. */
+@keyframes scale-in {
+  from {
+    transform: scale(0.97);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* Backdrop fade — applied to the dimmed layer behind dialogs so the
+   transition into modal feels considered, not abrupt. */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }
 

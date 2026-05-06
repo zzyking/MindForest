@@ -69,6 +69,7 @@ export function DraftOverlay() {
       className={cn(
         "absolute right-4 top-4 bottom-24 w-[min(440px,calc(100vw-2rem))]",
         "shadow-glass border-forest-200 bg-sand-50/95 z-40 flex flex-col rounded-2xl border backdrop-blur-md",
+        "animate-[slide-in-right_260ms_cubic-bezier(0.2,0.8,0.2,1)_both]",
       )}
     >
       <header className="border-forest-100 flex items-center justify-between border-b px-4 py-3">

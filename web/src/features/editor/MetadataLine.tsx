@@ -19,16 +19,23 @@ export function MetadataLine({ node, className }: Props) {
   return (
     <div
       className={cn(
-        "text-forest-400 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs",
+        "text-forest-400 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs",
+        // Tabular nums so timestamps don't reflow as numbers tick; small
+        // wide-tracking caps treat metadata as a label strip rather than
+        // body copy.
+        "tabular-nums uppercase tracking-[0.08em]",
         className,
       )}
     >
       <span title={created.toISOString()}>created {formatRelative(created)}</span>
       {!sameInstant && (
-        <span title={updated.toISOString()}>· updated {formatRelative(updated)}</span>
+        <span title={updated.toISOString()}>
+          <span className="text-forest-300 mx-1">·</span>
+          updated {formatRelative(updated)}
+        </span>
       )}
       <span className="text-forest-300">·</span>
-      <span className="text-forest-300" title={node.id}>
+      <span className="text-forest-300 font-mono normal-case tracking-normal" title={node.id}>
         {node.id.slice(-8)}
       </span>
     </div>

@@ -66,9 +66,12 @@ function DockButton({ children, label, active, shortcut, onClick }: DockButtonPr
       title={shortcut ? `${label} (${shortcut})` : label}
       aria-label={label}
       className={cn(
-        "rounded-full px-3 py-1.5 text-sm transition-colors",
+        "rounded-full px-3 py-1.5 text-sm transition-all duration-200 ease-out",
+        // Subtle hover-lift — drops back on press so the affordance feels
+        // physical without bouncing the whole dock.
+        "hover:-translate-y-px active:translate-y-0",
         active
-          ? "bg-forest-800 text-sand-100"
+          ? "bg-forest-800 text-sand-100 shadow-soft"
           : "text-forest-600 hover:bg-forest-100",
       )}
     >
@@ -104,9 +107,10 @@ function ViewToggle({ value, onChange }: ViewToggleProps) {
           title={m.label}
           onClick={() => onChange(m.id)}
           className={cn(
-            "rounded-full px-3 py-1.5 text-sm transition-colors",
+            "rounded-full px-3 py-1.5 text-sm transition-all duration-200 ease-out",
+            "hover:-translate-y-px active:translate-y-0",
             value === m.id
-              ? "bg-forest-800 text-sand-100"
+              ? "bg-forest-800 text-sand-100 shadow-soft"
               : "text-forest-600 hover:bg-forest-100",
           )}
         >
