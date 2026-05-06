@@ -9,9 +9,10 @@
  * model the embedder won't load anyway). Polls `/v1/embed/model/status`
  * once on mount and again after a successful download.
  *
- * The download itself streams `DownloadEvent`s — we keep the latest
- * progress numbers in component state and render a single overall bar
- * plus the current file name. Cancellation aborts the fetch, which
+ * The download itself streams `DownloadEvent`s. We keep the latest
+ * progress numbers in component state and render an overall bar plus
+ * the current file name, transfer rate (rolling 3 s window), and an
+ * ETA derived from the rate. Cancellation aborts the fetch, which
  * closes the SSE channel, which drops the server-side mpsc, which
  * tears the download task down. Any partial files on disk are
  * overwritten by the next attempt.
@@ -32,14 +33,25 @@ type Phase =
       overallTotal: number | null;
       filesDone: number;
       totalFiles: number;
+      /** Bytes/sec, smoothed over the last `RATE_WINDOW_MS`. */
+      bytesPerSec: number | null;
     }
   | { kind: "error"; message: string }
   | { kind: "done" };
+
+const RATE_WINDOW_MS = 3000;
+
+/** Rolling samples of `(timestamp, overallSoFar)` for rate calculation. */
+type RateSample = { t: number; bytes: number };
 
 export function ModelDownloadCard() {
   const [status, setStatus] = useState<ModelStatusResponse | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const cancelRef = useRef<(() => void) | null>(null);
+  // Sliding window of progress samples — kept in a ref so we don't
+  // trigger React re-renders for every progress event the way state
+  // updates would.
+  const rateSamplesRef = useRef<RateSample[]>([]);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -61,6 +73,7 @@ export function ModelDownloadCard() {
   }, [refreshStatus]);
 
   const startDownload = useCallback(async () => {
+    rateSamplesRef.current = [];
     setPhase({
       kind: "downloading",
       currentFile: null,
@@ -68,15 +81,14 @@ export function ModelDownloadCard() {
       overallTotal: null,
       filesDone: 0,
       totalFiles: 0,
+      bytesPerSec: null,
     });
     const { events, cancel } = downloadModel();
     cancelRef.current = cancel;
     try {
       for await (const ev of events) {
-        applyEvent(ev, setPhase);
+        applyEvent(ev, setPhase, rateSamplesRef);
       }
-      // Stream exited without a `done` — treat as success only if the
-      // last event was `done`; otherwise leave phase as-is.
       void refreshStatus();
     } catch (e) {
       if (e instanceof ApiError) {
@@ -183,25 +195,44 @@ function Action({ phase, present, onStart, onStop }: ActionProps) {
 
 function Body({ phase, status }: { phase: Phase; status: ModelStatusResponse }) {
   if (phase.kind === "downloading") {
-    const pct = phase.overallTotal
-      ? Math.min(100, (phase.overallSoFar / phase.overallTotal) * 100)
+    const determinate = phase.overallTotal != null;
+    const pct = determinate
+      ? Math.min(100, (phase.overallSoFar / (phase.overallTotal ?? 1)) * 100)
       : null;
+    const eta =
+      determinate && phase.bytesPerSec && phase.bytesPerSec > 0
+        ? formatEta(((phase.overallTotal ?? 0) - phase.overallSoFar) / phase.bytesPerSec)
+        : null;
     return (
-      <div className="flex flex-col gap-1">
-        <div className="text-forest-500 flex items-center justify-between text-xs">
-          <span className="truncate">
-            {phase.currentFile ? `Downloading ${phase.currentFile}` : "Preparing…"}
+      <div className="flex flex-col gap-1.5">
+        <div className="text-forest-500 flex items-center justify-between gap-3 text-xs">
+          <span className="min-w-0 truncate">
+            {phase.currentFile ? phase.currentFile : "Preparing…"}
           </span>
-          <span>
-            {phase.filesDone}/{phase.totalFiles || "?"} files
-            {pct !== null ? ` · ${pct.toFixed(0)}%` : ""}
+          <span className="flex-none whitespace-nowrap font-mono">
+            {formatBytes(phase.overallSoFar)}
+            {determinate ? ` / ${formatBytes(phase.overallTotal ?? 0)}` : ""}
+            {phase.bytesPerSec != null ? ` · ${formatBytes(phase.bytesPerSec)}/s` : ""}
+            {eta ? ` · ${eta}` : ""}
           </span>
         </div>
-        <div className="bg-forest-100 h-1 overflow-hidden rounded-full">
-          <div
-            className="bg-accent h-full transition-[width] duration-200"
-            style={{ width: pct !== null ? `${pct}%` : "20%" }}
-          />
+        <div className="bg-forest-100 relative h-1 overflow-hidden rounded-full">
+          {determinate ? (
+            <div
+              className="bg-accent h-full transition-[width] duration-200"
+              style={{ width: `${pct}%` }}
+            />
+          ) : (
+            // No total → indeterminate. CSS animation slides a partial
+            // bar across so the user knows we haven't stalled.
+            <div className="bg-accent absolute inset-y-0 w-1/3 animate-[indeterminate_1.4s_linear_infinite]" />
+          )}
+        </div>
+        <div className="text-forest-400 flex items-center justify-between text-[10px]">
+          <span>
+            {phase.filesDone}/{phase.totalFiles || "?"} files done
+          </span>
+          {pct !== null && <span>{pct.toFixed(0)}%</span>}
         </div>
       </div>
     );
@@ -221,7 +252,11 @@ function Body({ phase, status }: { phase: Phase; status: ModelStatusResponse }) 
   );
 }
 
-function applyEvent(ev: DownloadEvent, setPhase: (updater: (prev: Phase) => Phase) => void) {
+function applyEvent(
+  ev: DownloadEvent,
+  setPhase: (updater: (prev: Phase) => Phase) => void,
+  rateRef: React.MutableRefObject<RateSample[]>,
+) {
   setPhase((prev) => {
     if (prev.kind !== "downloading") {
       // We landed in a non-downloading state but events keep arriving
@@ -234,6 +269,7 @@ function applyEvent(ev: DownloadEvent, setPhase: (updater: (prev: Phase) => Phas
           overallTotal: null,
           filesDone: 0,
           totalFiles: ev.total_files,
+          bytesPerSec: null,
         };
       }
       return prev;
@@ -243,13 +279,29 @@ function applyEvent(ev: DownloadEvent, setPhase: (updater: (prev: Phase) => Phas
         return { ...prev, totalFiles: ev.total_files };
       case "file_start":
         return { ...prev, currentFile: ev.name };
-      case "progress":
+      case "progress": {
+        const now = performance.now();
+        const samples = rateRef.current;
+        samples.push({ t: now, bytes: ev.overall_so_far });
+        // Drop samples outside the rolling window.
+        while (samples.length > 0 && samples[0]!.t < now - RATE_WINDOW_MS) {
+          samples.shift();
+        }
+        let bytesPerSec: number | null = null;
+        if (samples.length >= 2) {
+          const first = samples[0]!;
+          const last = samples[samples.length - 1]!;
+          const dt = (last.t - first.t) / 1000;
+          if (dt > 0) bytesPerSec = (last.bytes - first.bytes) / dt;
+        }
         return {
           ...prev,
           currentFile: ev.name,
           overallSoFar: ev.overall_so_far,
           overallTotal: ev.overall_total,
+          bytesPerSec,
         };
+      }
       case "file_done":
         return { ...prev, filesDone: prev.filesDone + 1 };
       case "done":
@@ -258,4 +310,22 @@ function applyEvent(ev: DownloadEvent, setPhase: (updater: (prev: Phase) => Phas
         return { kind: "error", message: ev.message };
     }
   });
+}
+
+function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "0 B";
+  if (n < 1024) return `${n.toFixed(0)} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function formatEta(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "";
+  if (seconds < 60) return `${seconds.toFixed(0)}s left`;
+  const min = Math.floor(seconds / 60);
+  const sec = Math.floor(seconds % 60);
+  if (min < 60) return `${min}m ${sec}s left`;
+  const hr = Math.floor(min / 60);
+  return `${hr}h ${min % 60}m left`;
 }

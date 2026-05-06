@@ -56,3 +56,15 @@ body {
   background-color: rgba(212, 122, 93, 0.25);
   color: var(--color-forest-900);
 }
+
+/* Indeterminate progress bar — used by ModelDownloadCard when the
+   server hasn't reported a total size yet. Slides a slim bar across
+   the track at constant velocity. */
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
