@@ -6,6 +6,14 @@
  * Sizing is driven by `el.scrollHeight` recomputed on every input event;
  * setting `height: auto` first forces the layout to shrink-fit before
  * we measure, otherwise it would only ever grow.
+ *
+ * box-sizing matters: `el.scrollHeight` reports the content height
+ * (padding inclusive, border exclusive). If the textarea is in the
+ * Tailwind preflight default `box-sizing: border-box`, setting
+ * `height = scrollHeight` makes the *outer* box that tall, so the
+ * content area is `scrollHeight − 2·padding − 2·border` — and the last
+ * visual line gets clipped. We force `box-content` (content-box) so
+ * scrollHeight exactly matches the inner content area we need.
  */
 
 import { useEffect, useRef, type CSSProperties } from "react";
@@ -70,7 +78,8 @@ export function TitleInput({
       aria-label={ariaLabel}
       style={style}
       className={cn(
-        "w-full resize-none overflow-hidden border-0 bg-transparent font-serif text-4xl leading-tight tracking-tight outline-none",
+        "w-full resize-none overflow-hidden border-0 bg-transparent p-0 font-serif text-4xl leading-tight tracking-tight outline-none",
+        "box-content",
         "placeholder:text-forest-300",
         className,
       )}
