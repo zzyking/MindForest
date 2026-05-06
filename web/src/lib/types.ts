@@ -81,6 +81,8 @@ export interface NodePatch {
   content?: string;
   links?: NodeId[];
   type?: NodeType;
+  /** Reparent. Server rejects cycles, cross-topic moves, and root reparenting. */
+  parent?: NodeId;
 }
 
 export interface SearchHit {

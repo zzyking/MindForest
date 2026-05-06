@@ -147,7 +147,9 @@ pub struct Node {
 }
 
 /// Partial update — only fields set to `Some(_)` are touched. `links: Some(vec![])`
-/// clears links; `links: None` leaves them unchanged.
+/// clears links; `links: None` leaves them unchanged. `parent` cannot be cleared
+/// via patch (the topic root's parent stays None implicitly; non-root nodes always
+/// have a parent — drag-to-reparent only ever moves them under a different node).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NodePatch {
   #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -158,6 +160,8 @@ pub struct NodePatch {
   pub links: Option<Vec<NodeId>>,
   #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
   pub node_type: Option<NodeType>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub parent: Option<NodeId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

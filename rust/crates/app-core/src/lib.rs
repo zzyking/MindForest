@@ -251,11 +251,54 @@ impl ForestService {
     if let Some(ty) = patch.node_type {
       node.node_type = ty;
     }
+    if let Some(new_parent) = patch.parent {
+      self.validate_reparent(&node, &new_parent).await?;
+      node.parent = Some(new_parent);
+    }
     node.updated_at = Utc::now();
     self.repo.write_node(&node).await?;
     self.index.upsert(&node).await?;
     self.embed_notify.notify_one();
     Ok(node)
+  }
+
+  /// Reparent guard. Reject:
+  ///   - reparenting the topic root (its parent must stay None)
+  ///   - moving a node onto itself
+  ///   - moving a node under one of its own descendants (cycle)
+  ///   - moving a node into a different topic (cross-topic moves are
+  ///     not yet supported — the file would need to migrate between
+  ///     topic dirs and we don't surface that affordance in the UI)
+  async fn validate_reparent(&self, node: &Node, new_parent: &NodeId) -> ForestResult<()> {
+    let topic = self.repo.get_topic(&node.topic).await?;
+    if node.id == topic.root_node_id {
+      return Err(ForestError::InvalidInput(
+        "cannot reparent the topic root".into(),
+      ));
+    }
+    if &node.id == new_parent {
+      return Err(ForestError::InvalidInput(
+        "cannot reparent a node onto itself".into(),
+      ));
+    }
+    let parent_node = self.repo.read_node(new_parent).await?;
+    if parent_node.topic != node.topic {
+      return Err(ForestError::InvalidInput(
+        "cross-topic reparent is not supported".into(),
+      ));
+    }
+    // Walk the new parent's ancestor chain. If we hit `node.id`, accepting
+    // this move would create a cycle.
+    let mut cursor = parent_node.parent.clone();
+    while let Some(p) = cursor {
+      if p == node.id {
+        return Err(ForestError::InvalidInput(
+          "cannot reparent a node under one of its own descendants".into(),
+        ));
+      }
+      cursor = self.repo.read_node(&p).await?.parent;
+    }
+    Ok(())
   }
 
   pub async fn delete_node(&self, id: &NodeId) -> ForestResult<()> {
@@ -690,6 +733,123 @@ mod tests {
     assert!(!stale.iter().any(|h| h.id == node.id));
     let fresh = svc.search("version two", None, 10).await.unwrap();
     assert!(fresh.iter().any(|h| h.title == "New"));
+  }
+
+  #[tokio::test]
+  async fn reparent_moves_node_under_new_parent() {
+    let (_tmp, svc) = fixture().await;
+    let topic = svc
+      .create_topic(NewTopic {
+        title: "T".into(),
+        slug: None,
+      })
+      .await
+      .unwrap();
+    let a = svc
+      .create_node(NewNode {
+        topic: topic.id.clone(),
+        parent: Some(topic.root_node_id.clone()),
+        title: "A".into(),
+        content: "".into(),
+        node_type: NodeType::Concept,
+      })
+      .await
+      .unwrap();
+    let b = svc
+      .create_node(NewNode {
+        topic: topic.id.clone(),
+        parent: Some(topic.root_node_id.clone()),
+        title: "B".into(),
+        content: "".into(),
+        node_type: NodeType::Concept,
+      })
+      .await
+      .unwrap();
+    let moved = svc
+      .update_node(
+        &a.id,
+        NodePatch {
+          parent: Some(b.id.clone()),
+          ..Default::default()
+        },
+      )
+      .await
+      .unwrap();
+    assert_eq!(moved.parent, Some(b.id));
+  }
+
+  #[tokio::test]
+  async fn reparent_rejects_cycle() {
+    let (_tmp, svc) = fixture().await;
+    let topic = svc
+      .create_topic(NewTopic {
+        title: "T".into(),
+        slug: None,
+      })
+      .await
+      .unwrap();
+    let parent = svc
+      .create_node(NewNode {
+        topic: topic.id.clone(),
+        parent: Some(topic.root_node_id.clone()),
+        title: "P".into(),
+        content: "".into(),
+        node_type: NodeType::Concept,
+      })
+      .await
+      .unwrap();
+    let child = svc
+      .create_node(NewNode {
+        topic: topic.id.clone(),
+        parent: Some(parent.id.clone()),
+        title: "C".into(),
+        content: "".into(),
+        node_type: NodeType::Concept,
+      })
+      .await
+      .unwrap();
+    let res = svc
+      .update_node(
+        &parent.id,
+        NodePatch {
+          parent: Some(child.id),
+          ..Default::default()
+        },
+      )
+      .await;
+    assert!(matches!(res, Err(ForestError::InvalidInput(_))));
+  }
+
+  #[tokio::test]
+  async fn reparent_rejects_topic_root() {
+    let (_tmp, svc) = fixture().await;
+    let topic = svc
+      .create_topic(NewTopic {
+        title: "T".into(),
+        slug: None,
+      })
+      .await
+      .unwrap();
+    let other = svc
+      .create_node(NewNode {
+        topic: topic.id.clone(),
+        parent: Some(topic.root_node_id.clone()),
+        title: "X".into(),
+        content: "".into(),
+        node_type: NodeType::Concept,
+      })
+      .await
+      .unwrap();
+    let res = svc
+      .update_node(
+        &topic.root_node_id,
+        NodePatch {
+          parent: Some(other.id),
+          ..Default::default()
+        },
+      )
+      .await;
+    assert!(matches!(res, Err(ForestError::InvalidInput(_))));
   }
 
   #[tokio::test]
