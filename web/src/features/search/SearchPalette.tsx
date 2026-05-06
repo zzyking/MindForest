@@ -82,7 +82,10 @@ export function SearchPalette() {
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-forest-900/30 px-4 pt-32 backdrop-blur-sm"
+      className={cn(
+        "fixed inset-0 z-50 flex items-start justify-center bg-forest-900/30 px-4 pt-32 backdrop-blur-sm",
+        "animate-[fade-in_180ms_ease-out_both]",
+      )}
       onClick={(e) => {
         if (e.target === e.currentTarget) setOpen(false);
       }}
@@ -92,7 +95,10 @@ export function SearchPalette() {
         role="dialog"
         aria-modal="true"
         aria-label="Search nodes"
-        className="shadow-soft border-forest-200 bg-sand-100 w-full max-w-xl overflow-hidden rounded-xl border"
+        className={cn(
+          "shadow-soft border-forest-200 bg-sand-100 w-full max-w-xl overflow-hidden rounded-xl border",
+          "animate-[scale-in_220ms_cubic-bezier(0.2,0.8,0.2,1)_both]",
+        )}
         onKeyDown={(e) => {
           if (e.key === "Escape") setOpen(false);
           else if (e.key === "ArrowDown") {
@@ -107,7 +113,22 @@ export function SearchPalette() {
           }
         }}
       >
-        <div className="border-forest-100 border-b px-4 py-3">
+        <div className="border-forest-100 flex items-center gap-3 border-b px-4 py-3">
+          <svg
+            aria-hidden
+            viewBox="0 0 16 16"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="text-forest-400 flex-none"
+          >
+            <circle cx="7" cy="7" r="4.5" />
+            <line x1="10.4" y1="10.4" x2="13.5" y2="13.5" />
+          </svg>
           <input
             ref={inputRef}
             type="search"
@@ -140,7 +161,9 @@ export function SearchPalette() {
               >
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="truncate font-medium text-forest-800">{h.title}</span>
-                  <span className="text-forest-400 shrink-0 font-mono text-xs">{h.topic}</span>
+                  <span className="text-forest-400 shrink-0 text-[10px] uppercase tracking-[0.08em]">
+                    {h.topic}
+                  </span>
                 </div>
                 <p
                   className="text-forest-500 mt-0.5 line-clamp-1 text-sm"
@@ -152,9 +175,20 @@ export function SearchPalette() {
             </li>
           ))}
         </ul>
-        <footer className="text-forest-400 border-forest-100 flex justify-between border-t px-4 py-2 font-mono text-[11px]">
-          <span>↑↓ navigate · ↵ open · esc close</span>
-          <span>{visibleHits.length} hit{visibleHits.length === 1 ? "" : "s"}</span>
+        <footer className="text-forest-400 border-forest-100 flex items-center justify-between border-t px-4 py-2 text-[10px] uppercase tracking-[0.08em] tabular-nums">
+          <span className="flex items-center gap-2">
+            <kbd className="border-forest-200 bg-sand-50 rounded border px-1 py-0.5 normal-case tracking-normal">↑↓</kbd>
+            navigate
+            <span className="text-forest-200">·</span>
+            <kbd className="border-forest-200 bg-sand-50 rounded border px-1 py-0.5 normal-case tracking-normal">↵</kbd>
+            open
+            <span className="text-forest-200">·</span>
+            <kbd className="border-forest-200 bg-sand-50 rounded border px-1 py-0.5 normal-case tracking-normal">esc</kbd>
+            close
+          </span>
+          <span>
+            {visibleHits.length} hit{visibleHits.length === 1 ? "" : "s"}
+          </span>
         </footer>
       </div>
     </div>

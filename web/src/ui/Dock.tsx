@@ -43,7 +43,7 @@ export function Dock() {
           onClick={() => setSearchPalette(true)}
           shortcut="⌘K"
         >
-          🔍
+          <SearchGlyph />
         </DockButton>
       </div>
     </div>
@@ -82,6 +82,32 @@ function DockButton({ children, label, active, shortcut, onClick }: DockButtonPr
 
 function DockSeparator() {
   return <span aria-hidden className="bg-forest-200/60 mx-1 h-5 w-px" />;
+}
+
+/**
+ * Hand-drawn-feel magnifying glass — straight stroke, no flourish, fits
+ * the Unicode-glyph aesthetic of the rest of the dock without dragging
+ * in a full icon-font dependency. Stroke width matches the dock's
+ * border weight (1px → currentColor).
+ */
+function SearchGlyph() {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 16 16"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="inline-block"
+    >
+      <circle cx="7" cy="7" r="4.5" />
+      <line x1="10.4" y1="10.4" x2="13.5" y2="13.5" />
+    </svg>
+  );
 }
 
 interface ViewToggleProps {
