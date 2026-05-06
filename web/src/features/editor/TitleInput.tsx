@@ -78,7 +78,9 @@ export function TitleInput({
       aria-label={ariaLabel}
       style={style}
       className={cn(
-        "w-full resize-none overflow-hidden border-0 bg-transparent p-0 font-serif text-4xl leading-tight tracking-tight outline-none",
+        // leading-[1.3] — Crimson Pro at 36px clips descenders / accents
+        // at leading-tight (1.25); 1.3 leaves room without feeling airy.
+        "w-full resize-none overflow-hidden border-0 bg-transparent p-0 font-serif text-4xl leading-[1.3] tracking-tight outline-none",
         "box-content",
         "placeholder:text-forest-300",
         className,
