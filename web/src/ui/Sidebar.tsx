@@ -15,6 +15,7 @@ import { useParams } from "@tanstack/react-router";
 import { cn } from "@/lib/cn";
 import { useFocusNode } from "@/app/navigation";
 import { useForestData } from "@/stores/forestData";
+import { ApiError } from "@/lib/api";
 import type { NodeId, NodeSummary, TopicId } from "@/lib/types";
 
 export function Sidebar() {
@@ -25,8 +26,40 @@ export function Sidebar() {
   const topicDetails = useForestData((s) => s.topicDetails);
   const fetchTopics = useForestData((s) => s.fetchTopics);
   const fetchTopic = useForestData((s) => s.fetchTopic);
+  const createTopic = useForestData((s) => s.createTopic);
 
   const focus = useFocusNode();
+
+  // Inline new-topic affordance. Tauri 2 disables window.prompt so we
+  // do the input inline — autoFocus on open, Esc/blur cancels.
+  const [creating, setCreating] = useState(false);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const onCreateTopic = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    const title = draftTitle.trim();
+    if (!title || submitting) return;
+    setSubmitting(true);
+    setCreateError(null);
+    try {
+      const topic = await createTopic(title);
+      setDraftTitle("");
+      setCreating(false);
+      await focus(topic.root_node_id, topic.id);
+    } catch (err) {
+      setCreateError(
+        err instanceof ApiError
+          ? `${err.code}: ${err.message}`
+          : err instanceof Error
+            ? err.message
+            : String(err),
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   // Hydrate topic list once on mount.
   // We don't gate on `topics.length` because retries on transient errors
@@ -57,9 +90,56 @@ export function Sidebar() {
       </header>
 
       <section>
-        <h3 className="text-forest-500 mb-2 text-[10px] font-medium uppercase tracking-wide">
-          Topics
-        </h3>
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-forest-500 text-[10px] font-medium uppercase tracking-wide">
+            Topics
+          </h3>
+          <button
+            type="button"
+            aria-label="New topic"
+            title="New topic"
+            onClick={() => {
+              setCreating(true);
+              setCreateError(null);
+            }}
+            className="text-forest-400 hover:text-forest-700 inline-flex h-5 w-5 items-center justify-center rounded text-sm leading-none"
+          >
+            +
+          </button>
+        </div>
+        {creating && (
+          <form
+            onSubmit={onCreateTopic}
+            className="mb-1 flex items-center gap-1 px-1"
+          >
+            <input
+              autoFocus
+              type="text"
+              value={draftTitle}
+              onChange={(e) => setDraftTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  setCreating(false);
+                  setDraftTitle("");
+                  setCreateError(null);
+                }
+              }}
+              placeholder="Topic title"
+              disabled={submitting}
+              className="border-forest-200 bg-sand-50 placeholder:text-forest-400 focus:border-forest-500 min-w-0 flex-1 rounded border px-2 py-1 text-sm focus:outline-none disabled:opacity-60"
+            />
+            <button
+              type="submit"
+              disabled={!draftTitle.trim() || submitting}
+              className="text-forest-600 hover:text-forest-900 disabled:text-forest-300 inline-flex h-6 items-center text-xs"
+            >
+              {submitting ? "…" : "Add"}
+            </button>
+          </form>
+        )}
+        {createError && (
+          <p className="text-accent mb-1 px-2 text-[10px]">{createError}</p>
+        )}
         <ul className="flex flex-col gap-0.5">
           {topicList.map((t) => (
             <li key={t.id}>
