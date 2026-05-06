@@ -12,6 +12,11 @@
 //!   2. `<app_data_dir>/vault` (per-OS conventional location)
 //!   3. fail with a useful message
 //!
+//! Data path resolution order (derived state — sqlite index + MLX models):
+//!   1. `MINDFOREST_DATA_DIR` env var (escape hatch — symmetric with vault)
+//!   2. `<app_data_dir>/.mindforest` (peer to vault, *not* nested inside it
+//!      — see `app_core::bootstrap` for why)
+//!
 //! Embed sidecar resolution:
 //!   - If `MINDFOREST_EMBED_BIN` is already set we leave it alone.
 //!   - Packaged builds: look beside the desktop binary inside the
@@ -41,6 +46,8 @@ fn main() {
   tauri::Builder::default()
     .setup(|app| {
       let vault_dir = resolve_vault_dir(app)?;
+      let data_dir = resolve_data_dir(app)?;
+      warn_if_legacy_data_dir(&vault_dir, &data_dir);
       configure_embed_sidecar();
 
       // Bind synchronously so the OS-assigned port is known before the
@@ -51,7 +58,11 @@ fn main() {
       std_listener.set_nonblocking(true)?;
       let local_addr = std_listener.local_addr()?;
       let api_base = format!("http://{local_addr}");
-      tracing::info!("api will listen on {api_base} (vault={})", vault_dir.display());
+      tracing::info!(
+        "api will listen on {api_base} (vault={}, data={})",
+        vault_dir.display(),
+        data_dir.display()
+      );
 
       // Programmatic window creation. We don't declare a window in
       // tauri.conf.json because the initialization script — which carries
@@ -109,7 +120,7 @@ fn main() {
             return;
           }
         };
-        if let Err(e) = serve_with_listener(listener, vault_dir).await {
+        if let Err(e) = serve_with_listener(listener, vault_dir, data_dir).await {
           tracing::error!("api serve failed: {e}");
         }
       });
@@ -204,6 +215,43 @@ fn resolve_vault_dir(app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Er
   std::fs::create_dir_all(&dir)
     .map_err(|e| format!("could not create vault dir {}: {e}", dir.display()))?;
   Ok(dir)
+}
+
+/// Derived-state directory — sqlite index + downloaded MLX model
+/// weights. Sibling to vault, never nested inside it. The split lets
+/// the user put the vault under iCloud / Dropbox without dragging
+/// regenerable artifacts (which can total hundreds of MB) along.
+fn resolve_data_dir(app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Error>> {
+  if let Ok(p) = std::env::var("MINDFOREST_DATA_DIR") {
+    return Ok(PathBuf::from(p));
+  }
+  let dir = app
+    .path()
+    .app_data_dir()
+    .map_err(|e| format!("could not resolve app_data_dir: {e}"))?
+    .join(".mindforest");
+  std::fs::create_dir_all(&dir)
+    .map_err(|e| format!("could not create data dir {}: {e}", dir.display()))?;
+  Ok(dir)
+}
+
+/// Refactor/v2 changed the layout from `<vault>/.mindforest` to
+/// `<app_data>/.mindforest` — a peer of vault, not a child. This
+/// function logs a one-line hint when the legacy directory exists but
+/// the new one is empty, so a returning user understands why their
+/// index will be rebuilt from markdown on first launch. Removable in a
+/// follow-up commit once we're past the refactor branch.
+fn warn_if_legacy_data_dir(vault_dir: &std::path::Path, data_dir: &std::path::Path) {
+  let legacy = vault_dir.join(".mindforest").join("index.db");
+  let current = data_dir.join("index.db");
+  if legacy.exists() && !current.exists() {
+    tracing::warn!(
+      "legacy derived-state dir found at {}; the index will be rebuilt at {} on first launch — \
+       you can delete the legacy directory once the rebuild completes",
+      legacy.parent().unwrap_or(&legacy).display(),
+      data_dir.display()
+    );
+  }
 }
 
 fn init_tracing() {

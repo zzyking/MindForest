@@ -2,8 +2,10 @@
 //!
 //! Bootstrap path for the EmbeddingGemma weights (or any other MLX-format
 //! model under `mlx-community/`). The Swift sidecar's MLX path expects the
-//! repo unpacked at `<vault>/.mindforest/models/<repo-id>/` — this module
-//! owns putting the files there.
+//! repo unpacked at `<root>/<repo-id>/` where `<root>` is whatever the
+//! caller passed to `ModelDownloader::new` — typically
+//! `<data_dir>/models/` (see `app_core::bootstrap`). This module owns
+//! putting the files there.
 //!
 //! Design choices:
 //!
@@ -105,7 +107,8 @@ pub struct ModelDownloader {
 }
 
 impl ModelDownloader {
-  /// Create a downloader rooted at `<vault>/.mindforest/models/`.
+  /// Create a downloader rooted at `root_dir`. Each repo gets its own
+  /// slug-encoded subdirectory beneath this root.
   pub fn new(root_dir: impl Into<PathBuf>) -> Self {
     let mut builder = reqwest::Client::builder()
       .user_agent(concat!("mindforest/", env!("CARGO_PKG_VERSION")))

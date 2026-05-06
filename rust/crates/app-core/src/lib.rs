@@ -96,21 +96,31 @@ fn embed_mode_label(mode: &EmbedMode) -> String {
 /// once present, trust the index and rely on watcher events for updates.
 /// A user-triggered `POST /index/rebuild` covers the rare case where the
 /// index drifts.
-pub async fn bootstrap(vault: PathBuf, embed_mode: EmbedMode) -> ForestResult<Bootstrap> {
+///
+/// `vault` holds the user's markdown source-of-truth; `data_dir` is the
+/// app-owned directory for derived state — sqlite index + downloaded
+/// MLX model weights. They are intentionally separable so a user who
+/// moves the vault (e.g. into iCloud Drive) doesn't drag regenerable
+/// artifacts along. Both paths are absolute and the caller decides
+/// where they live; bootstrap doesn't append further path segments.
+pub async fn bootstrap(
+  vault: PathBuf,
+  data_dir: PathBuf,
+  embed_mode: EmbedMode,
+) -> ForestResult<Bootstrap> {
   let repo = Arc::new(FsRepository::open(&vault).await?);
 
-  let mindforest_dir = vault.join(".mindforest");
-  tokio::fs::create_dir_all(&mindforest_dir)
+  tokio::fs::create_dir_all(&data_dir)
     .await
-    .map_err(|e| ForestError::Storage(format!("create {}: {e}", mindforest_dir.display())))?;
-  let index_path = mindforest_dir.join("index.db");
+    .map_err(|e| ForestError::Storage(format!("create {}: {e}", data_dir.display())))?;
+  let index_path = data_dir.join("index.db");
   let needs_rebuild = !index_path.exists();
   let index = Arc::new(SqliteIndex::open(&index_path).await?);
   if needs_rebuild {
     index.rebuild_from(repo.as_ref()).await?;
   }
 
-  let downloader = ModelDownloader::new(mindforest_dir.join("models"));
+  let downloader = ModelDownloader::new(data_dir.join("models"));
   let embedder = embed::build_embedder(
     embed_mode.clone(),
     Some(downloader.target_dir(EMBEDDING_MODEL_REPO)),
