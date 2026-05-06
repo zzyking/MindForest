@@ -30,7 +30,7 @@
  * and the code stays simple.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import EdgeCurveProgram from "@sigma/edge-curve";
 import Graph from "graphology";
 import Sigma from "sigma";
@@ -86,6 +86,7 @@ interface TopicAnchor {
 export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
   const topics = useForestData((s) => s.topics);
   const topicDetails = useForestData((s) => s.topicDetails);
+  const detailLoading = useForestData((s) => s.loading.topicDetail);
   const fetchTopics = useForestData((s) => s.fetchTopics);
   const fetchTopic = useForestData((s) => s.fetchTopic);
   const focus = useFocusNode();
@@ -98,19 +99,22 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     void fetchTopics().catch(() => {});
   }, [fetchTopics]);
 
-  // Step 2: ensure each known topic has a TopicDetail. Fires once per
-  // newly-seen topic; idempotent because the store guards in-flight
-  // requests via `loading.topicDetail`.
+  // Step 2: ensure each known topic has a TopicDetail. The effect runs
+  // each time the loading map mutates (i.e. a fetch starts or
+  // resolves), so checking `detailLoading[id]` here keeps us from
+  // double-firing while a request is already in flight — the store
+  // itself doesn't dedupe.
   useEffect(() => {
     for (const id of Object.keys(topics) as TopicId[]) {
-      if (!topicDetails[id]) {
+      if (!topicDetails[id] && !detailLoading[id]) {
         void fetchTopic(id).catch(() => {});
       }
     }
-  }, [topics, topicDetails, fetchTopic]);
+  }, [topics, topicDetails, detailLoading, fetchTopic]);
 
   // Step 3: assemble the unified graph + per-tree anchors.
   const { graph, anchors, hasNoData } = useMemo(() => {
+    const buildStart = performance.now();
     const ready: TopicDetail[] = (Object.keys(topics) as TopicId[])
       .sort()
       .map((id) => topicDetails[id])
@@ -219,26 +223,22 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       }
     }
 
+    const totalNodes = g.order;
+    const totalEdges = g.size;
+    const buildMs = (performance.now() - buildStart).toFixed(1);
+    console.info(
+      `[forest] graph built in ${buildMs}ms · ${ready.length} topics · ${totalNodes} nodes · ${totalEdges} edges`,
+    );
     return { graph: g, anchors: anchorList, hasNoData: false };
   }, [topics, topicDetails, focusedNodeId]);
 
   // Topic-anchor labels rendered as HTML on top of the canvas. We
-  // recompute viewport positions on every camera update because the
-  // canvas pans/zooms the underlying graph coords.
-  const [labelPositions, setLabelPositions] = useState<
-    { topicId: TopicId; title: string; left: number; top: number }[]
-  >([]);
-  const projectLabels = useCallback(
-    (s: Sigma) => {
-      setLabelPositions(
-        anchors.map((a) => {
-          const v = s.graphToViewport({ x: a.graphX, y: a.graphY });
-          return { topicId: a.topicId, title: a.title, left: v.x, top: v.y };
-        }),
-      );
-    },
-    [anchors],
-  );
+  // mutate `transform` on each label DOM node directly via refs every
+  // time the camera moves — going through React state would re-render
+  // the whole label list at frame rate during pan/zoom, which thrashes
+  // the main thread at scale.
+  const labelsLayerRef = useRef<HTMLDivElement | null>(null);
+  const labelNodeRefs = useRef(new Map<TopicId, HTMLDivElement>());
 
   // Mount/remount sigma whenever the assembled graph changes. The
   // sigma instance is single-use — `kill()` releases its WebGL
@@ -249,17 +249,29 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       sigmaRef.current.kill();
       sigmaRef.current = null;
     }
+    const mountStart = performance.now();
     const s = new Sigma(graph, containerRef.current, {
       renderLabels: true,
       labelSize: 12,
       labelFont: "system-ui, sans-serif",
       labelColor: { color: COLOR_LABEL },
-      labelDensity: 1,
-      labelGridCellSize: 80,
+      // Density / grid tuned for crowded canvases — at 5k nodes the
+      // default 1 / 80 paints far more text than the eye can use.
+      labelDensity: 0.5,
+      labelGridCellSize: 120,
+      // Skip labels for nodes too small to read at the current zoom —
+      // lets sigma cull aggressively when the user zooms out to see the
+      // whole forest.
+      labelRenderedSizeThreshold: 6,
       defaultEdgeColor: COLOR_FOREST_300,
       defaultNodeColor: COLOR_FOREST_700,
       minCameraRatio: 0.05,
       maxCameraRatio: 4,
+      // Hide labels and edges during drags / zooms — sigma redraws on
+      // every frame, and edge geometry + label layout dominate cost.
+      // Snap them back when the camera settles.
+      hideLabelsOnMove: true,
+      hideEdgesOnMove: true,
       // Curved edges are the unlock for cross-topic links — without
       // this they'd cut straight through the trees in between.
       edgeProgramClasses: {
@@ -267,14 +279,24 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       },
     });
 
+    const projectLabels = () => {
+      for (const a of anchors) {
+        const el = labelNodeRefs.current.get(a.topicId);
+        if (!el) continue;
+        const v = s.graphToViewport({ x: a.graphX, y: a.graphY });
+        // translate3d so the browser keeps these layers on the GPU.
+        el.style.transform = `translate3d(${v.x}px, ${v.y}px, 0) translate(-50%, -100%)`;
+      }
+    };
+
     s.on("clickNode", ({ node }) => {
       const topicId = graph.getNodeAttribute(node, "topicId") as TopicId;
       void focus(node as NodeId, topicId);
     });
-    s.on("afterRender", () => projectLabels(s));
-    s.getCamera().on("updated", () => projectLabels(s));
+    s.getCamera().on("updated", projectLabels);
 
     sigmaRef.current = s;
+    console.info(`[forest] sigma mounted in ${(performance.now() - mountStart).toFixed(1)}ms`);
 
     // Initial centre on the focused node so opening Forest mode lands
     // the user at where they came from.
@@ -286,13 +308,15 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
         { duration: 0 },
       );
     }
-    projectLabels(s);
+    // Initial position pass once labels are in the DOM. The labels are
+    // rendered statically below; their transforms get nudged here.
+    projectLabels();
 
     return () => {
       s.kill();
       sigmaRef.current = null;
     };
-  }, [graph, focusedNodeId, focus, projectLabels]);
+  }, [graph, focusedNodeId, focus, anchors]);
 
   if (hasNoData) {
     return (
@@ -319,21 +343,29 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
         style={{ cursor: "grab" }}
       />
       {/* Topic-name labels overlaid in HTML so we get crisp text + native
-          accessibility instead of canvas-rasterised typography. */}
-      <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        {labelPositions.map((p) => (
+          accessibility instead of canvas-rasterised typography. Each
+          label sits absolute at (0,0); its transform is updated directly
+          (no React re-render) on every camera tick. */}
+      <div
+        ref={labelsLayerRef}
+        className="pointer-events-none absolute inset-0 overflow-hidden"
+      >
+        {anchors.map((a) => (
           <div
-            key={p.topicId}
+            key={a.topicId}
+            ref={(el) => {
+              if (el) labelNodeRefs.current.set(a.topicId, el);
+              else labelNodeRefs.current.delete(a.topicId);
+            }}
             className={
-              "absolute -translate-x-1/2 -translate-y-full whitespace-nowrap " +
-              (p.topicId === focusedTopicId
+              "absolute left-0 top-0 whitespace-nowrap will-change-transform " +
+              (a.topicId === focusedTopicId
                 ? "text-forest-900 font-medium"
                 : "text-forest-500")
             }
-            style={{ left: p.left, top: p.top }}
           >
             <span className="bg-sand-50/80 rounded-md px-2 py-0.5 text-xs backdrop-blur-sm">
-              {p.title}
+              {a.title}
             </span>
           </div>
         ))}
