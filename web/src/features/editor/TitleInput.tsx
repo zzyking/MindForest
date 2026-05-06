@@ -51,8 +51,7 @@ export function TitleInput({
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
+    fit(el);
   }, [value]);
 
   return (
@@ -60,11 +59,7 @@ export function TitleInput({
       ref={ref}
       value={value}
       onChange={(e) => onChange(e.currentTarget.value)}
-      onInput={(e) => {
-        const el = e.currentTarget;
-        el.style.height = "auto";
-        el.style.height = `${el.scrollHeight}px`;
-      }}
+      onInput={(e) => fit(e.currentTarget)}
       onKeyDown={(e) => {
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
@@ -78,13 +73,26 @@ export function TitleInput({
       aria-label={ariaLabel}
       style={style}
       className={cn(
-        // leading-[1.3] — Crimson Pro at 36px clips descenders / accents
-        // at leading-tight (1.25); 1.3 leaves room without feeling airy.
-        "w-full resize-none overflow-hidden border-0 bg-transparent p-0 font-serif text-4xl leading-[1.3] tracking-tight outline-none",
+        // leading-[1.4] — Crimson Pro at 36px has tall ascenders +
+        // descenders that overshoot 1.25–1.3 line-heights and get
+        // clipped by `overflow-hidden` below. 1.4 gives the glyphs
+        // room without feeling airy.
+        "w-full resize-none overflow-hidden border-0 bg-transparent p-0 font-serif text-4xl leading-[1.4] tracking-tight outline-none",
         "box-content",
         "placeholder:text-forest-300",
         className,
       )}
     />
   );
+}
+
+/**
+ * Resize the textarea to fit its content. `scrollHeight` rounds down to
+ * an integer, which can leave a fractional pixel of glyph hanging
+ * outside the box (visible as a clipped descender). Add a small buffer
+ * — invisible to the eye, robust against the rounding edge cases.
+ */
+function fit(el: HTMLTextAreaElement) {
+  el.style.height = "auto";
+  el.style.height = `${el.scrollHeight + 4}px`;
 }
