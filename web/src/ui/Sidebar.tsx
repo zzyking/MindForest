@@ -309,16 +309,7 @@ function NodeRow({
   return (
     <li>
       <div
-        className={cn(
-          // Same treatment as topic rows: focused row carries a 2px
-          // accent rail on the left so visual hierarchy stays consistent
-          // when the eye drops from topic list to node tree.
-          "group relative -mx-1 flex w-[calc(100%+0.5rem)] items-center gap-1 rounded-md text-sm transition-colors",
-          "before:absolute before:left-1 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full",
-          isFocused
-            ? "bg-forest-100 text-forest-900 before:bg-accent"
-            : "text-forest-600 hover:bg-forest-100/50 before:bg-transparent",
-        )}
+        className="group relative flex items-stretch text-sm text-forest-600"
         style={{ paddingLeft: `${depth * 0.75 + 0.5}rem` }}
       >
         {guides.map((k) => (
@@ -329,29 +320,40 @@ function NodeRow({
             style={{ left: `calc(${k * 0.75}rem + 1.25rem)` }}
           />
         ))}
-        <button
-          type="button"
-          aria-label={children.length > 0 ? (isOpen ? "Collapse" : "Expand") : undefined}
+        {/* Highlight surface starts where the chevron column begins,
+            so the focused / hover bg never reaches left of the deepest
+            ancestor's guide line — the highlight visually belongs to
+            the same column that the indent guide marks. */}
+        <div
           className={cn(
-            "text-forest-500 hover:text-forest-800 relative inline-flex h-6 w-6 flex-none items-center justify-center text-base leading-none",
-            // Mask the guide line behind the chevron when the row is
-            // selected so the highlight surface reads as a unit.
-            children.length > 0 && "before:absolute before:inset-0 before:bg-inherit",
-            children.length === 0 && "invisible",
+            "relative -mr-1 flex w-[calc(100%+0.25rem)] items-center gap-1 rounded-md transition-colors",
+            "before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full",
+            isFocused
+              ? "bg-forest-100 text-forest-900 before:bg-accent"
+              : "hover:bg-forest-100/50 before:bg-transparent",
           )}
-          onClick={() => toggle(node.id)}
-          tabIndex={children.length > 0 ? 0 : -1}
         >
-          <span className="relative">{isOpen ? "▾" : "▸"}</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => focus(node.id, topicId)}
-          className="relative min-w-0 flex-1 truncate py-1 text-left"
-          title={node.title}
-        >
-          {node.title || "Untitled"}
-        </button>
+          <button
+            type="button"
+            aria-label={children.length > 0 ? (isOpen ? "Collapse" : "Expand") : undefined}
+            className={cn(
+              "text-forest-500 hover:text-forest-800 inline-flex h-6 w-6 flex-none items-center justify-center text-base leading-none",
+              children.length === 0 && "invisible",
+            )}
+            onClick={() => toggle(node.id)}
+            tabIndex={children.length > 0 ? 0 : -1}
+          >
+            {isOpen ? "▾" : "▸"}
+          </button>
+          <button
+            type="button"
+            onClick={() => focus(node.id, topicId)}
+            className="min-w-0 flex-1 truncate py-1 text-left"
+            title={node.title}
+          >
+            {node.title || "Untitled"}
+          </button>
+        </div>
       </div>
       {isOpen && children.length > 0 && (
         <ul className="flex flex-col">
