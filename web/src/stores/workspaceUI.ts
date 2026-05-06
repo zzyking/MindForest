@@ -4,9 +4,10 @@
  *
  * - Sidebar open/closed (persists across navigations within a session)
  * - Search palette open/closed (Cmd+K toggle)
- * - View mode (editor | forest) — tab toggle in the dock; only
+ * - View mode (editor | tree | forest) — tab toggle in the dock; only
  *   meaningful when a topic is focused, but cheap to keep here so the
- *   shell can render the right pane without route-aware logic.
+ *   shell can render the right pane without route-aware logic. Tree
+ *   shows just the focused topic; Forest shows the whole workspace.
  *
  * Focus + navigation state used to live here and is now URL-driven via
  * TanStack Router. See `app/navigation.ts` for the `useFocusNode` /
@@ -15,7 +16,7 @@
 
 import { create } from "zustand";
 
-export type ViewMode = "editor" | "forest";
+export type ViewMode = "editor" | "tree" | "forest";
 
 interface WorkspaceUIState {
   sidebarOpen: boolean;
