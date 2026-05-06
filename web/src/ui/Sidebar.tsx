@@ -91,8 +91,12 @@ export function Sidebar() {
   return (
     <div className="flex h-full flex-col gap-4 px-4 py-5">
       <header>
-        <h2 className="font-serif text-xl tracking-tight text-forest-800">MindForest</h2>
-        <p className="text-forest-400 mt-1 text-xs">{topicList.length} topics</p>
+        <h2 className="text-forest-900 font-serif text-2xl font-medium tracking-tight leading-none">
+          MindForest
+        </h2>
+        <p className="text-forest-400 mt-1.5 text-[10px] uppercase tracking-[0.12em] tabular-nums">
+          {topicList.length} {topicList.length === 1 ? "topic" : "topics"}
+        </p>
       </header>
 
       <section>
@@ -297,10 +301,14 @@ function NodeRow({
     <li>
       <div
         className={cn(
-          "group flex items-center gap-1 rounded text-sm",
+          // Same treatment as topic rows: focused row carries a 2px
+          // accent rail on the left so visual hierarchy stays consistent
+          // when the eye drops from topic list to node tree.
+          "group relative flex items-center gap-1 rounded text-sm transition-colors",
+          "before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full",
           isFocused
-            ? "bg-forest-100 text-forest-800"
-            : "text-forest-600 hover:bg-forest-100/50",
+            ? "bg-forest-100 text-forest-900 before:bg-accent"
+            : "text-forest-600 hover:bg-forest-100/50 before:bg-transparent",
         )}
         style={{ paddingLeft: `${depth * 0.75 + 0.25}rem` }}
       >

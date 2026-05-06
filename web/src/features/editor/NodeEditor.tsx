@@ -204,12 +204,16 @@ export function NodeEditor({ nodeId }: Props) {
   }
 
   if (loading && !node) {
-    return <EditorScaffold>{<p className="text-forest-400">Loading…</p>}</EditorScaffold>;
+    return (
+      <EditorScaffold>
+        <EmptyState>Loading the page…</EmptyState>
+      </EditorScaffold>
+    );
   }
   if (!node) {
     return (
       <EditorScaffold>
-        <p className="text-forest-400">No node selected.</p>
+        <EmptyState>No node selected. Pick one from the sidebar.</EmptyState>
       </EditorScaffold>
     );
   }
@@ -270,6 +274,17 @@ function EditorScaffold({ children }: { children: React.ReactNode }) {
   );
 }
 
+function EmptyState({ children }: { children: React.ReactNode }) {
+  // Soft, italic, paper-tone helper. Beats raw "Loading…" / "(empty)"
+  // labels at carrying the brand voice while telling the user the same
+  // thing.
+  return (
+    <p className="text-forest-400 mt-12 text-center font-serif text-base italic">
+      {children}
+    </p>
+  );
+}
+
 interface ToolbarProps {
   mode: Mode;
   onModeChange: (m: Mode) => void;
@@ -295,13 +310,15 @@ function Toolbar({
   canDelete,
   deleteArmed,
 }: ToolbarProps) {
-  const navBtn = "text-forest-500 hover:text-forest-800 disabled:text-forest-200 px-2 py-1 text-sm";
+  const navBtn =
+    "text-forest-600 hover:text-forest-900 disabled:text-forest-300 disabled:cursor-not-allowed px-2 py-1 text-sm transition-colors";
   return (
     <div className="text-forest-600 flex items-center justify-between text-sm">
-      <div className="flex items-center gap-1">
+      <div className="border-forest-200 flex items-center gap-0 rounded-full border px-1">
         <button type="button" className={navBtn} onClick={onBack} disabled={!canBack} aria-label="Back">
           ← Back
         </button>
+        <span aria-hidden className="bg-forest-200/60 mx-0.5 h-4 w-px" />
         <button
           type="button"
           className={navBtn}
@@ -366,11 +383,16 @@ function ReadView({ content }: { content: string }) {
   // Typora — they treat each line as its own line rather than the
   // CommonMark default of "fold soft-breaks into spaces". Pairs with
   // remark-gfm for tables / task-lists / strikethrough.
+  if (content.trim().length === 0) {
+    return (
+      <p className="text-forest-400 mt-2 font-serif text-base italic">
+        Nothing here yet — switch to Write mode to start drafting.
+      </p>
+    );
+  }
   return (
     <div className="prose prose-stone max-w-none text-base leading-relaxed">
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
-        {content || "*(empty)*"}
-      </ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{content}</ReactMarkdown>
     </div>
   );
 }
