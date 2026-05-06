@@ -1,12 +1,12 @@
 /**
  * Floating bottom dock. Holds workspace-wide affordances: sidebar
- * toggle, view-mode segmented switch (editor / tree / graph), and the
- * search palette opener. Sticks to bottom-center so it's reachable from
- * any pointer position without being modal.
+ * toggle, view-mode segmented switch (editor / forest), and the search
+ * palette opener. Sticks to bottom-center so it's reachable from any
+ * pointer position without being modal.
  *
  * The view-mode toggle only flips the workspace's pane; the route stays
- * the same. Picking a node from tree/graph navigates back to editor by
- * default — see `useFocusNode` callers in TreeView / GraphView.
+ * the same. Picking a node from forest navigates back to editor by
+ * default — see `useFocusNode` callers in ForestView.
  */
 
 import { cn } from "@/lib/cn";
@@ -88,8 +88,7 @@ interface ViewToggleProps {
 
 const VIEW_MODES: { id: ViewMode; label: string; icon: string }[] = [
   { id: "editor", label: "Editor", icon: "✎" },
-  { id: "tree", label: "Tree", icon: "⌬" },
-  { id: "graph", label: "Graph", icon: "◉" },
+  { id: "forest", label: "Forest", icon: "⌬" },
 ];
 
 function ViewToggle({ value, onChange }: ViewToggleProps) {

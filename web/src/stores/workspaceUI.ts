@@ -4,7 +4,7 @@
  *
  * - Sidebar open/closed (persists across navigations within a session)
  * - Search palette open/closed (Cmd+K toggle)
- * - View mode (editor | tree | graph) — tab toggle in the dock; only
+ * - View mode (editor | forest) — tab toggle in the dock; only
  *   meaningful when a topic is focused, but cheap to keep here so the
  *   shell can render the right pane without route-aware logic.
  *
@@ -15,7 +15,7 @@
 
 import { create } from "zustand";
 
-export type ViewMode = "editor" | "tree" | "graph";
+export type ViewMode = "editor" | "forest";
 
 interface WorkspaceUIState {
   sidebarOpen: boolean;
