@@ -162,12 +162,8 @@ export function Sidebar() {
                     await focus(detail.root_node_id, detail.id);
                   }}
                   className={cn(
-                    // Inset highlight: leave 1px breathing room either
-                    // side of the sidebar so the focused / hover surface
-                    // floats inside the column rather than seaming
-                    // edge-to-edge with the sidebar border.
-                    "relative -mx-1 w-[calc(100%+0.5rem)] truncate rounded-md px-3 py-1 text-left text-sm transition-colors",
-                    "before:absolute before:left-1 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full",
+                    "relative w-full truncate rounded px-2 py-1 pl-3 text-left text-sm transition-colors",
+                    "before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full",
                     active
                       ? "bg-forest-100 text-forest-900 before:bg-accent"
                       : "text-forest-600 hover:bg-forest-100/50 before:bg-transparent",
@@ -322,11 +318,11 @@ function NodeRow({
         ))}
         {/* Highlight surface starts where the chevron column begins,
             so the focused / hover bg never reaches left of the deepest
-            ancestor's guide line — the highlight visually belongs to
-            the same column that the indent guide marks. */}
+            ancestor's guide line. Right edge is flush with the sidebar
+            inner padding (no -mr trick), matching the topic rows. */}
         <div
           className={cn(
-            "relative -mr-1 flex w-[calc(100%+0.25rem)] items-center gap-1 rounded-md transition-colors",
+            "relative flex w-full items-center gap-1 rounded transition-colors",
             "before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full",
             isFocused
               ? "bg-forest-100 text-forest-900 before:bg-accent"
