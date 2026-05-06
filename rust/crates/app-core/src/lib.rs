@@ -33,6 +33,7 @@ use domain::{
   Node, NodeId, NodePatch, SearchHit, Topic, TopicId, TopicSummary,
 };
 
+pub use agent::{AgentEvent, AgentProposer, AgentRequest, AgentStream};
 pub use embed::download::{DownloadEvent, FileStatus, ModelDownloader, ModelStatus};
 pub use embed::{EmbedMode, StubEmbedder, UnavailableEmbedder};
 pub use index_sqlite::{content_hash_for, SqliteIndex, EMBED_DIM};
@@ -114,12 +115,14 @@ pub async fn bootstrap(vault: PathBuf, embed_mode: EmbedMode) -> ForestResult<Bo
     embed_mode.clone(),
     Some(downloader.target_dir(EMBEDDING_MODEL_REPO)),
   );
+  let proposer = agent::build_proposer_from_env();
   let service = Arc::new(ForestService::new(
     repo.clone(),
     index,
     embedder,
     embed_mode,
     downloader,
+    proposer,
   ));
   let watcher = repo.watch()?;
   Ok(Bootstrap { service, watcher })
@@ -140,6 +143,9 @@ pub struct ForestService {
   /// they won't use). Stored as a string for `Clone`-friendliness.
   embed_mode_label: String,
   downloader: ModelDownloader,
+  /// LLM proposer. Cheaply cloneable Arc — held by the SSE handler for
+  /// the lifetime of one streaming response.
+  proposer: Arc<dyn AgentProposer>,
 }
 
 impl ForestService {
@@ -149,6 +155,7 @@ impl ForestService {
     embedder: Arc<dyn Embedder>,
     embed_mode: EmbedMode,
     downloader: ModelDownloader,
+    proposer: Arc<dyn AgentProposer>,
   ) -> Self {
     Self {
       repo,
@@ -157,6 +164,7 @@ impl ForestService {
       embed_notify: Arc::new(Notify::new()),
       embed_mode_label: embed_mode_label(&embed_mode),
       downloader,
+      proposer,
     }
   }
 
@@ -329,6 +337,35 @@ impl ForestService {
   /// HTTP handler that turns events into SSE frames.
   pub fn download_model(&self) -> impl Stream<Item = DownloadEvent> + Send + 'static {
     self.downloader.download(EMBEDDING_MODEL_REPO.to_string())
+  }
+
+  // ─── Agent ───────────────────────────────────────────────────────
+
+  /// Build the agent context (full topic + node list) and dispatch.
+  /// The returned stream is alive for the duration of one HTTP SSE
+  /// response; the route handler maps each `AgentEvent` to a frame.
+  pub async fn propose(
+    &self,
+    topic_id: &TopicId,
+    focused_node_id: Option<NodeId>,
+    prompt: String,
+  ) -> ForestResult<AgentStream> {
+    let topic = self.repo.get_topic(topic_id).await?;
+    let nodes = self.repo.list_nodes_in_topic(topic_id).await?;
+    let req = AgentRequest {
+      topic,
+      nodes,
+      focused_node_id,
+      prompt,
+    };
+    self.proposer.propose(req).await
+  }
+
+  /// Backend label, e.g. `"stub"`, `"gpt-4o-mini (api.openai.com)"`,
+  /// `"claude-sonnet-4-6 (anthropic)"`. Surfaced via the agent status
+  /// endpoint so the UI can render a "powered by …" hint.
+  pub fn agent_backend(&self) -> &str {
+    self.proposer.backend()
   }
 
   // ─── Index ────────────────────────────────────────────────────────
@@ -522,6 +559,7 @@ fn fuse_rrf(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use agent::StubProposer;
   use chrono::Utc;
   use domain::NodeType;
   use embed::StubEmbedder;
@@ -541,6 +579,7 @@ mod tests {
       Arc::new(StubEmbedder::new(EMBED_DIM)),
       EmbedMode::Stub,
       downloader,
+      Arc::new(StubProposer::new()),
     ));
     (tmp, svc)
   }
@@ -556,6 +595,7 @@ mod tests {
       Arc::new(UnavailableEmbedder::new(EMBED_DIM)),
       EmbedMode::Off,
       downloader,
+      Arc::new(StubProposer::new()),
     ));
     (tmp, svc)
   }
@@ -707,6 +747,7 @@ mod tests {
       Arc::new(StubEmbedder::new(EMBED_DIM)),
       EmbedMode::Stub,
       downloader,
+      Arc::new(StubProposer::new()),
     ));
 
     let topic = svc
@@ -783,11 +824,23 @@ mod tests {
       .unwrap();
 
     let fresh = Arc::new(SqliteIndex::open_in_memory().await.unwrap());
-    let (repo_arc, embedder, downloader) = match Arc::try_unwrap(svc) {
-      Ok(s) => (s.repo, s.embedder, s.downloader),
-      Err(s) => (s.repo.clone(), s.embedder.clone(), s.downloader.clone()),
+    let (repo_arc, embedder, downloader, proposer) = match Arc::try_unwrap(svc) {
+      Ok(s) => (s.repo, s.embedder, s.downloader, s.proposer),
+      Err(s) => (
+        s.repo.clone(),
+        s.embedder.clone(),
+        s.downloader.clone(),
+        s.proposer.clone(),
+      ),
     };
-    let svc2 = ForestService::new(repo_arc, fresh, embedder, EmbedMode::Stub, downloader);
+    let svc2 = ForestService::new(
+      repo_arc,
+      fresh,
+      embedder,
+      EmbedMode::Stub,
+      downloader,
+      proposer,
+    );
     svc2.rebuild_index().await.unwrap();
     let hits = svc2.search("findme", None, 10).await.unwrap();
     assert!(hits.iter().any(|h| h.title == "Inner"));

@@ -20,6 +20,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+agent = { path = "../../crates/agent" }
 http-body-util = "0.1"
 tempfile = { workspace = true }
 tower = { version = "0.5", features = ["util"] }

@@ -6,6 +6,7 @@ members = [
   "crates/storage-fs",
   "crates/index-sqlite",
   "crates/embed",
+  "crates/agent",
   "crates/app-core",
 ]
 resolver = "2"

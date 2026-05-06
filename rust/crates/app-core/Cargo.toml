@@ -10,6 +10,7 @@ license.workspace = true
 # in sync against external edits, the embed worker that drains pending
 # embedding jobs, and the hybrid search composition (FTS + vec via RRF).
 [dependencies]
+agent = { path = "../agent" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 domain = { path = "../domain" }

@@ -8,6 +8,7 @@ use serde_json::json;
 
 use crate::AppState;
 
+pub mod agent;
 pub mod embed_admin;
 pub mod index_admin;
 pub mod nodes;
@@ -32,4 +33,6 @@ pub fn v1() -> Router<AppState> {
     .route("/index/rebuild", post(index_admin::rebuild))
     .route("/embed/model/status", get(embed_admin::status))
     .route("/embed/model/download", post(embed_admin::download))
+    .route("/agent/status", get(agent::status))
+    .route("/agent/propose", post(agent::propose))
 }

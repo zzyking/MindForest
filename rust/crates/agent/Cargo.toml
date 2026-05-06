@@ -1,0 +1,33 @@
+[package]
+name = "agent"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# Provider-agnostic agent layer.
+#
+# Implements a single `AgentProposer` trait with multiple provider
+# back-ends:
+# - StubProposer            deterministic, no network — for tests + dev
+# - OpenAICompatibleProposer covers OpenAI + DeepSeek + Groq + Ollama +
+#                           any other server speaking the OpenAI
+#                           /v1/chat/completions SSE protocol; the
+#                           specific backend is selected at construction
+#                           time via base_url + model + api_key
+# - AnthropicProposer       talks Anthropic's /v1/messages SSE shape
+[dependencies]
+async-stream = "0.3"
+async-trait = { workspace = true }
+bytes = "1"
+domain = { path = "../domain" }
+futures = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }

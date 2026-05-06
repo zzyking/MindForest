@@ -138,3 +138,49 @@ export type DownloadEvent =
   | { kind: "file_done"; name: string; size: number }
   | { kind: "done" }
   | { kind: "error"; message: string };
+
+// ─── Agent ──────────────────────────────────────────────────────────
+
+/**
+ * `client_id` placeholder if the proposal references a not-yet-applied
+ * AddNode. ULID otherwise.
+ */
+export type NodeRef = string;
+
+export type AgentProposal =
+  | {
+      op: "add_node";
+      client_id?: string;
+      parent: NodeRef;
+      title: string;
+      content?: string;
+      type?: NodeType;
+    }
+  | {
+      op: "update_node";
+      id: NodeId;
+      title?: string;
+      content?: string;
+      type?: NodeType;
+    }
+  | { op: "delete_node"; id: NodeId }
+  | { op: "link"; from: NodeRef; to: NodeRef }
+  | { op: "unlink"; from: NodeId; to: NodeId };
+
+/** SSE events emitted by `POST /v1/agent/propose`. */
+export type AgentEvent =
+  | { kind: "token"; text: string }
+  | { kind: "proposal"; proposal: AgentProposal }
+  | { kind: "error"; message: string }
+  | { kind: "done" };
+
+export interface AgentStatusResponse {
+  /** Human-readable backend label, e.g. `"stub"`, `"gpt-4o-mini (api.openai.com)"`. */
+  backend: string;
+}
+
+export interface ProposeRequestBody {
+  topic_id: TopicId;
+  focused_node_id?: NodeId | null;
+  prompt: string;
+}

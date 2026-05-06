@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use api::router;
+use agent::StubProposer;
 use app_core::{
   EmbedMode, ForestService, FsRepository, ModelDownloader, SqliteIndex, StubEmbedder, EMBED_DIM,
 };
@@ -25,7 +26,12 @@ async fn fixture() -> (TempDir, axum::Router) {
   let embedder = Arc::new(StubEmbedder::new(EMBED_DIM));
   let downloader = ModelDownloader::new(tmp.path().join("models"));
   let svc = Arc::new(ForestService::new(
-    repo, index, embedder, EmbedMode::Stub, downloader,
+    repo,
+    index,
+    embedder,
+    EmbedMode::Stub,
+    downloader,
+    Arc::new(StubProposer::new()),
   ));
   (tmp, router(svc))
 }
@@ -380,4 +386,55 @@ async fn malformed_json_body_returns_400() {
     .unwrap();
   // axum's Json extractor returns 400 for malformed bodies.
   assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn agent_status_returns_backend_label() {
+  let (_tmp, app) = fixture().await;
+  let resp = app.oneshot(req_get("/v1/agent/status")).await.unwrap();
+  assert_eq!(resp.status(), StatusCode::OK);
+  let body = json_body(resp).await;
+  assert_eq!(body["backend"], "stub");
+}
+
+#[tokio::test]
+async fn agent_propose_streams_token_proposal_and_done_events() {
+  let (_tmp, app) = fixture().await;
+
+  // Create a topic so we can target it from the propose request.
+  let resp = app
+    .clone()
+    .oneshot(req_json(
+      "POST",
+      "/v1/topics",
+      json!({"title": "Agent Roundtrip"}),
+    ))
+    .await
+    .unwrap();
+  assert_eq!(resp.status(), StatusCode::CREATED);
+  let topic = json_body(resp).await;
+  let topic_id = topic["id"].as_str().unwrap();
+
+  let resp = app
+    .oneshot(req_json(
+      "POST",
+      "/v1/agent/propose",
+      json!({"topic_id": topic_id, "prompt": "summarize it"}),
+    ))
+    .await
+    .unwrap();
+  assert_eq!(resp.status(), StatusCode::OK);
+  let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+  let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+  // Sanity-check the SSE wire shape: at least one token event, exactly
+  // one proposal event, and a terminating done event. We don't try to
+  // be byte-precise — the StubProposer's text content can drift.
+  assert!(body.contains("event: token"));
+  assert!(body.contains("event: proposal"));
+  assert!(body.contains("event: done"));
+  assert!(
+    body.matches("event: proposal").count() == 1,
+    "expected exactly one proposal event, got body:\n{body}"
+  );
 }

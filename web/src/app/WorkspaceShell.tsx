@@ -15,6 +15,8 @@ import { cn } from "@/lib/cn";
 import { useWorkspaceUI } from "@/stores/workspaceUI";
 import { Dock } from "@/ui/Dock";
 import { Sidebar } from "@/ui/Sidebar";
+import { AgentPromptBar } from "@/features/agent/AgentPromptBar";
+import { DraftOverlay } from "@/features/agent/DraftOverlay";
 import { ModelDownloadCard } from "@/features/embed/ModelDownloadCard";
 import { SearchPalette } from "@/features/search/SearchPalette";
 
@@ -56,7 +58,9 @@ export function WorkspaceShell({ children }: Props) {
           <ModelDownloadCard />
           {children}
         </main>
+        <DraftOverlay />
       </div>
+      <AgentPromptBar />
       <Dock />
       <SearchPalette />
     </div>

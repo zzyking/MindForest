@@ -13,6 +13,8 @@
  */
 
 import type {
+  AgentEvent,
+  AgentStatusResponse,
   ApiErrorBody,
   DownloadEvent,
   IndexStatus,
@@ -22,6 +24,7 @@ import type {
   Node,
   NodeId,
   NodePatch,
+  ProposeRequestBody,
   SearchHit,
   Topic,
   TopicDetail,
@@ -188,23 +191,63 @@ export function downloadModel(
     if (signal.aborted) controller.abort();
     else signal.addEventListener("abort", () => controller.abort(), { once: true });
   }
-  const events = consumeSseStream(controller.signal);
+  const events = consumeSseStream<DownloadEvent>(
+    "/v1/embed/model/download",
+    { method: "POST" },
+    controller.signal,
+  );
   return { events, cancel: () => controller.abort() };
 }
 
-async function* consumeSseStream(
+// ─── Agent ──────────────────────────────────────────────────────────
+
+export function getAgentStatus(): Promise<AgentStatusResponse> {
+  return request<AgentStatusResponse>("/v1/agent/status");
+}
+
+/**
+ * Stream agent events for one prompt. Same SSE plumbing as the model
+ * download — the server emits `token`, `proposal`, `error`, `done`
+ * events whose data is a JSON `AgentEvent`.
+ */
+export function streamAgentPropose(
+  body: ProposeRequestBody,
+  signal?: AbortSignal,
+): { events: AsyncIterable<AgentEvent>; cancel: () => void } {
+  const controller = new AbortController();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+  const events = consumeSseStream<AgentEvent>(
+    "/v1/agent/propose",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    controller.signal,
+  );
+  return { events, cancel: () => controller.abort() };
+}
+
+// ─── SSE plumbing ───────────────────────────────────────────────────
+
+async function* consumeSseStream<T>(
+  path: string,
+  init: RequestInit,
   signal: AbortSignal,
-): AsyncGenerator<DownloadEvent, void, void> {
-  const resp = await fetch(`${BASE}/v1/embed/model/download`, {
-    method: "POST",
-    headers: { Accept: "text/event-stream" },
+): AsyncGenerator<T, void, void> {
+  const resp = await fetch(`${BASE}${path}`, {
+    ...init,
+    headers: { ...(init.headers as Record<string, string> | undefined), Accept: "text/event-stream" },
     signal,
   });
   if (!resp.ok || !resp.body) {
     throw new ApiError(
       resp.status,
       `http_${resp.status}`,
-      `download stream failed: ${resp.statusText}`,
+      `stream failed: ${resp.statusText}`,
     );
   }
   const reader = resp.body.getReader();
@@ -221,7 +264,7 @@ async function* consumeSseStream(
       while ((idx = nextFrameBoundary(buffer)) !== -1) {
         const frame = buffer.slice(0, idx);
         buffer = buffer.slice(idx).replace(/^(\r?\n){1,2}/, "");
-        const ev = parseSseFrame(frame);
+        const ev = parseSseFrame<T>(frame);
         if (ev) yield ev;
       }
     }
@@ -241,7 +284,7 @@ function nextFrameBoundary(s: string): number {
   return Math.min(a, b);
 }
 
-function parseSseFrame(frame: string): DownloadEvent | null {
+function parseSseFrame<T>(frame: string): T | null {
   // Minimal SSE parser: event lines start with `event:`, data lines with
   // `data:`. Comments (`:`) and `id:` are ignored. We only care about
   // the JSON `data:` payload — the variant is already in the payload's
@@ -252,9 +295,9 @@ function parseSseFrame(frame: string): DownloadEvent | null {
       data += line.slice(5).trimStart();
     }
   }
-  if (!data) return null;
+  if (!data || data === "keepalive") return null;
   try {
-    return JSON.parse(data) as DownloadEvent;
+    return JSON.parse(data) as T;
   } catch {
     return null;
   }
