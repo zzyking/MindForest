@@ -301,7 +301,7 @@ function NodeRow({
           type="button"
           aria-label={children.length > 0 ? (isOpen ? "Collapse" : "Expand") : undefined}
           className={cn(
-            "text-forest-400 hover:text-forest-600 inline-flex h-5 w-5 items-center justify-center text-[10px]",
+            "text-forest-500 hover:text-forest-800 inline-flex h-6 w-6 flex-none items-center justify-center text-base leading-none",
             children.length === 0 && "invisible",
           )}
           onClick={() => toggle(node.id)}

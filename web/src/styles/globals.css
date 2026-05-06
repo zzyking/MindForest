@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 @import "./tokens.css";
 
 /* Reset + globals. Keep this layer thin — feature components own their

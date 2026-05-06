@@ -22,6 +22,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 
 import { cn } from "@/lib/cn";
@@ -352,9 +353,15 @@ function ModeToggle({ value, onChange }: { value: Mode; onChange: (m: Mode) => v
 }
 
 function ReadView({ content }: { content: string }) {
+  // remark-breaks turns single newlines into <br>, mirroring Obsidian /
+  // Typora — they treat each line as its own line rather than the
+  // CommonMark default of "fold soft-breaks into spaces". Pairs with
+  // remark-gfm for tables / task-lists / strikethrough.
   return (
-    <div className="prose prose-forest max-w-none text-base leading-relaxed">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content || "*(empty)*"}</ReactMarkdown>
+    <div className="prose prose-stone max-w-none text-base leading-relaxed">
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+        {content || "*(empty)*"}
+      </ReactMarkdown>
     </div>
   );
 }
