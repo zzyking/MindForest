@@ -46,11 +46,10 @@ interface Props {
 
 /**
  * Editor view modes:
- *   write  — CodeMirror with live-preview decorations (Obsidian-style)
- *   source — CodeMirror plain markdown source, no styling
- *   read   — react-markdown rendered output
+ *   write — CodeMirror with live-preview decorations (Obsidian-style)
+ *   read  — react-markdown rendered output
  */
-type Mode = "write" | "source" | "read";
+type Mode = "write" | "read";
 
 export function NodeEditor({ nodeId }: Props) {
   const node = useForestData((s) => s.nodes[nodeId]);
@@ -239,23 +238,19 @@ export function NodeEditor({ nodeId }: Props) {
         ariaLabel="Node title"
       />
       <MetadataLine node={node} />
-      {mode === "read" ? (
-        <ReadView content={node.content} />
-      ) : (
-        // CodeMirror remounts when mode flips between write↔source so
-        // the new extensions list takes effect; the parent owns the
-        // canonical content via patchNode, so a remount loses no state.
+      {mode === "write" ? (
         <CodeMirrorView
-          key={mode}
           value={node.content}
           onChange={onContentChange}
           extensions={[
             ...(editorExtensionsRef.current ? [editorExtensionsRef.current] : []),
-            ...(mode === "write" ? livePreviewExtensions : []),
+            ...livePreviewExtensions,
           ]}
           ariaLabel="Node body"
           className="min-h-[24vh]"
         />
+      ) : (
+        <ReadView content={node.content} />
       )}
       <LinksPanel node={node} />
       {error && (
@@ -344,16 +339,10 @@ function Toolbar({
   );
 }
 
-const MODE_LABEL: Record<Mode, string> = {
-  write: "Write",
-  source: "Source",
-  read: "Read",
-};
-
 function ModeToggle({ value, onChange }: { value: Mode; onChange: (m: Mode) => void }) {
   return (
     <div className="border-forest-200 inline-flex overflow-hidden rounded-full border">
-      {(["write", "source", "read"] as const).map((m) => (
+      {(["write", "read"] as const).map((m) => (
         <button
           key={m}
           type="button"
@@ -365,7 +354,7 @@ function ModeToggle({ value, onChange }: { value: Mode; onChange: (m: Mode) => v
               : "text-forest-500 hover:text-forest-700 bg-transparent",
           )}
         >
-          {MODE_LABEL[m]}
+          {m === "write" ? "Write" : "Read"}
         </button>
       ))}
     </div>

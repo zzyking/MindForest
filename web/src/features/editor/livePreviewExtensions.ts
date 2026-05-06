@@ -107,25 +107,25 @@ const livePreviewHighlight = HighlightStyle.define([
 ]);
 
 // Minor theme tweaks layered on top of `editorTheme` (the workspace
-// shared theme stays in CodeMirrorView). These only apply in
-// live-preview because we want plain-source mode to keep the flat,
-// uniform monospaced look.
+// shared theme stays in CodeMirrorView). Force long heading lines to
+// wrap aggressively — the bigger heading font means a long title can
+// outrun the column even with EditorView.lineWrapping on, because
+// soft-wrap won't break inside an unbroken word run. `overflow-wrap:
+// anywhere` lets the browser break mid-word as a last resort.
 const livePreviewTheme = EditorView.theme({
+  "&": {
+    overflow: "hidden",
+  },
+  ".cm-scroller": {
+    overflowX: "hidden",
+  },
+  ".cm-content": {
+    wordBreak: "break-word",
+    overflowWrap: "anywhere",
+  },
   ".cm-line": {
-    // Slight extra spacing between paragraphs makes the visual rhythm
-    // feel closer to the read view.
     paddingTop: "1px",
     paddingBottom: "1px",
-  },
-  // ATX heading lines get a touch more breathing room above so they
-  // visually punctuate the column the way headings do in prose.
-  ".cm-line:has(.tok-heading1), .cm-line:has(.tok-heading2)": {
-    marginTop: "0.6em",
-  },
-  // Blockquote indent.
-  ".cm-line:has(.tok-quote)": {
-    paddingLeft: "0.75rem",
-    borderLeft: "3px solid var(--color-forest-200)",
   },
 });
 
