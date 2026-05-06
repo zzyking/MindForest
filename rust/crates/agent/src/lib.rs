@@ -53,46 +53,83 @@ pub use stub::StubProposer;
 
 use std::sync::Arc;
 
-/// Construct a proposer from environment variables.
+/// Provider selector for `AgentConfig`. `Auto` falls through to the
+/// same env-var heuristics that `build_proposer_from_env` historically
+/// used; the explicit variants pin the backend regardless of env.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentProvider {
+  #[default]
+  Auto,
+  Stub,
+  Openai,
+  Anthropic,
+}
+
+/// User-controlled agent settings. Persisted to disk so the choice
+/// survives restarts; mutated through the HTTP `/v1/agent/config`
+/// endpoints so the frontend can offer a settings UI.
 ///
-/// `MINDFOREST_AGENT_PROVIDER` selects the backend:
-/// - `stub` (default when unset *and* no API keys are present)
-/// - `openai` — requires `OPENAI_API_KEY`. Honors `OPENAI_BASE_URL`
-///   (default `https://api.openai.com/v1`) and `OPENAI_MODEL`
-///   (default `gpt-4o-mini`). Same code path covers any
-///   OpenAI-compatible endpoint (DeepSeek, Groq, Ollama, …).
-/// - `anthropic` — requires `ANTHROPIC_API_KEY`. Honors
-///   `ANTHROPIC_MODEL` (default `claude-sonnet-4-6`).
+/// Each provider section carries its own credentials + model. Empty /
+/// `None` fields fall back to the matching `OPENAI_*` / `ANTHROPIC_*`
+/// env vars so a power user who already has a key in their shell
+/// environment doesn't have to retype it into the UI.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentConfig {
+  pub provider: AgentProvider,
+  pub openai: AgentOpenAIConfig,
+  pub anthropic: AgentAnthropicConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentOpenAIConfig {
+  /// e.g. `https://api.openai.com/v1`, `https://api.deepseek.com`,
+  /// `http://localhost:11434/v1`. Empty → use the OpenAI default.
+  pub base_url: Option<String>,
+  /// e.g. `gpt-4o-mini`. Empty → `gpt-4o-mini`.
+  pub model: Option<String>,
+  /// Empty → fall back to `OPENAI_API_KEY` env at proposer-build time.
+  pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentAnthropicConfig {
+  /// e.g. `claude-sonnet-4-6`. Empty → `claude-sonnet-4-6`.
+  pub model: Option<String>,
+  /// Empty → fall back to `ANTHROPIC_API_KEY` env at proposer-build time.
+  pub api_key: Option<String>,
+}
+
+/// Construct a proposer from explicit user config, falling back to
+/// environment variables for any field the user hasn't overridden.
 ///
-/// When the variable is unset we auto-detect: if `OPENAI_API_KEY` is
-/// present we pick OpenAI; else if `ANTHROPIC_API_KEY` is present we
-/// pick Anthropic; else we fall back to the stub. This means a clean
-/// dev install "just works" with the stub, but any user who exports a
-/// key gets the real provider without further config.
-pub fn build_proposer_from_env() -> Arc<dyn AgentProposer> {
-  let explicit = std::env::var("MINDFOREST_AGENT_PROVIDER").ok();
-  let chosen = match explicit.as_deref() {
-    Some("stub") => "stub",
-    Some("openai") => "openai",
-    Some("anthropic") => "anthropic",
-    Some(other) => {
-      tracing::warn!("unknown MINDFOREST_AGENT_PROVIDER={other:?}, using auto-detect");
-      auto_detect()
-    }
-    None => auto_detect(),
+/// The cascade is:
+///   1. `config.provider` selects the backend (Auto = env auto-detect)
+///   2. each provider's fields use config when set, else env
+///   3. if the chosen provider can't find an api_key from either layer,
+///      we log and fall back to the stub
+pub fn build_proposer_from_config(config: &AgentConfig) -> Arc<dyn AgentProposer> {
+  let chosen = match config.provider {
+    AgentProvider::Auto => auto_detect(config),
+    AgentProvider::Stub => "stub",
+    AgentProvider::Openai => "openai",
+    AgentProvider::Anthropic => "anthropic",
   };
   match chosen {
-    "openai" => match build_openai_from_env() {
+    "openai" => match build_openai(&config.openai) {
       Some(p) => Arc::new(p),
       None => {
-        tracing::warn!("openai requested but OPENAI_API_KEY missing; falling back to stub");
+        tracing::warn!("openai requested but no api_key configured; falling back to stub");
         Arc::new(StubProposer::new())
       }
     },
-    "anthropic" => match build_anthropic_from_env() {
+    "anthropic" => match build_anthropic(&config.anthropic) {
       Some(p) => Arc::new(p),
       None => {
-        tracing::warn!("anthropic requested but ANTHROPIC_API_KEY missing; falling back to stub");
+        tracing::warn!("anthropic requested but no api_key configured; falling back to stub");
         Arc::new(StubProposer::new())
       }
     },
@@ -100,21 +137,37 @@ pub fn build_proposer_from_env() -> Arc<dyn AgentProposer> {
   }
 }
 
-fn auto_detect() -> &'static str {
-  if std::env::var("OPENAI_API_KEY").is_ok() {
+/// Backwards-compatible env-only entry point. Equivalent to
+/// `build_proposer_from_config(&AgentConfig::default())`.
+pub fn build_proposer_from_env() -> Arc<dyn AgentProposer> {
+  build_proposer_from_config(&AgentConfig::default())
+}
+
+fn auto_detect(config: &AgentConfig) -> &'static str {
+  if config.openai.api_key.is_some() || std::env::var("OPENAI_API_KEY").is_ok() {
     "openai"
-  } else if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+  } else if config.anthropic.api_key.is_some() || std::env::var("ANTHROPIC_API_KEY").is_ok() {
     "anthropic"
   } else {
     "stub"
   }
 }
 
-fn build_openai_from_env() -> Option<OpenAICompatibleProposer> {
-  let api_key = std::env::var("OPENAI_API_KEY").ok()?;
-  let base_url =
-    std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
-  let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
+fn build_openai(cfg: &AgentOpenAIConfig) -> Option<OpenAICompatibleProposer> {
+  let api_key = cfg
+    .api_key
+    .clone()
+    .or_else(|| std::env::var("OPENAI_API_KEY").ok())?;
+  let base_url = cfg
+    .base_url
+    .clone()
+    .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
+    .unwrap_or_else(|| "https://api.openai.com/v1".into());
+  let model = cfg
+    .model
+    .clone()
+    .or_else(|| std::env::var("OPENAI_MODEL").ok())
+    .unwrap_or_else(|| "gpt-4o-mini".into());
   Some(OpenAICompatibleProposer::new(OpenAIConfig {
     base_url,
     api_key,
@@ -122,9 +175,16 @@ fn build_openai_from_env() -> Option<OpenAICompatibleProposer> {
   }))
 }
 
-fn build_anthropic_from_env() -> Option<AnthropicProposer> {
-  let api_key = std::env::var("ANTHROPIC_API_KEY").ok()?;
-  let model = std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-sonnet-4-6".into());
+fn build_anthropic(cfg: &AgentAnthropicConfig) -> Option<AnthropicProposer> {
+  let api_key = cfg
+    .api_key
+    .clone()
+    .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())?;
+  let model = cfg
+    .model
+    .clone()
+    .or_else(|| std::env::var("ANTHROPIC_MODEL").ok())
+    .unwrap_or_else(|| "claude-sonnet-4-6".into());
   Some(AnthropicProposer::new(AnthropicConfig::new(api_key, model)))
 }
 

@@ -110,6 +110,7 @@ dependencies = [
  "futures",
  "index-sqlite",
  "serde",
+ "serde_json",
  "storage-fs",
  "tempfile",
  "tokio",

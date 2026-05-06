@@ -35,4 +35,5 @@ pub fn v1() -> Router<AppState> {
     .route("/embed/model/download", post(embed_admin::download))
     .route("/agent/status", get(agent::status))
     .route("/agent/propose", post(agent::propose))
+    .route("/agent/config", get(agent::get_config).put(agent::put_config))
 }

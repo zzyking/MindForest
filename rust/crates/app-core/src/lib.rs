@@ -26,14 +26,17 @@ use std::time::Duration;
 
 use chrono::Utc;
 use futures::Stream;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{mpsc, Notify, RwLock};
 
 use domain::{
   Embedder, ForestError, ForestRepository, ForestResult, IndexStatus, Indexer, NewNode, NewTopic,
   Node, NodeId, NodePatch, SearchHit, Topic, TopicId, TopicSummary,
 };
 
-pub use agent::{AgentEvent, AgentProposer, AgentRequest, AgentStream};
+pub use agent::{
+  AgentAnthropicConfig, AgentConfig, AgentEvent, AgentOpenAIConfig, AgentProposer, AgentProvider,
+  AgentRequest, AgentStream,
+};
 pub use embed::download::{DownloadEvent, FileStatus, ModelDownloader, ModelStatus};
 pub use embed::{EmbedMode, StubEmbedder, UnavailableEmbedder};
 pub use index_sqlite::{content_hash_for, SqliteIndex, EMBED_DIM};
@@ -90,6 +93,28 @@ fn embed_mode_label(mode: &EmbedMode) -> String {
   }
 }
 
+/// Read `agent.json` from disk, falling back to the default config when
+/// the file is missing or malformed. Reasons to fail soft: a clean
+/// install hasn't written one yet, and we don't want a broken settings
+/// file to brick the entire app.
+async fn load_agent_config(path: &std::path::Path) -> AgentConfig {
+  let bytes = match tokio::fs::read(path).await {
+    Ok(b) => b,
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return AgentConfig::default(),
+    Err(e) => {
+      tracing::warn!("agent config read failed at {path:?}: {e}; using defaults");
+      return AgentConfig::default();
+    }
+  };
+  match serde_json::from_slice::<AgentConfig>(&bytes) {
+    Ok(cfg) => cfg,
+    Err(e) => {
+      tracing::warn!("agent config parse failed at {path:?}: {e}; using defaults");
+      AgentConfig::default()
+    }
+  }
+}
+
 /// Open the vault, prepare the derived SQLite index, build an embedder
 /// from `mode`, and compose them into a `ForestService`. Rebuilds the
 /// index from filesystem state only when `index.db` doesn't yet exist;
@@ -125,7 +150,12 @@ pub async fn bootstrap(
     embed_mode.clone(),
     Some(downloader.target_dir(EMBEDDING_MODEL_REPO)),
   );
-  let proposer = agent::build_proposer_from_env();
+  // Persisted agent settings live next to the index. If the file is
+  // missing or unreadable we fall back to env-driven defaults so a
+  // first-time launch still works without writing to disk.
+  let agent_config_path = data_dir.join("agent.json");
+  let agent_config = load_agent_config(&agent_config_path).await;
+  let proposer = agent::build_proposer_from_config(&agent_config);
   let service = Arc::new(ForestService::new(
     repo.clone(),
     index,
@@ -133,6 +163,8 @@ pub async fn bootstrap(
     embed_mode,
     downloader,
     proposer,
+    agent_config,
+    agent_config_path,
   ));
   let watcher = repo.watch()?;
   Ok(Bootstrap { service, watcher })
@@ -153,9 +185,17 @@ pub struct ForestService {
   /// they won't use). Stored as a string for `Clone`-friendliness.
   embed_mode_label: String,
   downloader: ModelDownloader,
-  /// LLM proposer. Cheaply cloneable Arc — held by the SSE handler for
-  /// the lifetime of one streaming response.
-  proposer: Arc<dyn AgentProposer>,
+  /// LLM proposer behind a swap-friendly RwLock so the settings UI can
+  /// switch providers at runtime. The inner `Arc` keeps `propose()`
+  /// cheap (`read().await.clone()` clones the Arc, not the proposer).
+  proposer: Arc<RwLock<Arc<dyn AgentProposer>>>,
+  /// Mirror of the persisted `AgentConfig`. Held alongside the proposer
+  /// so the HTTP `GET /v1/agent/config` route can return the current
+  /// settings without re-reading the file.
+  agent_config: Arc<RwLock<AgentConfig>>,
+  /// Where the persisted agent config lives. `None` for in-memory test
+  /// fixtures that don't want disk writes.
+  agent_config_path: Option<PathBuf>,
 }
 
 impl ForestService {
@@ -166,6 +206,8 @@ impl ForestService {
     embed_mode: EmbedMode,
     downloader: ModelDownloader,
     proposer: Arc<dyn AgentProposer>,
+    agent_config: AgentConfig,
+    agent_config_path: impl Into<Option<PathBuf>>,
   ) -> Self {
     Self {
       repo,
@@ -174,7 +216,9 @@ impl ForestService {
       embed_notify: Arc::new(Notify::new()),
       embed_mode_label: embed_mode_label(&embed_mode),
       downloader,
-      proposer,
+      proposer: Arc::new(RwLock::new(proposer)),
+      agent_config: Arc::new(RwLock::new(agent_config)),
+      agent_config_path: agent_config_path.into(),
     }
   }
 
@@ -411,14 +455,57 @@ impl ForestService {
       focused_node_id,
       prompt,
     };
-    self.proposer.propose(req).await
+    let proposer = self.proposer.read().await.clone();
+    proposer.propose(req).await
   }
 
   /// Backend label, e.g. `"stub"`, `"gpt-4o-mini (api.openai.com)"`,
   /// `"claude-sonnet-4-6 (anthropic)"`. Surfaced via the agent status
   /// endpoint so the UI can render a "powered by …" hint.
-  pub fn agent_backend(&self) -> &str {
-    self.proposer.backend()
+  pub async fn agent_backend(&self) -> String {
+    self.proposer.read().await.backend().to_string()
+  }
+
+  /// Snapshot of the persisted agent configuration, with API keys
+  /// included verbatim. The HTTP route exposes this on loopback only;
+  /// callers outside the service should not relay it elsewhere.
+  pub async fn agent_config(&self) -> AgentConfig {
+    self.agent_config.read().await.clone()
+  }
+
+  /// Persist a new `AgentConfig` and rebuild the proposer. Returns the
+  /// new backend label so the caller (HTTP route) can echo it back to
+  /// the UI without a second round-trip.
+  pub async fn set_agent_config(&self, config: AgentConfig) -> ForestResult<String> {
+    if let Some(path) = self.agent_config_path.as_ref() {
+      let bytes = serde_json::to_vec_pretty(&config)
+        .map_err(|e| ForestError::Storage(format!("serialize agent config: {e}")))?;
+      // Atomic-ish: write to a sibling path then rename. Stops a crash
+      // mid-write from leaving an empty / truncated file.
+      if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+          .await
+          .map_err(|e| ForestError::Storage(format!("create {parent:?}: {e}")))?;
+      }
+      let tmp = path.with_extension("json.tmp");
+      tokio::fs::write(&tmp, &bytes)
+        .await
+        .map_err(|e| ForestError::Storage(format!("write {tmp:?}: {e}")))?;
+      // 0600 — best-effort on unix; ignored on platforms without it.
+      #[cfg(unix)]
+      {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await;
+      }
+      tokio::fs::rename(&tmp, path)
+        .await
+        .map_err(|e| ForestError::Storage(format!("rename {tmp:?}→{path:?}: {e}")))?;
+    }
+    let new_proposer = agent::build_proposer_from_config(&config);
+    let backend = new_proposer.backend().to_string();
+    *self.proposer.write().await = new_proposer;
+    *self.agent_config.write().await = config;
+    Ok(backend)
   }
 
   // ─── Index ────────────────────────────────────────────────────────
@@ -633,6 +720,8 @@ mod tests {
       EmbedMode::Stub,
       downloader,
       Arc::new(StubProposer::new()),
+      AgentConfig::default(),
+      None,
     ));
     (tmp, svc)
   }
@@ -649,6 +738,8 @@ mod tests {
       EmbedMode::Off,
       downloader,
       Arc::new(StubProposer::new()),
+      AgentConfig::default(),
+      None,
     ));
     (tmp, svc)
   }
@@ -918,6 +1009,8 @@ mod tests {
       EmbedMode::Stub,
       downloader,
       Arc::new(StubProposer::new()),
+      AgentConfig::default(),
+      None,
     ));
 
     let topic = svc
@@ -994,14 +1087,12 @@ mod tests {
       .unwrap();
 
     let fresh = Arc::new(SqliteIndex::open_in_memory().await.unwrap());
-    let (repo_arc, embedder, downloader, proposer) = match Arc::try_unwrap(svc) {
-      Ok(s) => (s.repo, s.embedder, s.downloader, s.proposer),
-      Err(s) => (
-        s.repo.clone(),
-        s.embedder.clone(),
-        s.downloader.clone(),
-        s.proposer.clone(),
-      ),
+    // Reuse a fresh stub proposer rather than trying to extract the
+    // active one from behind the RwLock — the test only cares about
+    // index reconstruction; the agent path isn't exercised here.
+    let (repo_arc, embedder, downloader) = match Arc::try_unwrap(svc) {
+      Ok(s) => (s.repo, s.embedder, s.downloader),
+      Err(s) => (s.repo.clone(), s.embedder.clone(), s.downloader.clone()),
     };
     let svc2 = ForestService::new(
       repo_arc,
@@ -1009,7 +1100,9 @@ mod tests {
       embedder,
       EmbedMode::Stub,
       downloader,
-      proposer,
+      Arc::new(StubProposer::new()),
+      AgentConfig::default(),
+      None,
     );
     svc2.rebuild_index().await.unwrap();
     let hits = svc2.search("findme", None, 10).await.unwrap();

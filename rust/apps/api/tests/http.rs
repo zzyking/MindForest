@@ -10,7 +10,8 @@ use std::sync::Arc;
 use api::router;
 use agent::StubProposer;
 use app_core::{
-  EmbedMode, ForestService, FsRepository, ModelDownloader, SqliteIndex, StubEmbedder, EMBED_DIM,
+  AgentConfig, EmbedMode, ForestService, FsRepository, ModelDownloader, SqliteIndex, StubEmbedder,
+  EMBED_DIM,
 };
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -32,6 +33,8 @@ async fn fixture() -> (TempDir, axum::Router) {
     EmbedMode::Stub,
     downloader,
     Arc::new(StubProposer::new()),
+    AgentConfig::default(),
+    None,
   ));
   (tmp, router(svc))
 }

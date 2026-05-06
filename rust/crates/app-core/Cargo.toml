@@ -18,6 +18,7 @@ embed = { path = "../embed" }
 futures = { workspace = true }
 index-sqlite = { path = "../index-sqlite" }
 serde = { workspace = true }
+serde_json = { workspace = true }
 storage-fs = { path = "../storage-fs" }
 tokio = { workspace = true }
 tracing = { workspace = true }

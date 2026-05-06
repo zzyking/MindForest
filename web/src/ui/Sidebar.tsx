@@ -16,6 +16,7 @@ import { cn } from "@/lib/cn";
 import { useFocusNode } from "@/app/navigation";
 import { useForestData } from "@/stores/forestData";
 import { ApiError } from "@/lib/api";
+import { AgentSettings } from "@/features/agent/AgentSettings";
 import type { NodeId, NodeSummary, TopicId } from "@/lib/types";
 
 export function Sidebar() {
@@ -36,6 +37,11 @@ export function Sidebar() {
   const [draftTitle, setDraftTitle] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // Agent settings dialog. Lives in the sidebar footer so it's
+  // discoverable next to the topic list rather than buried in a
+  // separate route.
+  const [agentSettingsOpen, setAgentSettingsOpen] = useState(false);
 
   const onCreateTopic = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -177,6 +183,20 @@ export function Sidebar() {
           />
         </section>
       )}
+
+      <footer className="border-forest-200 -mx-4 mt-auto flex items-center justify-between border-t px-4 pt-3">
+        <button
+          type="button"
+          onClick={() => setAgentSettingsOpen(true)}
+          className="text-forest-500 hover:text-forest-900 text-xs"
+        >
+          ⚙ Agent settings
+        </button>
+      </footer>
+      <AgentSettings
+        open={agentSettingsOpen}
+        onClose={() => setAgentSettingsOpen(false)}
+      />
     </div>
   );
 }

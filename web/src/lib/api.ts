@@ -13,6 +13,7 @@
  */
 
 import type {
+  AgentConfig,
   AgentEvent,
   AgentStatusResponse,
   ApiErrorBody,
@@ -203,6 +204,23 @@ export function downloadModel(
 
 export function getAgentStatus(): Promise<AgentStatusResponse> {
   return request<AgentStatusResponse>("/v1/agent/status");
+}
+
+export function getAgentConfig(): Promise<AgentConfig> {
+  return request<AgentConfig>("/v1/agent/config");
+}
+
+/**
+ * Persist new agent settings. Server rebuilds the proposer in place
+ * and returns the new backend label so the UI doesn't need a separate
+ * status fetch.
+ */
+export function putAgentConfig(config: AgentConfig): Promise<{ backend: string }> {
+  return request<{ backend: string }>("/v1/agent/config", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(config),
+  });
 }
 
 /**

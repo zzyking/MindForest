@@ -19,7 +19,7 @@ use futures::stream::{Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 
-use app_core::AgentEvent;
+use app_core::{AgentConfig, AgentEvent};
 use domain::{NodeId, TopicId};
 
 use crate::error::ApiError;
@@ -35,8 +35,26 @@ pub struct ProposeRequest {
 
 pub async fn status(State(svc): State<AppState>) -> Json<serde_json::Value> {
   Json(json!({
-    "backend": svc.agent_backend(),
+    "backend": svc.agent_backend().await,
   }))
+}
+
+/// `GET /v1/agent/config` — current persisted agent settings, including
+/// API keys verbatim. Loopback-only; the frontend reflects this into a
+/// settings panel.
+pub async fn get_config(State(svc): State<AppState>) -> Json<AgentConfig> {
+  Json(svc.agent_config().await)
+}
+
+/// `PUT /v1/agent/config` — write new agent settings to disk and rebuild
+/// the proposer in place. Returns the post-write backend label so the
+/// UI can update its "powered by …" hint without a separate fetch.
+pub async fn put_config(
+  State(svc): State<AppState>,
+  Json(body): Json<AgentConfig>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+  let backend = svc.set_agent_config(body).await?;
+  Ok(Json(json!({ "backend": backend })))
 }
 
 pub async fn propose(

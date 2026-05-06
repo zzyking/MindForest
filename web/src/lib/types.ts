@@ -181,6 +181,26 @@ export interface AgentStatusResponse {
   backend: string;
 }
 
+/** Persisted agent settings. Mirrors `app_core::AgentConfig`. */
+export type AgentProvider = "auto" | "stub" | "openai" | "anthropic";
+
+export interface AgentOpenAIConfig {
+  base_url?: string | null;
+  model?: string | null;
+  api_key?: string | null;
+}
+
+export interface AgentAnthropicConfig {
+  model?: string | null;
+  api_key?: string | null;
+}
+
+export interface AgentConfig {
+  provider: AgentProvider;
+  openai: AgentOpenAIConfig;
+  anthropic: AgentAnthropicConfig;
+}
+
 export interface ProposeRequestBody {
   topic_id: TopicId;
   focused_node_id?: NodeId | null;
