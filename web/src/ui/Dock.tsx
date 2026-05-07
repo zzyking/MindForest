@@ -9,7 +9,7 @@
  * default — see `useFocusNode` callers in TreeView / ForestView.
  */
 
-import { Network, PanelLeft, PanelLeftClose, Pencil, Search, Workflow } from "lucide-react";
+import { Shrub, PanelLeft, PanelLeftClose, Pencil, Search, Trees } from "lucide-react";
 
 import { cn } from "@/lib/cn";
 import { useWorkspaceUI, type ViewMode } from "@/stores/workspaceUI";
@@ -103,8 +103,8 @@ interface ViewToggleProps {
 
 const VIEW_MODES: { id: ViewMode; label: string; Icon: typeof Pencil }[] = [
   { id: "editor", label: "Editor", Icon: Pencil },
-  { id: "tree", label: "Tree", Icon: Network },
-  { id: "forest", label: "Forest", Icon: Workflow },
+  { id: "tree", label: "Tree", Icon: Shrub },
+  { id: "forest", label: "Forest", Icon: Trees },
 ];
 
 function ViewToggle({ value, onChange }: ViewToggleProps) {

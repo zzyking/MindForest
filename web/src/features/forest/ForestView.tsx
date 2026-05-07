@@ -1,37 +1,39 @@
 /**
- * ForestView — workspace as a galaxy of topic clusters.
+ * ForestView — workspace-wide knowledge graph in the spirit of
+ * Quartz's graph view.
  *
- * Each topic becomes its own constellation: nodes laid out via the
- * d3-hierarchy tree pipeline, then translated so the cluster centre
- * sits on a circular orbit around the workspace origin. With N topics
- * the orbit ring carries them at evenly-spaced angles; tree shapes
- * stay legible inside each cluster while the surrounding empty space
- * lets cross-topic links sweep across as long arcs.
+ * Reference: https://github.com/jackyzha0/quartz/blob/v4/quartz/components/scripts/graph.inline.ts
  *
- *   - Cluster centre = orbit point (cos·θ, sin·θ) · WORKSPACE_RADIUS.
- *   - Tree-internal positions kept (root at cluster centre, children
- *     splaying out the local tree's natural extent).
- *   - Backbone tree edges thin grey within each cluster.
- *   - Same-topic link edges stay straight (close together so curving
- *     adds nothing); cross-topic link edges curve via @sigma/edge-curve
- *     so they don't slice through a neighbour cluster.
- *   - The currently focused node renders darker + larger; clicking any
- *     other node navigates focus.
- *   - Each cluster carries a floating topic-name label anchored to
- *     its centre; clicking the label navigates to that topic's root.
+ * Design:
+ *   - One unified graph of every node across every topic.
+ *   - Layout via d3-force (manyBody + center + link + collide). No
+ *     orbit seeding; topics emerge as visual clusters because their
+ *     nodes are densely connected within and sparsely across.
+ *   - Node radius = 4 + sqrt(degree). Hubs read bigger, leaves smaller.
+ *   - Labels hidden by default; only the hovered node and its direct
+ *     neighbours light up + show titles. Everything else dims to 0.15
+ *     alpha. Same affordance as the Quartz graph.
+ *   - Same-topic links straight, cross-topic links curved.
+ *   - Click navigates to the node.
+ *   - Topic labels float above each cluster's centroid (post-settle)
+ *     for orientation; click navigates to that topic's root.
  *
- * Data: this view needs every topic's `TopicDetail`. We trigger
- * `fetchTopics` once and `fetchTopic` for any topic missing details.
- *
- * Lifecycle: the sigma instance rebuilds whenever the assembled graph
- * changes. At workspace scale (hundreds of nodes) the cost is invisible
- * and the code stays simple.
+ * Lifecycle: rebuild graph + re-run simulation when topicDetails or
+ * focus changes; sigma instance is single-use, killed and recreated.
  */
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import EdgeCurveProgram from "@sigma/edge-curve";
+import {
+  forceCenter,
+  forceCollide,
+  forceLink,
+  forceManyBody,
+  forceSimulation,
+  type SimulationLinkDatum,
+  type SimulationNodeDatum,
+} from "d3-force";
 import Graph from "graphology";
-import forceAtlas2 from "graphology-layout-forceatlas2";
 import Sigma from "sigma";
 
 import { useFocusNode } from "@/app/navigation";
@@ -43,27 +45,13 @@ interface Props {
   focusedNodeId: NodeId;
 }
 
-// Galaxy layout. Initial positions seed each topic's nodes inside a
-// disc on a circular orbit (so the simulation starts already roughly
-// clustered); ForceAtlas2 then settles them into an organic layout.
-// Edge weights bias the simulation toward keeping a topic cohesive
-// (tree backbone + same-topic links pull harder than cross-topic
-// links). The settings below trade more iterations + stronger
-// repulsion for a layout that actually spreads — the previous defaults
-// produced a tight central knot.
-const ORBIT_GAP_PER_CLUSTER = 600;
-const ORBIT_MIN_RADIUS = 600;
-const INTRA_TOPIC_SPREAD = 400;
-const FA2_ITERATIONS = 500;
-
-const NODE_SIZE_DEFAULT = 7;
-const NODE_SIZE_FOCUSED = 16;
+// Hover dim alpha for non-neighbour nodes / edges.
+const DIM_ALPHA = 0.15;
 
 // Palette — sigma renders to canvas/webgl so we hard-code rather than
 // reading CSS variables. Mirrors `globals.css` `forest-*` / `accent`
 // tokens.
 const COLOR_FOREST_900 = "#152019";
-const COLOR_FOREST_700 = "#39513f";
 const COLOR_FOREST_300 = "#b8c8be";
 const COLOR_ACCENT = "#d47a5d";
 const COLOR_ACCENT_DEEP = "#a85c3f";
@@ -79,17 +67,27 @@ const TYPE_COLOR: Record<NodeType, string> = {
   misc: "#9d9b91",
 };
 
+interface SimNode extends SimulationNodeDatum {
+  id: NodeId;
+  topicId: TopicId;
+  type: NodeType;
+  title: string;
+  degree: number;
+}
+
+interface SimLink extends SimulationLinkDatum<SimNode> {
+  source: NodeId | SimNode;
+  target: NodeId | SimNode;
+  /** "tree" | "link" (same-topic) | "xlink" (cross-topic). */
+  kind: "tree" | "link" | "xlink";
+}
+
 interface TopicAnchor {
   topicId: TopicId;
   title: string;
-  /** Cluster centre in graph space — used both for the floating
-   *  topic-name label and the radial halo overlay. */
   centerX: number;
   centerY: number;
-  /** Top of the cluster's bounding box (label sits above this). */
   topY: number;
-  /** Furthest distance from centre to any node, used to size the halo. */
-  radius: number;
   nodeCount: number;
 }
 
@@ -104,16 +102,15 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sigmaRef = useRef<Sigma | null>(null);
 
-  // Step 1: kick off summary fetch.
+  // Hover state — both the node id and its neighbour set, computed
+  // once per hover change so the reducer can do a single Set lookup.
+  const [hoverNode, setHoverNode] = useState<NodeId | null>(null);
+  const neighborsRef = useRef<Set<NodeId>>(new Set());
+
   useEffect(() => {
     void fetchTopics().catch(() => {});
   }, [fetchTopics]);
 
-  // Step 2: ensure each known topic has a TopicDetail. The effect runs
-  // each time the loading map mutates (i.e. a fetch starts or
-  // resolves), so checking `detailLoading[id]` here keeps us from
-  // double-firing while a request is already in flight — the store
-  // itself doesn't dedupe.
   useEffect(() => {
     for (const id of Object.keys(topics) as TopicId[]) {
       if (!topicDetails[id] && !detailLoading[id]) {
@@ -122,8 +119,10 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     }
   }, [topics, topicDetails, detailLoading, fetchTopic]);
 
-  // Step 3: assemble the unified graph + per-tree anchors.
-  const { graph, anchors, hasNoData } = useMemo(() => {
+  // Build + lay out the graph. Returns the assembled graphology graph,
+  // the per-topic anchors (computed from settled positions), and a
+  // neighbour adjacency map used by the hover reducer.
+  const { graph, anchors, neighbors, hasNoData } = useMemo(() => {
     const buildStart = performance.now();
     const ready: TopicDetail[] = (Object.keys(topics) as TopicId[])
       .sort()
@@ -134,258 +133,280 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       return {
         graph: null as Graph | null,
         anchors: [] as TopicAnchor[],
+        neighbors: new Map<NodeId, Set<NodeId>>(),
         hasNoData: Object.keys(topics).length === 0,
       };
     }
 
-    const g = new Graph({ multi: false, type: "directed", allowSelfLoops: false });
-    const anchorList: TopicAnchor[] = [];
+    // Pass 1: build the simulation node + link lists. d3-force mutates
+    // these in place (assigns x/y), so we read the positions back
+    // after settling.
+    const simNodes: SimNode[] = [];
+    const simLinks: SimLink[] = [];
+    const nodeById = new Map<NodeId, SimNode>();
+    const adjacency = new Map<NodeId, Set<NodeId>>();
+    const addEdge = (a: NodeId, b: NodeId) => {
+      let ax = adjacency.get(a);
+      if (!ax) {
+        ax = new Set();
+        adjacency.set(a, ax);
+      }
+      ax.add(b);
+      let bx = adjacency.get(b);
+      if (!bx) {
+        bx = new Set();
+        adjacency.set(b, bx);
+      }
+      bx.add(a);
+    };
 
-    // Initial seeding: each topic's nodes get random positions inside
-    // a disc whose centre sits on a circular orbit around the
-    // workspace origin. ForceAtlas2 then settles the layout — tree
-    // backbone + same-topic link edges keep a topic's nodes pulled
-    // together; cross-topic links exert a weaker pull so distinct
-    // topics drift apart but stay in the same scene.
+    // Seed initial positions so d3-force converges quickly + stably:
+    // each topic gets an angular slice on a unit circle, nodes randomly
+    // placed inside its slice's disc.
     const N = ready.length;
-    const initialAngle = N === 2 ? Math.PI : Math.PI / 2;
-    const orbitRadius =
-      N === 1 ? 0 : Math.max(ORBIT_MIN_RADIUS, (ORBIT_GAP_PER_CLUSTER * N) / (2 * Math.PI));
-
-    // PRNG seed per topic so re-renders converge to the same layout.
+    const SEED_RADIUS = 80;
+    const ORBIT_R = 400;
     const rand = mulberry32(0xc0ffee);
-
     for (let i = 0; i < ready.length; i++) {
       const detail = ready[i]!;
-      if (detail.nodes.length === 0) continue;
-      const theta = N === 1 ? 0 : (2 * Math.PI * i) / N + initialAngle;
-      const cx = Math.cos(theta) * orbitRadius;
-      const cy = Math.sin(theta) * orbitRadius;
-
+      const theta = N === 1 ? 0 : (2 * Math.PI * i) / N - Math.PI / 2;
+      const cx = N === 1 ? 0 : Math.cos(theta) * ORBIT_R;
+      const cy = N === 1 ? 0 : Math.sin(theta) * ORBIT_R;
       for (const summary of detail.nodes) {
-        const focused = summary.id === focusedNodeId;
-        const type = summary.type;
-        // Uniform-in-disc random position in a small spread around the
-        // cluster seed point. The simulation does the rest.
         const ang = rand() * Math.PI * 2;
-        const r = Math.sqrt(rand()) * INTRA_TOPIC_SPREAD;
-        g.addNode(summary.id, {
+        const r = Math.sqrt(rand()) * SEED_RADIUS;
+        const node: SimNode = {
+          id: summary.id,
+          topicId: detail.id,
+          type: summary.type,
+          title: summary.title || "Untitled",
+          degree: 0,
           x: cx + Math.cos(ang) * r,
           y: cy + Math.sin(ang) * r,
-          size: focused ? NODE_SIZE_FOCUSED : NODE_SIZE_DEFAULT,
-          label: summary.title || "Untitled",
-          color: focused ? COLOR_FOREST_900 : TYPE_COLOR[type],
-          topicId: detail.id,
-          nodeType: type,
-        });
-      }
-
-      // Tree-backbone edges. Each non-root node has a parent in the
-      // same topic; we use them as the simulation's structural force
-      // so child nodes stay near their parent post-settle.
-      for (const summary of detail.nodes) {
-        if (!summary.parent) continue;
-        if (!g.hasNode(summary.parent)) continue;
-        g.addEdgeWithKey(`tree:${summary.parent}->${summary.id}`, summary.parent, summary.id, {
-          type: "line",
-          size: 1.2,
-          color: COLOR_FOREST_300,
-          weight: 1.0,
-        });
+        };
+        simNodes.push(node);
+        nodeById.set(summary.id, node);
       }
     }
 
-    // Pass 2: link edges. We need every node to be in the graph first
-    // so we know which links land same-topic vs cross-topic.
+    // Tree-backbone edges.
+    for (const detail of ready) {
+      for (const summary of detail.nodes) {
+        if (!summary.parent) continue;
+        if (!nodeById.has(summary.parent)) continue;
+        simLinks.push({ source: summary.parent, target: summary.id, kind: "tree" });
+        addEdge(summary.parent, summary.id);
+      }
+    }
+    // Link edges (same-topic + cross-topic).
     const seen = new Set<string>();
     for (const detail of ready) {
       for (const summary of detail.nodes) {
-        if (!g.hasNode(summary.id)) continue;
         for (const dst of summary.links) {
-          if (!g.hasNode(dst)) continue;
+          if (!nodeById.has(dst)) continue;
           const key = summary.id < dst ? `${summary.id}|${dst}` : `${dst}|${summary.id}`;
           if (seen.has(key)) continue;
           seen.add(key);
-          const sameTopic =
-            (g.getNodeAttribute(summary.id, "topicId") as TopicId) ===
-            (g.getNodeAttribute(dst, "topicId") as TopicId);
-          if (sameTopic) {
-            g.addEdgeWithKey(`link:${key}`, summary.id, dst, {
-              type: "line",
-              size: 1.6,
-              color: COLOR_ACCENT,
-              weight: 0.8,
-            });
-          } else {
-            g.addEdgeWithKey(`xlink:${key}`, summary.id, dst, {
-              type: "curve",
-              size: 1.8,
-              color: COLOR_ACCENT_DEEP,
-              // Weak pull — distinct topics drift apart but the link is
-              // still a tug between them.
-              weight: 0.2,
-            });
-          }
+          const sameTopic = nodeById.get(summary.id)?.topicId === nodeById.get(dst)?.topicId;
+          simLinks.push({
+            source: summary.id,
+            target: dst,
+            kind: sameTopic ? "link" : "xlink",
+          });
+          addEdge(summary.id, dst);
         }
       }
     }
 
-    // Run the force simulation. The key setting for the
-    // hub-and-spoke / Obsidian look is `outboundAttractionDistribution:
-    // true` — it normalises the attraction force by the source node's
-    // degree, so a parent (hub) pulls each of its children with a
-    // weaker force, letting them fan out radially instead of stacking
-    // on top of each other and crossing edges.
-    if (g.order > 1) {
-      forceAtlas2.assign(g, {
-        iterations: FA2_ITERATIONS,
-        settings: {
-          // Weak gravity — just enough to stop disconnected components
-          // from drifting infinitely. Stronger gravity squashes the
-          // layout into a tight knot.
-          gravity: 0.05,
-          // High repulsion → airy spread between leaves.
-          scalingRatio: 30,
-          // The headline change. Without this, hubs over-attract their
-          // leaves and force them into a tangled cluster.
-          outboundAttractionDistribution: true,
-          // adjustSizes treats `size` as a node radius the simulation
-          // refuses to overlap; matters when default node radius is ~7.
-          adjustSizes: true,
-          slowDown: 1,
-          edgeWeightInfluence: 1,
-          // Cheap O(n log n) above ~80 nodes.
-          barnesHutOptimize: g.order > 80,
-          // linLogMode + outboundAttractionDistribution gives the
-          // cleanest hub-and-spoke pattern for tree-shaped data.
-          linLogMode: true,
-        },
+    // Compute degree (used for radius + reducer).
+    for (const node of simNodes) {
+      node.degree = adjacency.get(node.id)?.size ?? 0;
+    }
+
+    const nodeRadius = (n: SimNode) => 4 + Math.sqrt(n.degree);
+
+    // Run d3-force. Parameters tuned from Quartz's defaults:
+    //   charge -120 (a touch stronger than Quartz's -100·0.5; we have
+    //   tighter clusters because trees are densely connected),
+    //   centerForce 0.3, linkDistance 36 — plus collide for spacing.
+    if (simNodes.length > 1) {
+      const sim = forceSimulation<SimNode>(simNodes)
+        .force("charge", forceManyBody().strength(-120))
+        .force("center", forceCenter(0, 0).strength(0.3))
+        .force(
+          "link",
+          forceLink<SimNode, SimLink>(simLinks)
+            .id((n) => n.id)
+            .distance(36)
+            .strength((l) => (l.kind === "xlink" ? 0.2 : 0.7)),
+        )
+        .force("collide", forceCollide<SimNode>((n) => nodeRadius(n) * 1.6).iterations(3))
+        .stop();
+      // Run synchronously for a fixed number of ticks. 300 is enough
+      // for the layout to visually settle on graphs up to ~500 nodes.
+      const ticks = 300;
+      for (let i = 0; i < ticks; i++) sim.tick();
+    }
+
+    // Pass 2: write into a graphology graph for sigma to render.
+    const g = new Graph({ multi: false, type: "undirected", allowSelfLoops: false });
+    for (const node of simNodes) {
+      const focused = node.id === focusedNodeId;
+      g.addNode(node.id, {
+        x: node.x ?? 0,
+        y: node.y ?? 0,
+        size: nodeRadius(node),
+        label: node.title,
+        color: focused ? COLOR_FOREST_900 : TYPE_COLOR[node.type],
+        topicId: node.topicId,
+        nodeType: node.type,
+        degree: node.degree,
+      });
+    }
+    for (const link of simLinks) {
+      const sId =
+        typeof link.source === "string" ? (link.source as NodeId) : link.source.id;
+      const tId =
+        typeof link.target === "string" ? (link.target as NodeId) : link.target.id;
+      const key = `${link.kind}:${sId}->${tId}`;
+      if (g.hasEdge(sId, tId)) continue;
+      g.addEdgeWithKey(key, sId, tId, {
+        type: link.kind === "xlink" ? "curve" : "line",
+        size: link.kind === "tree" ? 1 : 1.4,
+        color:
+          link.kind === "tree"
+            ? COLOR_FOREST_300
+            : link.kind === "link"
+              ? COLOR_ACCENT
+              : COLOR_ACCENT_DEEP,
+        kind: link.kind,
       });
     }
 
-    // Pass 3: derive topic centroids + radii from the *settled*
-    // positions. Topic anchor (label + halo) reads from this.
-    const topicNodes = new Map<TopicId, { id: NodeId; x: number; y: number }[]>();
-    g.forEachNode((id, attrs) => {
-      const topicId = attrs.topicId as TopicId;
-      const arr = topicNodes.get(topicId) ?? [];
-      arr.push({ id: id as NodeId, x: attrs.x as number, y: attrs.y as number });
-      topicNodes.set(topicId, arr);
-    });
+    // Pass 3: per-topic anchor (centroid + bbox top) for the floating
+    // topic-name label.
+    const anchorList: TopicAnchor[] = [];
+    const byTopic = new Map<TopicId, SimNode[]>();
+    for (const n of simNodes) {
+      const arr = byTopic.get(n.topicId) ?? [];
+      arr.push(n);
+      byTopic.set(n.topicId, arr);
+    }
     for (const detail of ready) {
-      const arr = topicNodes.get(detail.id);
+      const arr = byTopic.get(detail.id);
       if (!arr || arr.length === 0) continue;
       let sumX = 0;
       let sumY = 0;
+      let maxY = -Infinity;
       for (const n of arr) {
-        sumX += n.x;
-        sumY += n.y;
+        const x = n.x ?? 0;
+        const y = n.y ?? 0;
+        sumX += x;
+        sumY += y;
+        if (y > maxY) maxY = y;
       }
-      const cx = sumX / arr.length;
-      const cy = sumY / arr.length;
-      let maxR = 0;
-      for (const n of arr) {
-        const dx = n.x - cx;
-        const dy = n.y - cy;
-        const r = Math.sqrt(dx * dx + dy * dy);
-        if (r > maxR) maxR = r;
-      }
-      const haloPadding = 80;
       anchorList.push({
         topicId: detail.id,
         title: detail.title,
-        centerX: cx,
-        centerY: cy,
-        // Sigma's y axis is up — the cluster's visual top is +maxR.
-        topY: cy + maxR + haloPadding,
-        radius: maxR + haloPadding,
-        nodeCount: detail.nodes.length,
+        centerX: sumX / arr.length,
+        centerY: sumY / arr.length,
+        topY: maxY + 60,
+        nodeCount: arr.length,
       });
     }
 
-    const totalNodes = g.order;
-    const totalEdges = g.size;
     const buildMs = (performance.now() - buildStart).toFixed(1);
     console.info(
-      `[forest] graph built in ${buildMs}ms · ${ready.length} topics · ${totalNodes} nodes · ${totalEdges} edges`,
+      `[forest] graph built in ${buildMs}ms · ${ready.length} topics · ${g.order} nodes · ${g.size} edges`,
     );
-    return { graph: g, anchors: anchorList, hasNoData: false };
+    return { graph: g, anchors: anchorList, neighbors: adjacency, hasNoData: false };
   }, [topics, topicDetails, focusedNodeId]);
 
-  // HTML overlay refs. We mutate `transform` directly on these per
-  // camera update — going through React state would re-render the
-  // whole layer at frame rate, which thrashes the main thread.
+  // Keep the neighbour map in a ref so the reducer can read it
+  // without re-creating sigma.
+  useEffect(() => {
+    neighborsRef.current = new Set();
+  }, [graph]);
+
   const labelsLayerRef = useRef<HTMLDivElement | null>(null);
   const labelNodeRefs = useRef(new Map<TopicId, HTMLDivElement>());
-  const haloNodeRefs = useRef(new Map<TopicId, HTMLDivElement>());
 
-  // Mount/remount sigma whenever the assembled graph changes. The
-  // sigma instance is single-use — `kill()` releases its WebGL
-  // resources, then we make a fresh one.
   useEffect(() => {
     if (!containerRef.current || !graph) return;
     if (sigmaRef.current) {
       sigmaRef.current.kill();
       sigmaRef.current = null;
     }
-    const mountStart = performance.now();
+
     const s = new Sigma(graph, containerRef.current, {
+      // Labels off by default — only the hovered node + its neighbours
+      // get `forceLabel: true` via the reducer.
       renderLabels: true,
       labelSize: 12,
       labelFont: "system-ui, sans-serif",
       labelColor: { color: COLOR_LABEL },
-      labelDensity: 0.5,
-      labelGridCellSize: 120,
-      labelRenderedSizeThreshold: 6,
+      labelRenderedSizeThreshold: Infinity,
       defaultEdgeColor: COLOR_FOREST_300,
-      defaultNodeColor: COLOR_FOREST_700,
+      defaultNodeColor: COLOR_FOREST_300,
       minCameraRatio: 0.05,
       maxCameraRatio: 4,
       hideLabelsOnMove: true,
-      hideEdgesOnMove: true,
-      edgeProgramClasses: {
-        curve: EdgeCurveProgram,
+      hideEdgesOnMove: false,
+      edgeProgramClasses: { curve: EdgeCurveProgram },
+      nodeReducer: (id, attrs) => {
+        const out: typeof attrs = { ...attrs };
+        const hovered = sigmaHoverRef.current;
+        if (hovered) {
+          const isHovered = id === hovered;
+          const isNeighbor = neighborsRef.current.has(id as NodeId);
+          if (isHovered || isNeighbor) {
+            out.forceLabel = true;
+          } else {
+            out.color = withAlpha(attrs.color as string, DIM_ALPHA);
+            out.label = "";
+          }
+        }
+        return out;
+      },
+      edgeReducer: (id, attrs) => {
+        const out: typeof attrs = { ...attrs };
+        const hovered = sigmaHoverRef.current;
+        if (hovered && graph.hasEdge(id)) {
+          const [src, tgt] = graph.extremities(id);
+          if (src !== hovered && tgt !== hovered) {
+            out.color = withAlpha(attrs.color as string, DIM_ALPHA);
+          }
+        }
+        return out;
       },
     });
 
     const projectOverlays = () => {
       for (const a of anchors) {
-        // Halo: position at cluster centre, scale to cluster radius.
-        const halo = haloNodeRefs.current.get(a.topicId);
-        if (halo) {
-          const c = s.graphToViewport({ x: a.centerX, y: a.centerY });
-          // Sigma's graphToViewport reflects the camera's current
-          // ratio, so a unit graph distance maps to a viewport distance
-          // we can read by sampling a second point.
-          const edge = s.graphToViewport({ x: a.centerX + a.radius, y: a.centerY });
-          const r = Math.abs(edge.x - c.x);
-          halo.style.transform = `translate3d(${c.x - r}px, ${c.y - r}px, 0)`;
-          halo.style.width = `${r * 2}px`;
-          halo.style.height = `${r * 2}px`;
-        }
-        // Label: position above the cluster's top edge.
         const label = labelNodeRefs.current.get(a.topicId);
-        if (label) {
-          const v = s.graphToViewport({ x: a.centerX, y: a.topY });
-          label.style.transform = `translate3d(${v.x}px, ${v.y}px, 0) translate(-50%, -100%)`;
-        }
+        if (!label) continue;
+        const v = s.graphToViewport({ x: a.centerX, y: a.topY });
+        label.style.transform = `translate3d(${v.x}px, ${v.y}px, 0) translate(-50%, -100%)`;
       }
+    };
+
+    const setHover = (id: NodeId | null) => {
+      sigmaHoverRef.current = id;
+      neighborsRef.current = id ? (neighbors.get(id) ?? new Set()) : new Set();
+      setHoverNode(id);
+      s.refresh();
     };
 
     s.on("clickNode", ({ node }) => {
       const topicId = graph.getNodeAttribute(node, "topicId") as TopicId;
       void focus(node as NodeId, topicId);
     });
+    s.on("enterNode", ({ node }) => setHover(node as NodeId));
+    s.on("leaveNode", () => setHover(null));
     s.getCamera().on("updated", projectOverlays);
     s.on("afterRender", projectOverlays);
 
     sigmaRef.current = s;
-    console.info(`[forest] sigma mounted in ${(performance.now() - mountStart).toFixed(1)}ms`);
-
-    // Explicit fit-to-graph. Sigma's default auto-fit only roughly
-    // frames the node bounding box; we want extra padding so clusters
-    // (which extend slightly beyond their root nodes) and their halos
-    // don't graze the viewport edges.
     fitCameraToGraph(s, graph);
     projectOverlays();
 
@@ -393,7 +414,15 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       s.kill();
       sigmaRef.current = null;
     };
-  }, [graph, focus, anchors]);
+  }, [graph, focus, anchors, neighbors]);
+
+  const srSummary = useMemo(() => {
+    if (!graph) return "";
+    const topicCount = anchors.length;
+    const totalNodes = graph.order;
+    const topicTitles = anchors.map((a) => `${a.title} (${a.nodeCount})`).join(", ");
+    return `Forest map of the workspace. ${topicCount} topic${topicCount === 1 ? "" : "s"}, ${totalNodes} node${totalNodes === 1 ? "" : "s"} total. Topics: ${topicTitles}.`;
+  }, [anchors, graph]);
 
   if (hasNoData) {
     return (
@@ -410,71 +439,19 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     );
   }
 
-  // Build a screen-reader-only summary of the forest. Sigma renders to
-  // a canvas, which is opaque to assistive tech — without a fallback,
-  // a SR user lands on this view with literally nothing to announce.
-  const srSummary = useMemo(() => {
-    if (!graph) return "";
-    const topicCount = anchors.length;
-    const totalNodes = graph.order;
-    const topicTitles = anchors.map((a) => `${a.title} (${a.nodeCount})`).join(", ");
-    return `Forest map of the workspace. ${topicCount} topic${topicCount === 1 ? "" : "s"}, ${totalNodes} node${totalNodes === 1 ? "" : "s"} total. Topics: ${topicTitles}.`;
-  }, [anchors, graph]);
-
   return (
     <div
-      className="bg-noise relative h-full w-full overflow-hidden"
+      className="bg-sand-50 relative h-full w-full overflow-hidden"
       role="region"
       aria-label="Forest map of the workspace"
     >
-      {/* Atmosphere layer: a soft radial wash from the workspace centre
-          gives the canvas depth so empty space between clusters reads
-          as "outer dark" rather than blank paper. Stays under the
-          sigma canvas via z-order. */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0"
-        style={{
-          background:
-            "radial-gradient(ellipse at center, rgba(245,247,245,1) 0%, rgba(230,237,233,0.92) 55%, rgba(204,214,209,0.6) 100%)",
-        }}
-      />
-      {/* Per-cluster halo: a translucent radial glow centred on each
-          cluster, sized to the cluster's outermost node. Helps each
-          topic read as "a place" instead of free-floating dots. */}
-      <div className="pointer-events-none absolute inset-0">
-        {anchors.map((a) => (
-          <div
-            key={a.topicId}
-            ref={(el) => {
-              if (el) haloNodeRefs.current.set(a.topicId, el);
-              else haloNodeRefs.current.delete(a.topicId);
-            }}
-            aria-hidden
-            className="absolute left-0 top-0 rounded-full will-change-transform"
-            style={{
-              background:
-                a.topicId === focusedTopicId
-                  ? "radial-gradient(circle, rgba(212,122,93,0.18) 0%, rgba(212,122,93,0.05) 60%, transparent 80%)"
-                  : "radial-gradient(circle, rgba(85,124,104,0.16) 0%, rgba(85,124,104,0.04) 60%, transparent 80%)",
-            }}
-          />
-        ))}
-      </div>
-      {/* Sigma canvas. Transparent bg so atmosphere + halos show
-          through. Marked as application + given an aria-label so
-          assistive tech doesn't land on a silent canvas; the topic
-          label buttons below are still focusable for navigation. */}
       <div
         ref={containerRef}
         className="absolute inset-0"
         role="application"
         aria-label={srSummary || "Forest canvas"}
-        style={{ cursor: "grab", backgroundColor: "transparent" }}
+        style={{ cursor: hoverNode ? "pointer" : "grab", backgroundColor: "transparent" }}
       />
-      {/* Visually-hidden text alternative — every node listed in
-          source order so a screen reader can read the structure even
-          when the canvas itself can't be inspected. */}
       <div className="sr-only">
         <p>{srSummary}</p>
         {anchors.map((a) => (
@@ -483,8 +460,6 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
           </p>
         ))}
       </div>
-      {/* Topic-name labels: floating pills above each cluster. Click
-          navigates to that topic's root. */}
       <div ref={labelsLayerRef} className="pointer-events-none absolute inset-0">
         {anchors.map((a) => {
           const focused = a.topicId === focusedTopicId;
@@ -523,11 +498,23 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
   );
 }
 
-/**
- * Tiny seedable PRNG. Same seed → same layout across re-renders, so
- * the user doesn't see the simulation flick into a different shape on
- * every HMR / fetch.
- */
+// Module-level ref keeping the current hover id readable from sigma's
+// reducer closures without forcing a full sigma re-create on every
+// hover tick.
+const sigmaHoverRef: { current: NodeId | null } = { current: null };
+
+/** Convert a #rrggbb to rgba with the given alpha. */
+function withAlpha(color: string, alpha: number): string {
+  if (color.startsWith("rgba(")) return color;
+  if (!color.startsWith("#")) return color;
+  const n = color.length === 7 ? color : color === "#000" ? "#000000" : color;
+  const r = parseInt(n.slice(1, 3), 16);
+  const g = parseInt(n.slice(3, 5), 16);
+  const b = parseInt(n.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/** Seedable PRNG so HMR doesn't reshuffle the layout on each tick. */
 function mulberry32(seed: number) {
   let s = seed >>> 0;
   return () => {
@@ -539,12 +526,7 @@ function mulberry32(seed: number) {
   };
 }
 
-/**
- * Frame the camera so every node fits inside the viewport with a small
- * margin. Sigma's default fit is too tight for the galaxy view —
- * cluster halos extend past the node bounding box, and we want a bit
- * of "outer dark" visible so the metaphor reads.
- */
+/** Frame the camera to the graph bounds with 25% padding. */
 function fitCameraToGraph(s: Sigma, graph: Graph) {
   if (graph.order === 0) return;
   let minX = Infinity;
@@ -563,26 +545,15 @@ function fitCameraToGraph(s: Sigma, graph: Graph) {
   const cy = (minY + maxY) / 2;
   const halfW = Math.max(1, (maxX - minX) / 2);
   const halfH = Math.max(1, (maxY - minY) / 2);
-  // We want the bounds (with padding) to span the viewport. Sigma's
-  // camera ratio is in normalized graph units; sample two graph points
-  // through the projection to learn how many graph-units of width
-  // currently equal the viewport's width, then scale ratio so the
-  // bounds — padded — match.
   const container = s.getContainer();
   const vw = container.clientWidth || 1;
   const vh = container.clientHeight || 1;
   const padding = 1.25;
-  // Sample current graph-units-per-pixel via two probes one pixel apart.
   const probeA = s.viewportToGraph({ x: 0, y: 0 });
   const probeB = s.viewportToGraph({ x: vw, y: 0 });
   const graphUnitsPerViewportWidth = Math.abs(probeB.x - probeA.x);
-  // Desired width-in-graph-units so bounds fit with padding.
   const wantedWidth = halfW * 2 * padding;
   const wantedHeight = halfH * 2 * padding;
-  // Pick ratio such that the larger of (wanted/vw, wanted/vh) drives
-  // the framing. `ratio` in sigma is (graph-units-per-screen-unit) /
-  // (current-units-per-screen-unit) — multiplying by the wanted/current
-  // ratio scales accordingly.
   const cam = s.getCamera();
   const currentRatio = cam.ratio;
   const ratio =
@@ -595,4 +566,3 @@ function fitCameraToGraph(s: Sigma, graph: Graph) {
   const framed = s.viewportToFramedGraph(view);
   cam.setState({ x: framed.x, y: framed.y, ratio, angle: 0 });
 }
-
