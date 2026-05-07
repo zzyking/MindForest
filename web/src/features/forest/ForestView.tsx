@@ -1,32 +1,30 @@
 /**
- * ForestView — workspace-level "many trees" canvas.
+ * ForestView — workspace as a galaxy of topic clusters.
  *
- * One sigma scene that contains every topic in the workspace at once:
+ * Each topic becomes its own constellation: nodes laid out via the
+ * d3-hierarchy tree pipeline, then translated so the cluster centre
+ * sits on a circular orbit around the workspace origin. With N topics
+ * the orbit ring carries them at evenly-spaced angles; tree shapes
+ * stay legible inside each cluster while the surrounding empty space
+ * lets cross-topic links sweep across as long arcs.
  *
- *   - Each topic is laid out as a hierarchical tree (d3-hierarchy) and
- *     translated horizontally so trees stand side by side with a gap.
- *   - Tree backbone edges (parent → child) sit thin and grey within
- *     each tree.
- *   - Link edges (`node.links`) are drawn between nodes regardless of
- *     which topic they live in. Same-topic links stay short and
- *     straight; cross-topic links are rendered as curves (via
- *     `@sigma/edge-curve`) so the long arc between trees is readable
- *     without colliding with intermediate nodes.
- *   - The currently focused node is highlighted darker + larger so the
- *     user always knows where they are coming from.
- *   - Each tree gets a floating topic-name label anchored to the tree's
- *     top-centre; positions are re-projected from graph space into
- *     viewport space on every camera update.
+ *   - Cluster centre = orbit point (cos·θ, sin·θ) · WORKSPACE_RADIUS.
+ *   - Tree-internal positions kept (root at cluster centre, children
+ *     splaying out the local tree's natural extent).
+ *   - Backbone tree edges thin grey within each cluster.
+ *   - Same-topic link edges stay straight (close together so curving
+ *     adds nothing); cross-topic link edges curve via @sigma/edge-curve
+ *     so they don't slice through a neighbour cluster.
+ *   - The currently focused node renders darker + larger; clicking any
+ *     other node navigates focus.
+ *   - Each cluster carries a floating topic-name label anchored to
+ *     its centre; clicking the label navigates to that topic's root.
  *
- * Data: this view depends on having every topic's `TopicDetail`. We
- * trigger `fetchTopics` once and `fetchTopic` for any topic missing
- * details. Re-renders are cheap because graph construction only runs
- * when the underlying topicDetails / focus change.
+ * Data: this view needs every topic's `TopicDetail`. We trigger
+ * `fetchTopics` once and `fetchTopic` for any topic missing details.
  *
- * Lifecycle: the sigma instance is created once per assembled graph and
- * killed in cleanup. A minor compromise — we rebuild the graph and
- * remount sigma whenever any topic's nodes change — but at our scale
- * (hundreds of nodes per workspace, not thousands) the cost is invisible
+ * Lifecycle: the sigma instance rebuilds whenever the assembled graph
+ * changes. At workspace scale (hundreds of nodes) the cost is invisible
  * and the code stays simple.
  */
 
@@ -46,14 +44,21 @@ interface Props {
   focusedNodeId: NodeId;
 }
 
-const TREE_NODE_W = 220;
-const TREE_NODE_H = 110;
+const TREE_NODE_W = 160;
+const TREE_NODE_H = 90;
 
-// Horizontal padding between adjacent trees, in graph units.
-const TREE_GAP = 360;
+// Galaxy layout. Each topic centre sits on a circle around the
+// workspace origin. Radius scales with topic count so adjacent
+// clusters don't bump into each other; SINGLE_RADIUS handles the
+// degenerate one-topic case so the lone cluster doesn't sit on top of
+// the camera origin awkwardly.
+const ORBIT_GAP_PER_CLUSTER = 700;
+const ORBIT_MIN_RADIUS = 900;
+const SINGLE_RADIUS = 0;
+const NODE_SCALE = 0.55;
 
-const NODE_SIZE_DEFAULT = 8;
-const NODE_SIZE_FOCUSED = 16;
+const NODE_SIZE_DEFAULT = 6;
+const NODE_SIZE_FOCUSED = 14;
 
 // Palette — sigma renders to canvas/webgl so we hard-code rather than
 // reading CSS variables. Mirrors `globals.css` `forest-*` / `accent`
@@ -131,10 +136,15 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     const g = new Graph({ multi: false, type: "directed", allowSelfLoops: false });
     const anchorList: TopicAnchor[] = [];
 
-    // Lay out each tree at origin and accumulate horizontal offset so
-    // trees don't overlap.
-    let cursorX = 0;
-    for (const detail of ready) {
+    // Position each topic's cluster centre on a circular orbit around
+    // (0, 0). Single-topic case sits at origin so the camera doesn't
+    // need an off-centre starting frame.
+    const N = ready.length;
+    const orbitRadius =
+      N === 1 ? SINGLE_RADIUS : Math.max(ORBIT_MIN_RADIUS, ORBIT_GAP_PER_CLUSTER * N / (2 * Math.PI));
+
+    for (let i = 0; i < ready.length; i++) {
+      const detail = ready[i]!;
       const layout = computeTreeLayout({
         nodes: detail.nodes.map((n) => ({ id: n.id, parent: n.parent, title: n.title })),
         rootId: detail.root_node_id,
@@ -144,9 +154,17 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       });
       if (layout.nodes.length === 0) continue;
 
-      // The tree layout's x can be negative (root centred at 0). Shift
-      // so this tree's leftmost point sits at `cursorX`.
-      const offsetX = cursorX - layout.bounds.minX;
+      // Orbit angle: start at the top (-π/2) and walk clockwise so the
+      // first topic feels "anchored" up there.
+      const theta = N === 1 ? 0 : (2 * Math.PI * i) / N - Math.PI / 2;
+      const cx = Math.cos(theta) * orbitRadius;
+      const cy = Math.sin(theta) * orbitRadius;
+
+      // Shift the tree so its (root-aligned) centre lands at (cx, cy).
+      // The tree layout puts the root at x=0 by construction; y is
+      // depth-driven so the root sits at the top. We shift in y so the
+      // bounding box centres on the cluster point.
+      const treeCY = (layout.bounds.minY + layout.bounds.maxY) / 2;
       const summaryById = new Map(detail.nodes.map((n) => [n.id, n]));
 
       for (const n of layout.nodes) {
@@ -154,13 +172,13 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
         const focused = n.id === focusedNodeId;
         const type = summary?.type ?? "misc";
         g.addNode(n.id, {
-          // Sigma's y axis points up; tree y points down. Flip.
-          x: n.x + offsetX,
-          y: -n.y,
+          x: cx + n.x * NODE_SCALE,
+          // Flip tree y (grows down) into sigma y (grows up); centre on
+          // cluster.
+          y: cy - (n.y - treeCY) * NODE_SCALE,
           size: focused ? NODE_SIZE_FOCUSED : NODE_SIZE_DEFAULT,
           label: summary?.title || n.title || "Untitled",
           color: focused ? COLOR_FOREST_900 : TYPE_COLOR[type],
-          // Read by event handlers; not rendered.
           topicId: detail.id,
           nodeType: type,
         });
@@ -169,21 +187,20 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       for (const e of layout.edges) {
         g.addEdgeWithKey(`tree:${e.source}->${e.target}`, e.source, e.target, {
           type: "line",
-          size: 1.4,
+          size: 1.2,
           color: COLOR_FOREST_300,
         });
       }
 
+      // Topic label anchored at the cluster centre, lifted slightly
+      // above so it doesn't collide with the cluster's root node.
+      const treeHeight = (layout.bounds.maxY - layout.bounds.minY) * NODE_SCALE;
       anchorList.push({
         topicId: detail.id,
         title: detail.title,
-        // Centre of the tree's horizontal extent, plus a touch above
-        // the root for visual breathing room.
-        graphX: offsetX + (layout.bounds.minX + layout.bounds.maxX) / 2,
-        graphY: -(layout.bounds.minY) + TREE_NODE_H * 0.6,
+        graphX: cx,
+        graphY: cy + treeHeight / 2 + TREE_NODE_H * NODE_SCALE,
       });
-
-      cursorX += (layout.bounds.maxX - layout.bounds.minX) + TREE_GAP;
     }
 
     // Pass 2: link edges. We need every node to be in the graph first
@@ -350,25 +367,35 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
         ref={labelsLayerRef}
         className="pointer-events-none absolute inset-0 overflow-hidden"
       >
-        {anchors.map((a) => (
-          <div
-            key={a.topicId}
-            ref={(el) => {
-              if (el) labelNodeRefs.current.set(a.topicId, el);
-              else labelNodeRefs.current.delete(a.topicId);
-            }}
-            className={
-              "absolute left-0 top-0 whitespace-nowrap will-change-transform " +
-              (a.topicId === focusedTopicId
-                ? "text-forest-900 font-medium"
-                : "text-forest-500")
-            }
-          >
-            <span className="bg-sand-50/80 rounded-md px-2 py-0.5 text-xs backdrop-blur-sm">
-              {a.title}
-            </span>
-          </div>
-        ))}
+        {anchors.map((a) => {
+          const focused = a.topicId === focusedTopicId;
+          const detail = topicDetails[a.topicId];
+          return (
+            <div
+              key={a.topicId}
+              ref={(el) => {
+                if (el) labelNodeRefs.current.set(a.topicId, el);
+                else labelNodeRefs.current.delete(a.topicId);
+              }}
+              className="absolute left-0 top-0 whitespace-nowrap will-change-transform"
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  if (detail) void focus(detail.root_node_id, detail.id);
+                }}
+                className={
+                  "pointer-events-auto border bg-sand-50/85 hover:bg-sand-100 rounded-full px-3 py-1 font-serif text-sm backdrop-blur-sm transition-colors " +
+                  (focused
+                    ? "text-forest-900 border-accent"
+                    : "text-forest-700 border-forest-200")
+                }
+              >
+                {a.title}
+              </button>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
