@@ -16,6 +16,7 @@ import { useWorkspaceUI } from "@/stores/workspaceUI";
 import { Dock } from "@/ui/Dock";
 import { Sidebar } from "@/ui/Sidebar";
 import { AgentPromptBar } from "@/features/agent/AgentPromptBar";
+import { AgentSettings } from "@/features/agent/AgentSettings";
 import { DraftOverlay } from "@/features/agent/DraftOverlay";
 import { ModelDownloadCard } from "@/features/embed/ModelDownloadCard";
 import { SearchPalette } from "@/features/search/SearchPalette";
@@ -28,11 +29,14 @@ export function WorkspaceShell({ children }: Props) {
   const sidebarOpen = useWorkspaceUI((s) => s.sidebarOpen);
   const setSearchPalette = useWorkspaceUI((s) => s.setSearchPalette);
   const toggleSidebar = useWorkspaceUI((s) => s.toggleSidebar);
+  const agentSettingsOpen = useWorkspaceUI((s) => s.agentSettingsOpen);
+  const setAgentSettings = useWorkspaceUI((s) => s.setAgentSettings);
 
   // Workspace-level keyboard shortcuts. Bound at the shell so leaf
   // components don't have to re-register on every nav.
   //   Cmd/Ctrl+K  → search palette
   //   Cmd/Ctrl+\  → toggle sidebar
+  //   Cmd/Ctrl+,  → agent settings
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const cmd = e.metaKey || e.ctrlKey;
@@ -46,10 +50,15 @@ export function WorkspaceShell({ children }: Props) {
         toggleSidebar();
         return;
       }
+      if (cmd && e.key === ",") {
+        e.preventDefault();
+        setAgentSettings(true);
+        return;
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setSearchPalette, toggleSidebar]);
+  }, [setSearchPalette, toggleSidebar, setAgentSettings]);
 
   return (
     <div className="bg-noise relative flex h-screen flex-col bg-forest-50 text-forest-900">
@@ -84,6 +93,7 @@ export function WorkspaceShell({ children }: Props) {
       <AgentPromptBar />
       <Dock />
       <SearchPalette />
+      <AgentSettings open={agentSettingsOpen} onClose={() => setAgentSettings(false)} />
     </div>
   );
 }

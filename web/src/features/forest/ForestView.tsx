@@ -46,7 +46,8 @@ interface Props {
 }
 
 // Hover dim alpha for non-neighbour nodes / edges.
-const DIM_ALPHA = 0.15;
+const DIM_ALPHA = 0.3;
+const HOVER_SCALE = 0.16;
 
 // Palette — sigma renders to canvas/webgl so we hard-code rather than
 // reading CSS variables. Mirrors `globals.css` `forest-*` / `accent`
@@ -101,11 +102,19 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sigmaRef = useRef<Sigma | null>(null);
+  const hoverProgressRef = useRef(0);
+  const hoverAnimFrameRef = useRef<number | null>(null);
 
   // Hover state — both the node id and its neighbour set, computed
   // once per hover change so the reducer can do a single Set lookup.
   const [hoverNode, setHoverNode] = useState<NodeId | null>(null);
   const neighborsRef = useRef<Set<NodeId>>(new Set());
+  
+  // Keep track of the active set during fade-out so they remain opaque
+  const activeDimSetRef = useRef<{ hovered: NodeId | null; neighbors: Set<NodeId> }>({
+    hovered: null,
+    neighbors: new Set(),
+  });
 
   useEffect(() => {
     void fetchTopics().catch(() => {});
@@ -165,7 +174,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     // placed inside its slice's disc.
     const N = ready.length;
     const SEED_RADIUS = 80;
-    const ORBIT_R = 400;
+    const ORBIT_R = 20;
     const rand = mulberry32(0xc0ffee);
     for (let i = 0; i < ready.length; i++) {
       const detail = ready[i]!;
@@ -223,7 +232,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       node.degree = adjacency.get(node.id)?.size ?? 0;
     }
 
-    const nodeRadius = (n: SimNode) => 4 + Math.sqrt(n.degree);
+    const nodeRadius = (n: SimNode) => 6 + 1.5 * Math.sqrt(n.degree);
 
     // Run d3-force. Parameters tuned from Quartz's defaults:
     //   charge -120 (a touch stronger than Quartz's -100·0.5; we have
@@ -338,13 +347,75 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       sigmaRef.current = null;
     }
 
+    const customDrawLabel = (context: CanvasRenderingContext2D, data: any, settings: any) => {
+      if (!data.label) return;
+      const hoverBoost = hoverProgressRef.current;
+      const labelAlpha = Math.max(0, (hoverBoost - 0.4) / 0.6);
+      if (labelAlpha <= 0) return;
+
+      const size = settings.labelSize;
+      context.font = `${settings.labelWeight || "normal"} ${size}px ${settings.labelFont}`;
+
+      if (data.isHoveredNode) {
+        const textWidth = context.measureText(data.label).width;
+
+        // 胶囊形状包住 Node 和 Label
+        const padding = 6;
+        const r = Math.max(data.size + 4, size / 2 + 4);
+        const lcX = data.x; // 左侧圆心与节点同心
+        const textStartX = data.x + data.size + padding;
+        
+        // 动画：向右平滑展开（为了让展开有冲刺的灵动感，使用开方 easing）
+        const fullRcX = textStartX + textWidth;
+        const expandProgress = Math.pow(labelAlpha, 0.5);
+        const rcX = lcX + (fullRcX - lcX) * expandProgress;
+
+        context.save();
+        context.beginPath();
+        // 画左半圆：从 90度（底）顺时针画到 -90度（顶），覆盖整个左侧
+        context.arc(lcX, data.y, r, Math.PI / 2, -Math.PI / 2);
+        context.lineTo(rcX, data.y - r);
+        // 画右半圆：从 -90度（顶）顺时针画到 90度（底），覆盖整个右侧
+        context.arc(rcX, data.y, r, -Math.PI / 2, Math.PI / 2);
+        context.closePath();
+
+        // 背景 (sand-50 玻璃态)
+        context.fillStyle = `rgba(249, 247, 242, ${labelAlpha * 0.95})`;
+        context.fill();
+        // 细边框 (forest-200)
+        context.lineWidth = 1;
+        context.strokeStyle = `rgba(204, 214, 209, ${labelAlpha})`;
+        context.stroke();
+
+        // 裁切后续绘制（含文字），实现“向右遮罩揭开”的抽出效果
+        context.clip();
+
+        // 文字 (color-label)
+        // 文字虽然一直画在原本最终的固定位置，但在展开过程中未达到的区域会被 mask 裁切掉
+        context.fillStyle = `rgba(62, 75, 65, ${labelAlpha})`;
+        context.fillText(data.label, textStartX, data.y + size / 3);
+
+        context.restore();
+
+        // 裁切区域释放后，重新在顶层画出高亮的节点实体，避免被沙色背景遮挡
+        context.beginPath();
+        context.arc(data.x, data.y, data.size, 0, Math.PI * 2);
+        context.fillStyle = data.color || COLOR_FOREST_300;
+        context.fill();
+      } else {
+        // 仅文字无背板 (color-label)
+        context.fillStyle = `rgba(62, 75, 65, ${labelAlpha})`;
+        context.fillText(data.label, data.x + data.size + 3, data.y + size / 3);
+      }
+    };
+
     const s = new Sigma(graph, containerRef.current, {
       // Labels off by default — only the hovered node + its neighbours
       // get `forceLabel: true` via the reducer.
       renderLabels: true,
       labelSize: 12,
       labelFont: "system-ui, sans-serif",
-      labelColor: { color: COLOR_LABEL },
+      labelColor: { attribute: "labelColor", color: COLOR_LABEL },
       labelRenderedSizeThreshold: Infinity,
       defaultEdgeColor: COLOR_FOREST_300,
       defaultNodeColor: COLOR_FOREST_300,
@@ -353,28 +424,51 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       hideLabelsOnMove: true,
       hideEdgesOnMove: false,
       edgeProgramClasses: { curve: EdgeCurveProgram },
+      
+      defaultDrawNodeHover: customDrawLabel,
+      defaultDrawNodeLabel: customDrawLabel,
+
       nodeReducer: (id, attrs) => {
-        const out: typeof attrs = { ...attrs };
-        const hovered = sigmaHoverRef.current;
-        if (hovered) {
+        const out: any = { ...attrs };
+        const hoverBoost = hoverProgressRef.current;
+        
+        if (hoverBoost > 0) {
+          // If actively hovering, use current ref. During fade-out (hovered=null), use activeDimSetRef
+          const isActivelyHovered = sigmaHoverRef.current !== null;
+          const hovered = isActivelyHovered ? sigmaHoverRef.current : activeDimSetRef.current.hovered;
+          const neighborSet = isActivelyHovered ? neighborsRef.current : activeDimSetRef.current.neighbors;
+
           const isHovered = id === hovered;
-          const isNeighbor = neighborsRef.current.has(id as NodeId);
+          const isNeighbor = neighborSet.has(id as NodeId);
+
           if (isHovered || isNeighbor) {
             out.forceLabel = true;
+            out.isHoveredNode = isHovered; // 传递标志位给自定义Renderer
+            if (isHovered) {
+              out.size = attrs.size * (1 + HOVER_SCALE * hoverBoost);
+            }
           } else {
-            out.color = withAlpha(attrs.color as string, DIM_ALPHA);
+            const currentAlpha = 1 - (1 - DIM_ALPHA) * hoverBoost;
+            out.color = withAlpha(attrs.color as string, currentAlpha);
             out.label = "";
           }
         }
-        return out;
+        return out as typeof attrs;
       },
       edgeReducer: (id, attrs) => {
         const out: typeof attrs = { ...attrs };
-        const hovered = sigmaHoverRef.current;
-        if (hovered && graph.hasEdge(id)) {
-          const [src, tgt] = graph.extremities(id);
-          if (src !== hovered && tgt !== hovered) {
-            out.color = withAlpha(attrs.color as string, DIM_ALPHA);
+        const hoverBoost = hoverProgressRef.current;
+        
+        if (hoverBoost > 0 && graph.hasEdge(id)) {
+          const isActivelyHovered = sigmaHoverRef.current !== null;
+          const hovered = isActivelyHovered ? sigmaHoverRef.current : activeDimSetRef.current.hovered;
+
+          if (hovered) {
+            const [src, tgt] = graph.extremities(id);
+            if (src !== hovered && tgt !== hovered) {
+              const currentAlpha = 1 - (1 - DIM_ALPHA) * hoverBoost;
+              out.color = withAlpha(attrs.color as string, currentAlpha);
+            }
           }
         }
         return out;
@@ -392,10 +486,17 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 
     const setHover = (id: NodeId | null) => {
       sigmaHoverRef.current = id;
-      neighborsRef.current = id ? (neighbors.get(id) ?? new Set()) : new Set();
+      const newNeighbors: Set<NodeId> = id
+        ? (neighbors.get(id) ?? new Set<NodeId>())
+        : new Set<NodeId>();
+      neighborsRef.current = newNeighbors;
+      if (id) {
+        activeDimSetRef.current = { hovered: id, neighbors: newNeighbors };
+      }
       setHoverNode(id);
-      s.refresh();
     };
+
+    s.refresh();
 
     s.on("clickNode", ({ node }) => {
       const topicId = graph.getNodeAttribute(node, "topicId") as TopicId;
@@ -411,10 +512,58 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     projectOverlays();
 
     return () => {
+      if (hoverAnimFrameRef.current !== null) {
+        cancelAnimationFrame(hoverAnimFrameRef.current);
+        hoverAnimFrameRef.current = null;
+      }
       s.kill();
       sigmaRef.current = null;
     };
   }, [graph, focus, anchors, neighbors]);
+
+  useEffect(() => {
+    if (!sigmaRef.current) return;
+
+    const reduceMotion =
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (hoverAnimFrameRef.current !== null) {
+      cancelAnimationFrame(hoverAnimFrameRef.current);
+      hoverAnimFrameRef.current = null;
+    }
+
+    const target = hoverNode ? 1 : 0;
+    if (reduceMotion) {
+      hoverProgressRef.current = target;
+      sigmaRef.current.refresh();
+      return;
+    }
+
+    const start = hoverProgressRef.current;
+    const startTime = performance.now();
+    const duration = 250; // increased from 160ms for smoother visual fading
+
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - startTime) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      hoverProgressRef.current = start + (target - start) * eased;
+      sigmaRef.current?.refresh();
+      if (t < 1) {
+        hoverAnimFrameRef.current = requestAnimationFrame(tick);
+      } else {
+        hoverAnimFrameRef.current = null;
+      }
+    };
+
+    hoverAnimFrameRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      if (hoverAnimFrameRef.current !== null) {
+        cancelAnimationFrame(hoverAnimFrameRef.current);
+        hoverAnimFrameRef.current = null;
+      }
+    };
+  }, [hoverNode]);
 
   const srSummary = useMemo(() => {
     if (!graph) return "";
@@ -503,15 +652,27 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 // hover tick.
 const sigmaHoverRef: { current: NodeId | null } = { current: null };
 
-/** Convert a #rrggbb to rgba with the given alpha. */
+/** Blend a #rrggbb with the sand background to simulate alpha. */
 function withAlpha(color: string, alpha: number): string {
   if (color.startsWith("rgba(")) return color;
   if (!color.startsWith("#")) return color;
+
+  const bg = "#f9f7f2"; // matches sand-50/100 roughly
   const n = color.length === 7 ? color : color === "#000" ? "#000000" : color;
-  const r = parseInt(n.slice(1, 3), 16);
-  const g = parseInt(n.slice(3, 5), 16);
-  const b = parseInt(n.slice(5, 7), 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+
+  const fgR = parseInt(n.slice(1, 3), 16);
+  const fgG = parseInt(n.slice(3, 5), 16);
+  const fgB = parseInt(n.slice(5, 7), 16);
+
+  const bgR = parseInt(bg.slice(1, 3), 16);
+  const bgG = parseInt(bg.slice(3, 5), 16);
+  const bgB = parseInt(bg.slice(5, 7), 16);
+
+  const r = Math.round(fgR * alpha + bgR * (1 - alpha)).toString(16).padStart(2, "0");
+  const g = Math.round(fgG * alpha + bgG * (1 - alpha)).toString(16).padStart(2, "0");
+  const b = Math.round(fgB * alpha + bgB * (1 - alpha)).toString(16).padStart(2, "0");
+
+  return `#${r}${g}${b}`;
 }
 
 /** Seedable PRNG so HMR doesn't reshuffle the layout on each tick. */

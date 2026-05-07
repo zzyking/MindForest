@@ -23,6 +23,7 @@ export type ViewMode = "editor" | "tree" | "forest";
 interface WorkspaceUIState {
   sidebarOpen: boolean;
   searchPaletteOpen: boolean;
+  agentSettingsOpen: boolean;
   viewMode: ViewMode;
   /** Number of focus-pushes behind the current cursor (≥ 0). */
   navBack: number;
@@ -32,6 +33,7 @@ interface WorkspaceUIState {
   setSidebar: (open: boolean) => void;
   toggleSearchPalette: () => void;
   setSearchPalette: (open: boolean) => void;
+  setAgentSettings: (open: boolean) => void;
   setViewMode: (mode: ViewMode) => void;
   /** Called by `useFocusNode` when a *non-replace* push lands. */
   recordPush: () => void;
@@ -44,6 +46,7 @@ interface WorkspaceUIState {
 export const useWorkspaceUI = create<WorkspaceUIState>((set) => ({
   sidebarOpen: true,
   searchPaletteOpen: false,
+  agentSettingsOpen: false,
   viewMode: "editor",
   navBack: 0,
   navForward: 0,
@@ -51,6 +54,7 @@ export const useWorkspaceUI = create<WorkspaceUIState>((set) => ({
   setSidebar: (open) => set({ sidebarOpen: open }),
   toggleSearchPalette: () => set((s) => ({ searchPaletteOpen: !s.searchPaletteOpen })),
   setSearchPalette: (open) => set({ searchPaletteOpen: open }),
+  setAgentSettings: (open) => set({ agentSettingsOpen: open }),
   setViewMode: (mode) => set({ viewMode: mode }),
   // Pushing a new entry truncates the forward stack — same semantics as
   // browser history.

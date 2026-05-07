@@ -9,7 +9,7 @@
  * default — see `useFocusNode` callers in TreeView / ForestView.
  */
 
-import { Shrub, PanelLeft, PanelLeftClose, Pencil, Search, Trees } from "lucide-react";
+import { Shrub, PanelLeft, PanelLeftClose, Pencil, Search, Settings, Trees } from "lucide-react";
 
 import { cn } from "@/lib/cn";
 import { useWorkspaceUI, type ViewMode } from "@/stores/workspaceUI";
@@ -18,6 +18,7 @@ export function Dock() {
   const sidebarOpen = useWorkspaceUI((s) => s.sidebarOpen);
   const toggleSidebar = useWorkspaceUI((s) => s.toggleSidebar);
   const setSearchPalette = useWorkspaceUI((s) => s.setSearchPalette);
+  const setAgentSettings = useWorkspaceUI((s) => s.setAgentSettings);
   const viewMode = useWorkspaceUI((s) => s.viewMode);
   const setViewMode = useWorkspaceUI((s) => s.setViewMode);
 
@@ -55,6 +56,13 @@ export function Dock() {
           shortcut="⌘K"
         >
           <Search size={16} strokeWidth={1.75} />
+        </DockButton>
+        <DockButton
+          label="Agent settings (⌘,)"
+          onClick={() => setAgentSettings(true)}
+          shortcut="⌘,"
+        >
+          <Settings size={16} strokeWidth={1.75} />
         </DockButton>
       </div>
     </div>
