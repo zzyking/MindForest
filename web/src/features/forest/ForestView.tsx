@@ -230,36 +230,34 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       }
     }
 
-    // Run the force simulation. ForceAtlas2 is iterative; the larger
-    // iteration count + stronger repulsion (scalingRatio) and weaker
-    // gravity together actually let the graph spread. With the previous
-    // values the layout collapsed into a tight central knot.
+    // Run the force simulation. The key setting for the
+    // hub-and-spoke / Obsidian look is `outboundAttractionDistribution:
+    // true` — it normalises the attraction force by the source node's
+    // degree, so a parent (hub) pulls each of its children with a
+    // weaker force, letting them fan out radially instead of stacking
+    // on top of each other and crossing edges.
     if (g.order > 1) {
       forceAtlas2.assign(g, {
         iterations: FA2_ITERATIONS,
         settings: {
           // Weak gravity — just enough to stop disconnected components
-          // from drifting infinitely. Stronger gravity (≥0.5) pulls
-          // everything to (0,0) and squashes the layout.
+          // from drifting infinitely. Stronger gravity squashes the
+          // layout into a tight knot.
           gravity: 0.05,
-          // High repulsion. ForceAtlas2 multiplies node-pair repulsion
-          // by `scalingRatio`; values around 30–50 give the airy
-          // Obsidian-style spread.
-          scalingRatio: 40,
-          // adjustSizes prevents nodes from overlapping with each other
-          // (treats `size` as a radius). Crucial when default node
-          // radius is ~7 and the graph wants to pack nodes tight.
+          // High repulsion → airy spread between leaves.
+          scalingRatio: 30,
+          // The headline change. Without this, hubs over-attract their
+          // leaves and force them into a tangled cluster.
+          outboundAttractionDistribution: true,
+          // adjustSizes treats `size` as a node radius the simulation
+          // refuses to overlap; matters when default node radius is ~7.
           adjustSizes: true,
-          // Default damping; the previous slowDown=5 settled prematurely.
           slowDown: 1,
-          // Use the edge weights we set so tree-backbone edges pull
-          // harder than cross-topic links.
           edgeWeightInfluence: 1,
-          // Cheap O(n log n) for graphs above ~80 nodes; below that the
-          // exact O(n²) is faster and produces a better-quality layout.
+          // Cheap O(n log n) above ~80 nodes.
           barnesHutOptimize: g.order > 80,
-          // linLogMode emphasises dense subgraphs — good when topics are
-          // small and connected, which is our typical case.
+          // linLogMode + outboundAttractionDistribution gives the
+          // cleanest hub-and-spoke pattern for tree-shaped data.
           linLogMode: true,
         },
       });
