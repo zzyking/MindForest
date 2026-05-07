@@ -31,31 +31,28 @@
 import { useEffect, useMemo, useRef } from "react";
 import EdgeCurveProgram from "@sigma/edge-curve";
 import Graph from "graphology";
+import forceAtlas2 from "graphology-layout-forceatlas2";
 import Sigma from "sigma";
 
 import { useFocusNode } from "@/app/navigation";
 import { useForestData } from "@/stores/forestData";
 import type { NodeId, NodeType, TopicDetail, TopicId } from "@/lib/types";
 
-import { computeTreeLayout } from "./layout";
-
 interface Props {
   focusedTopicId: TopicId;
   focusedNodeId: NodeId;
 }
 
-const TREE_NODE_W = 160;
-const TREE_NODE_H = 90;
-
-// Galaxy layout. Each topic centre sits on a circle around the
-// workspace origin. Radius scales with topic count so adjacent
-// clusters don't bump into each other; SINGLE_RADIUS handles the
-// degenerate one-topic case so the lone cluster doesn't sit on top of
-// the camera origin awkwardly.
-const ORBIT_GAP_PER_CLUSTER = 380;
-const ORBIT_MIN_RADIUS = 380;
-const SINGLE_RADIUS = 0;
-const NODE_SCALE = 0.5;
+// Galaxy layout. Initial positions seed each topic's nodes inside a
+// disc on a circular orbit (so the simulation starts already roughly
+// clustered); ForceAtlas2 then settles them into an organic layout.
+// Tree-backbone and same-topic link edges share a strong weight so a
+// topic's nodes pull together; cross-topic links carry a weaker weight
+// so distinct topics still drift apart but stay in the same scene.
+const ORBIT_GAP_PER_CLUSTER = 360;
+const ORBIT_MIN_RADIUS = 360;
+const INTRA_TOPIC_SPREAD = 180;
+const FA2_ITERATIONS = 240;
 
 const NODE_SIZE_DEFAULT = 6;
 const NODE_SIZE_FOCUSED = 14;
@@ -142,96 +139,62 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     const g = new Graph({ multi: false, type: "directed", allowSelfLoops: false });
     const anchorList: TopicAnchor[] = [];
 
-    // Position each topic's cluster centre. With one topic, sit at
-    // origin (the camera fits to a single cluster cleanly). With two,
-    // place them on a horizontal line so the canvas reads as
-    // "side-by-side galaxies" rather than two trees stacked
-    // vertically. Three or more lay out on a circular orbit, starting
-    // from the top. Sigma's y axis points up, so a "top" cluster
-    // wants positive y (theta = +π/2), not the visual-down -π/2.
+    // Initial seeding: each topic's nodes get random positions inside
+    // a disc whose centre sits on a circular orbit around the
+    // workspace origin. ForceAtlas2 then settles the layout — tree
+    // backbone + same-topic link edges keep a topic's nodes pulled
+    // together; cross-topic links exert a weaker pull so distinct
+    // topics drift apart but stay in the same scene.
     const N = ready.length;
     const initialAngle = N === 2 ? Math.PI : Math.PI / 2;
     const orbitRadius =
-      N === 1
-        ? SINGLE_RADIUS
-        : Math.max(ORBIT_MIN_RADIUS, (ORBIT_GAP_PER_CLUSTER * N) / (2 * Math.PI));
+      N === 1 ? 0 : Math.max(ORBIT_MIN_RADIUS, (ORBIT_GAP_PER_CLUSTER * N) / (2 * Math.PI));
+
+    // PRNG seed per topic so re-renders converge to the same layout.
+    const rand = mulberry32(0xc0ffee);
 
     for (let i = 0; i < ready.length; i++) {
       const detail = ready[i]!;
-      const layout = computeTreeLayout({
-        nodes: detail.nodes.map((n) => ({ id: n.id, parent: n.parent, title: n.title })),
-        rootId: detail.root_node_id,
-        collapsed: [],
-        nodeWidth: TREE_NODE_W,
-        nodeHeight: TREE_NODE_H,
-      });
-      if (layout.nodes.length === 0) continue;
-
+      if (detail.nodes.length === 0) continue;
       const theta = N === 1 ? 0 : (2 * Math.PI * i) / N + initialAngle;
       const cx = Math.cos(theta) * orbitRadius;
       const cy = Math.sin(theta) * orbitRadius;
 
-      // Shift the tree so its bounding-box centre lands on (cx, cy).
-      const treeCY = (layout.bounds.minY + layout.bounds.maxY) / 2;
-      const summaryById = new Map(detail.nodes.map((n) => [n.id, n]));
-
-      let maxR = 0;
-      let minSY = Infinity;
-      for (const n of layout.nodes) {
-        const summary = summaryById.get(n.id);
-        const focused = n.id === focusedNodeId;
-        const type = summary?.type ?? "misc";
-        const sx = cx + n.x * NODE_SCALE;
-        // Flip tree y (grows down) into sigma y (grows up); centre on
-        // cluster.
-        const sy = cy - (n.y - treeCY) * NODE_SCALE;
-        g.addNode(n.id, {
-          x: sx,
-          y: sy,
+      for (const summary of detail.nodes) {
+        const focused = summary.id === focusedNodeId;
+        const type = summary.type;
+        // Uniform-in-disc random position in a small spread around the
+        // cluster seed point. The simulation does the rest.
+        const ang = rand() * Math.PI * 2;
+        const r = Math.sqrt(rand()) * INTRA_TOPIC_SPREAD;
+        g.addNode(summary.id, {
+          x: cx + Math.cos(ang) * r,
+          y: cy + Math.sin(ang) * r,
           size: focused ? NODE_SIZE_FOCUSED : NODE_SIZE_DEFAULT,
-          label: summary?.title || n.title || "Untitled",
+          label: summary.title || "Untitled",
           color: focused ? COLOR_FOREST_900 : TYPE_COLOR[type],
           topicId: detail.id,
           nodeType: type,
         });
-        const dx = sx - cx;
-        const dy = sy - cy;
-        const r = Math.sqrt(dx * dx + dy * dy);
-        if (r > maxR) maxR = r;
-        if (sy > minSY === false) minSY = Math.min(minSY, sy);
-        else if (sy < minSY) minSY = sy;
       }
 
-      for (const e of layout.edges) {
-        g.addEdgeWithKey(`tree:${e.source}->${e.target}`, e.source, e.target, {
+      // Tree-backbone edges. Each non-root node has a parent in the
+      // same topic; we use them as strong edges in the simulation so
+      // child nodes stay near their parent post-settle.
+      for (const summary of detail.nodes) {
+        if (!summary.parent) continue;
+        if (!g.hasNode(summary.parent)) continue;
+        g.addEdgeWithKey(`tree:${summary.parent}->${summary.id}`, summary.parent, summary.id, {
           type: "line",
           size: 1.2,
           color: COLOR_FOREST_300,
+          weight: 2.0,
         });
       }
-
-      // Topic label anchored above the cluster's top edge with a touch
-      // of breathing room. Halo radius is the cluster's furthest node
-      // distance plus padding so edges aren't clipped inside. Sigma's
-      // y axis is up, so the cluster's *top* in graph space is the
-      // largest y value — `cy + maxR + …`.
-      const haloPadding = TREE_NODE_H * NODE_SCALE * 0.7;
-      anchorList.push({
-        topicId: detail.id,
-        title: detail.title,
-        centerX: cx,
-        centerY: cy,
-        topY: cy + maxR + haloPadding,
-        radius: maxR + haloPadding,
-        nodeCount: detail.nodes.length,
-      });
     }
 
     // Pass 2: link edges. We need every node to be in the graph first
-    // so we know which links land same-topic vs cross-topic. Walk the
-    // already-known set of nodes (anything in `g`) — links to nodes
-    // outside that set are silently dropped (their topic hasn't loaded
-    // yet; the next fetchTopic re-renders).
+    // so we know which links land same-topic vs cross-topic.
     const seen = new Set<string>();
     for (const detail of ready) {
       for (const summary of detail.nodes) {
@@ -249,19 +212,78 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
               type: "line",
               size: 1.6,
               color: COLOR_ACCENT,
+              // Same-topic links pull harder than cross-topic links —
+              // the topic stays cohesive, distinct subjects drift.
+              weight: 1.2,
             });
           } else {
-            // Curved edge for cross-topic. Sigma's curve program reads
-            // `type: "curve"` and the global `curvature` setting, so we
-            // can keep the data flat.
             g.addEdgeWithKey(`xlink:${key}`, summary.id, dst, {
               type: "curve",
               size: 1.8,
               color: COLOR_ACCENT_DEEP,
+              weight: 0.35,
             });
           }
         }
       }
+    }
+
+    // Run the force simulation. ForceAtlas2 is iterative; 240 passes
+    // gets us a clean layout for 50–500 nodes without blocking the
+    // main thread for long. barnesHutOptimize keeps the per-pass cost
+    // sub-linear at scale.
+    if (g.order > 1) {
+      forceAtlas2.assign(g, {
+        iterations: FA2_ITERATIONS,
+        settings: {
+          gravity: 0.6,
+          scalingRatio: 12,
+          slowDown: 5,
+          edgeWeightInfluence: 1,
+          barnesHutOptimize: g.order > 80,
+          adjustSizes: true,
+        },
+      });
+    }
+
+    // Pass 3: derive topic centroids + radii from the *settled*
+    // positions. Topic anchor (label + halo) reads from this.
+    const topicNodes = new Map<TopicId, { id: NodeId; x: number; y: number }[]>();
+    g.forEachNode((id, attrs) => {
+      const topicId = attrs.topicId as TopicId;
+      const arr = topicNodes.get(topicId) ?? [];
+      arr.push({ id: id as NodeId, x: attrs.x as number, y: attrs.y as number });
+      topicNodes.set(topicId, arr);
+    });
+    for (const detail of ready) {
+      const arr = topicNodes.get(detail.id);
+      if (!arr || arr.length === 0) continue;
+      let sumX = 0;
+      let sumY = 0;
+      for (const n of arr) {
+        sumX += n.x;
+        sumY += n.y;
+      }
+      const cx = sumX / arr.length;
+      const cy = sumY / arr.length;
+      let maxR = 0;
+      for (const n of arr) {
+        const dx = n.x - cx;
+        const dy = n.y - cy;
+        const r = Math.sqrt(dx * dx + dy * dy);
+        if (r > maxR) maxR = r;
+      }
+      const haloPadding = 80;
+      anchorList.push({
+        topicId: detail.id,
+        title: detail.title,
+        centerX: cx,
+        centerY: cy,
+        // Sigma's y axis is up — the cluster's visual top is +maxR.
+        topY: cy + maxR + haloPadding,
+        radius: maxR + haloPadding,
+        nodeCount: detail.nodes.length,
+      });
     }
 
     const totalNodes = g.order;
@@ -452,6 +474,22 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       </div>
     </div>
   );
+}
+
+/**
+ * Tiny seedable PRNG. Same seed → same layout across re-renders, so
+ * the user doesn't see the simulation flick into a different shape on
+ * every HMR / fetch.
+ */
+function mulberry32(seed: number) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 /**
