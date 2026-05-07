@@ -10,12 +10,16 @@
  */
 
 @theme {
-  /* Forest palette — warm-tinted greens, paper at the top, ink at the bottom. */
+  /* Forest palette — warm-tinted greens, paper at the top, ink at the bottom.
+     The 400 shade was bumped darker (#7a9a8a → #6c8e7e) so that "secondary
+     text" usages (metadata, small caps labels) clear WCAG 2.1 AA-Large
+     (≥3:1 contrast on the sand-100 background). 500 sits on the AA edge
+     (4.43:1) — used for non-tiny labels where AA-Large applies. */
   --color-forest-50: #f5f7f5;
   --color-forest-100: #e6ede9;
   --color-forest-200: #ccd6d1;
   --color-forest-300: #9fb3a6;
-  --color-forest-400: #7a9a8a;
+  --color-forest-400: #6c8e7e;
   --color-forest-500: #557c68;
   --color-forest-600: #436856;
   --color-forest-700: #345543;

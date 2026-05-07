@@ -410,8 +410,23 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     );
   }
 
+  // Build a screen-reader-only summary of the forest. Sigma renders to
+  // a canvas, which is opaque to assistive tech — without a fallback,
+  // a SR user lands on this view with literally nothing to announce.
+  const srSummary = useMemo(() => {
+    if (!graph) return "";
+    const topicCount = anchors.length;
+    const totalNodes = graph.order;
+    const topicTitles = anchors.map((a) => `${a.title} (${a.nodeCount})`).join(", ");
+    return `Forest map of the workspace. ${topicCount} topic${topicCount === 1 ? "" : "s"}, ${totalNodes} node${totalNodes === 1 ? "" : "s"} total. Topics: ${topicTitles}.`;
+  }, [anchors, graph]);
+
   return (
-    <div className="bg-noise relative h-full w-full overflow-hidden">
+    <div
+      className="bg-noise relative h-full w-full overflow-hidden"
+      role="region"
+      aria-label="Forest map of the workspace"
+    >
       {/* Atmosphere layer: a soft radial wash from the workspace centre
           gives the canvas depth so empty space between clusters reads
           as "outer dark" rather than blank paper. Stays under the
@@ -447,12 +462,27 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
         ))}
       </div>
       {/* Sigma canvas. Transparent bg so atmosphere + halos show
-          through. */}
+          through. Marked as application + given an aria-label so
+          assistive tech doesn't land on a silent canvas; the topic
+          label buttons below are still focusable for navigation. */}
       <div
         ref={containerRef}
         className="absolute inset-0"
+        role="application"
+        aria-label={srSummary || "Forest canvas"}
         style={{ cursor: "grab", backgroundColor: "transparent" }}
       />
+      {/* Visually-hidden text alternative — every node listed in
+          source order so a screen reader can read the structure even
+          when the canvas itself can't be inspected. */}
+      <div className="sr-only">
+        <p>{srSummary}</p>
+        {anchors.map((a) => (
+          <p key={a.topicId}>
+            {a.title}: {a.nodeCount} node{a.nodeCount === 1 ? "" : "s"}.
+          </p>
+        ))}
+      </div>
       {/* Topic-name labels: floating pills above each cluster. Click
           navigates to that topic's root. */}
       <div ref={labelsLayerRef} className="pointer-events-none absolute inset-0">
