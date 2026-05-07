@@ -19,7 +19,7 @@ export function MetadataLine({ node, className }: Props) {
   return (
     <div
       className={cn(
-        "text-forest-400 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs",
+        "text-forest-400 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]",
         // Tabular nums so timestamps don't reflow as numbers tick; small
         // wide-tracking caps treat metadata as a label strip rather than
         // body copy.

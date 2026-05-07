@@ -38,7 +38,7 @@ export function Breadcrumb({ nodeId, topicId }: Props) {
   ]);
 
   return (
-    <nav aria-label="Breadcrumb" className="text-forest-500 flex items-center gap-1 text-sm">
+    <nav aria-label="Breadcrumb" className="text-forest-500 flex items-center gap-1 text-xs">
       {crumbs.map((c, i) => {
         const isLast = i === crumbs.length - 1;
         return (

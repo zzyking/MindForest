@@ -22,13 +22,15 @@ import { EditorView } from "@codemirror/view";
 import { tags as t } from "@lezer/highlight";
 
 // Heading sizes — kept in sync with the `.prose` overrides in
-// globals.css so Write / Source / Read all agree on geometry.
-const H1 = "1.875rem"; // 30px
-const H2 = "1.5rem"; //   24px
-const H3 = "1.25rem"; //  20px
-const H4 = "1.125rem"; // 18px
-const H5 = "1rem"; //     16px (= body)
-const H6 = "0.875rem"; // 14px
+// globals.css so Write / Source / Read all agree on geometry. Each
+// level steps down by 2-3px so the hierarchy reads at a glance even
+// when several levels are visible together.
+const H1 = "1.875rem"; //   30px
+const H2 = "1.5rem"; //     24px
+const H3 = "1.25rem"; //    20px
+const H4 = "1.0625rem"; //  17px
+const H5 = "0.9375rem"; //  15px
+const H6 = "0.8125rem"; //  13px
 
 const livePreviewHighlight = HighlightStyle.define([
   {
