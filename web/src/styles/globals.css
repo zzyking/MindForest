@@ -72,9 +72,39 @@ body {
   border-radius: 4px;
 }
 
+/* Tailwind v4 preflight strips the UA `cursor: pointer` from
+   `<button>` (it inherits whatever, defaulting to text). Restore the
+   pointer for any non-disabled interactive control so the cursor
+   matches the affordance. */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+a[href] {
+  cursor: pointer;
+}
+button:disabled,
+[role="button"][aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
 ::selection {
   background-color: rgba(212, 122, 93, 0.25);
   color: var(--color-forest-900);
+}
+
+/* Honour `prefers-reduced-motion`. Vestibular-disorder-friendly:
+   disable our keyframe animations and slow CSS transitions to
+   near-instant. App-level transitions inside CodeMirror, sigma, and
+   FA2 layout aren't covered here — those are not declarative-CSS
+   driven — but the bulk of UI motion (overlays, dialogs, hovers) is. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* Indeterminate progress bar — used by ModelDownloadCard when the
