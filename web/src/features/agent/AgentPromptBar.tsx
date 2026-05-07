@@ -84,6 +84,7 @@ export function AgentPromptBar() {
               : "Open a topic to use the agent"
           }
           disabled={streaming || !topicId}
+          aria-label="Agent prompt"
           className={cn(
             "flex-1 bg-transparent text-sm placeholder:text-forest-400 focus:outline-none",
             "disabled:cursor-not-allowed disabled:opacity-60",

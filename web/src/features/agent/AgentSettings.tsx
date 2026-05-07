@@ -99,6 +99,16 @@ export function AgentSettings({ open, onClose }: Props) {
     }
   }, [config]);
 
+  // ESC dismisses the dialog — required affordance for keyboard users.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   return (

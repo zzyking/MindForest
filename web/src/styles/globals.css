@@ -21,6 +21,31 @@ body {
      reshaped t/r corners. Combined they make Inter feel deliberately
      chosen rather than defaulted into. */
   font-feature-settings: "cv11", "ss03", "ss04", "kern", "calt";
+  /* Generous default line-height so mixed CJK + Latin reads cleanly.
+     Latin glyphs sit on a tight em while CJK glyphs nearly fill the
+     em; at line-height 1.5 CJK feels cramped. 1.7 leaves room for
+     accents and CJK ascenders while still keeping body copy compact
+     enough to scan. */
+  line-height: 1.7;
+}
+
+/* Pull line-height back to 1.4 for elements that use Latin-only display
+   types (titles, monospaced figures, controls) — 1.7 looks airy when
+   the script is purely Latin. */
+.font-serif,
+.font-mono,
+input,
+button,
+.cm-content {
+  line-height: 1.4;
+}
+
+/* Prefer Latin punctuation form even when adjacent to CJK glyphs, so
+   commas / periods don't get full-width-replaced by the system. */
+:lang(zh),
+:lang(ja),
+:lang(ko) {
+  font-feature-settings: "halt", "calt", "kern";
 }
 
 /* Crimson Pro for serif headings — discretionary ligatures + old-style

@@ -27,23 +27,43 @@ interface Props {
 export function WorkspaceShell({ children }: Props) {
   const sidebarOpen = useWorkspaceUI((s) => s.sidebarOpen);
   const setSearchPalette = useWorkspaceUI((s) => s.setSearchPalette);
+  const toggleSidebar = useWorkspaceUI((s) => s.toggleSidebar);
 
-  // Cmd/Ctrl+K opens the search palette from anywhere. Bound at the
-  // shell so leaf components don't have to re-register on every nav.
+  // Workspace-level keyboard shortcuts. Bound at the shell so leaf
+  // components don't have to re-register on every nav.
+  //   Cmd/Ctrl+K  → search palette
+  //   Cmd/Ctrl+\  → toggle sidebar
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const cmd = e.metaKey || e.ctrlKey;
       if (cmd && (e.key === "k" || e.key === "K")) {
         e.preventDefault();
         setSearchPalette(true);
+        return;
+      }
+      if (cmd && e.key === "\\") {
+        e.preventDefault();
+        toggleSidebar();
+        return;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setSearchPalette]);
+  }, [setSearchPalette, toggleSidebar]);
 
   return (
     <div className="bg-noise relative flex h-screen flex-col bg-forest-50 text-forest-900">
+      {/* Skip link — invisible until focused via Tab. Lets keyboard
+          users jump past the sidebar and into the main editor pane. */}
+      <a
+        href="#main-content"
+        className={cn(
+          "sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50",
+          "focus:bg-forest-800 focus:text-sand-100 focus:rounded-md focus:px-3 focus:py-2 focus:text-sm focus:font-medium",
+        )}
+      >
+        Skip to main content
+      </a>
       <div className="flex flex-1 overflow-hidden">
         <aside
           className={cn(
@@ -51,10 +71,11 @@ export function WorkspaceShell({ children }: Props) {
             sidebarOpen ? "w-72" : "w-0",
           )}
           aria-hidden={!sidebarOpen}
+          aria-label="Topics and nodes"
         >
           <Sidebar />
         </aside>
-        <main className="flex-1 overflow-y-auto">
+        <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto">
           <ModelDownloadCard />
           {children}
         </main>

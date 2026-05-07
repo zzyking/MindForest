@@ -66,10 +66,13 @@ export function IndexPage() {
   if (bootError) {
     return (
       <Frame>
-        <p className="text-accent">Could not reach the API.</p>
-        <p className="text-forest-500 max-w-prose text-sm">{bootError}</p>
-        <p className="text-forest-400 text-xs">
-          Start it from the repo root: <code className="font-mono">npm run api</code>
+        <p className="text-rust-700 font-medium">Could not reach the API.</p>
+        <p className="text-forest-700 max-w-prose text-sm">{bootError}</p>
+        <p className="text-forest-600 text-xs">
+          Start it from the repo root:{" "}
+          <code className="bg-forest-100 text-forest-800 rounded px-1 py-0.5 font-mono">
+            npm run api
+          </code>
         </p>
       </Frame>
     );

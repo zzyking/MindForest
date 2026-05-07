@@ -10,7 +10,7 @@
  * threads the resolution table forward.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "@tanstack/react-router";
 
 import { cn } from "@/lib/cn";
@@ -31,6 +31,16 @@ export function DraftOverlay() {
   const setProposalStatus = useAgentSession((s) => s.setProposalStatus);
   const params = useParams({ strict: false }) as { topicId?: string };
   const [bulkBusy, setBulkBusy] = useState(false);
+
+  // ESC closes the overlay (parallel to the X button + backdrop click).
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, close]);
 
   if (!open) return null;
 
