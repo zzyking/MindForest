@@ -5,6 +5,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Search } from "lucide-react";
 
 import { cn } from "@/lib/cn";
 import { useFocusNode } from "@/app/navigation";
@@ -114,21 +115,7 @@ export function SearchPalette() {
         }}
       >
         <div className="border-forest-100 flex items-center gap-3 border-b px-4 py-3">
-          <svg
-            aria-hidden
-            viewBox="0 0 16 16"
-            width="16"
-            height="16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="text-forest-400 flex-none"
-          >
-            <circle cx="7" cy="7" r="4.5" />
-            <line x1="10.4" y1="10.4" x2="13.5" y2="13.5" />
-          </svg>
+          <Search size={18} strokeWidth={1.75} className="text-forest-400 flex-none" aria-hidden />
           <input
             ref={inputRef}
             type="search"

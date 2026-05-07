@@ -9,6 +9,8 @@
  * default — see `useFocusNode` callers in TreeView / ForestView.
  */
 
+import { Network, PanelLeft, PanelLeftClose, Pencil, Search, Workflow } from "lucide-react";
+
 import { cn } from "@/lib/cn";
 import { useWorkspaceUI, type ViewMode } from "@/stores/workspaceUI";
 
@@ -42,7 +44,7 @@ export function Dock() {
           onClick={toggleSidebar}
           shortcut="⌘\\"
         >
-          <SidebarGlyph open={sidebarOpen} />
+          {sidebarOpen ? <PanelLeftClose size={16} strokeWidth={1.75} /> : <PanelLeft size={16} strokeWidth={1.75} />}
         </DockButton>
         <DockSeparator />
         <ViewToggle value={viewMode} onChange={setViewMode} />
@@ -52,7 +54,7 @@ export function Dock() {
           onClick={() => setSearchPalette(true)}
           shortcut="⌘K"
         >
-          <SearchGlyph />
+          <Search size={16} strokeWidth={1.75} />
         </DockButton>
       </div>
     </div>
@@ -93,41 +95,16 @@ function DockSeparator() {
   return <span aria-hidden className="bg-forest-200/60 mx-1 h-5 w-px" />;
 }
 
-/**
- * Hand-drawn-feel magnifying glass — straight stroke, no flourish, fits
- * the Unicode-glyph aesthetic of the rest of the dock without dragging
- * in a full icon-font dependency. Stroke width matches the dock's
- * border weight (1px → currentColor).
- */
-function SearchGlyph() {
-  return (
-    <svg
-      aria-hidden
-      viewBox="0 0 16 16"
-      width="14"
-      height="14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="inline-block"
-    >
-      <circle cx="7" cy="7" r="4.5" />
-      <line x1="10.4" y1="10.4" x2="13.5" y2="13.5" />
-    </svg>
-  );
-}
 
 interface ViewToggleProps {
   value: ViewMode;
   onChange: (m: ViewMode) => void;
 }
 
-const VIEW_MODES: { id: ViewMode; label: string; Icon: () => React.ReactElement }[] = [
-  { id: "editor", label: "Editor", Icon: EditorGlyph },
-  { id: "tree", label: "Tree", Icon: TreeGlyph },
-  { id: "forest", label: "Forest", Icon: ForestGlyph },
+const VIEW_MODES: { id: ViewMode; label: string; Icon: typeof Pencil }[] = [
+  { id: "editor", label: "Editor", Icon: Pencil },
+  { id: "tree", label: "Tree", Icon: Network },
+  { id: "forest", label: "Forest", Icon: Workflow },
 ];
 
 function ViewToggle({ value, onChange }: ViewToggleProps) {
@@ -149,7 +126,7 @@ function ViewToggle({ value, onChange }: ViewToggleProps) {
               : "text-forest-600 hover:bg-forest-100",
           )}
         >
-          <m.Icon />
+          <m.Icon size={16} strokeWidth={1.75} aria-hidden />
           {m.label}
         </button>
       ))}
@@ -157,85 +134,3 @@ function ViewToggle({ value, onChange }: ViewToggleProps) {
   );
 }
 
-/**
- * Stroke-based glyphs sized for the dock — 14×14, currentColor, the
- * same stroke weight as the search magnifier so the dock reads as a
- * single icon set instead of an emoji-and-svg mix.
- */
-function GlyphFrame({ children }: { children: React.ReactNode }) {
-  return (
-    <svg
-      aria-hidden
-      viewBox="0 0 16 16"
-      width="14"
-      height="14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="inline-block flex-none"
-    >
-      {children}
-    </svg>
-  );
-}
-
-/** Editor: a feather / pen nib drawn diagonally. */
-function EditorGlyph() {
-  return (
-    <GlyphFrame>
-      <path d="M3 13 L13 3" />
-      <path d="M11 1 L15 5 L13 7 L9 3 Z" />
-      <path d="M3 13 L1.5 14.5 L1 13 L3 13 Z" />
-    </GlyphFrame>
-  );
-}
-
-/** Tree: root + two leaves. */
-function TreeGlyph() {
-  return (
-    <GlyphFrame>
-      <circle cx="8" cy="3" r="1.6" />
-      <circle cx="3.5" cy="12.5" r="1.6" />
-      <circle cx="12.5" cy="12.5" r="1.6" />
-      <path d="M8 4.6 L8 8 M8 8 L4 11.2 M8 8 L12 11.2" />
-    </GlyphFrame>
-  );
-}
-
-/** Forest: a hub-and-spoke constellation — what the Forest view literally renders. */
-function ForestGlyph() {
-  return (
-    <GlyphFrame>
-      <circle cx="8" cy="8" r="1.6" />
-      <circle cx="3" cy="4" r="1" />
-      <circle cx="13" cy="4" r="1" />
-      <circle cx="2.5" cy="11" r="1" />
-      <circle cx="13.5" cy="11" r="1" />
-      <path d="M8 8 L3 4 M8 8 L13 4 M8 8 L2.5 11 M8 8 L13.5 11" />
-    </GlyphFrame>
-  );
-}
-
-/** Sidebar toggle: panel with a left rail; the rail is filled when open. */
-function SidebarGlyph({ open }: { open: boolean }) {
-  return (
-    <svg
-      aria-hidden
-      viewBox="0 0 16 16"
-      width="14"
-      height="14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="inline-block flex-none"
-    >
-      <rect x="2" y="3" width="12" height="10" rx="1.5" />
-      <line x1="6" y1="3" x2="6" y2="13" />
-      {open && <rect x="2" y="3" width="4" height="10" rx="1.5" fill="currentColor" opacity="0.4" stroke="none" />}
-    </svg>
-  );
-}
