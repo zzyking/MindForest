@@ -52,10 +52,10 @@ const TREE_NODE_H = 90;
 // clusters don't bump into each other; SINGLE_RADIUS handles the
 // degenerate one-topic case so the lone cluster doesn't sit on top of
 // the camera origin awkwardly.
-const ORBIT_GAP_PER_CLUSTER = 700;
-const ORBIT_MIN_RADIUS = 900;
+const ORBIT_GAP_PER_CLUSTER = 380;
+const ORBIT_MIN_RADIUS = 380;
 const SINGLE_RADIUS = 0;
-const NODE_SCALE = 0.55;
+const NODE_SCALE = 0.5;
 
 const NODE_SIZE_DEFAULT = 6;
 const NODE_SIZE_FOCUSED = 14;
@@ -83,9 +83,15 @@ const TYPE_COLOR: Record<NodeType, string> = {
 interface TopicAnchor {
   topicId: TopicId;
   title: string;
-  // Graph-space coordinates of the tree's top-centre.
-  graphX: number;
-  graphY: number;
+  /** Cluster centre in graph space — used both for the floating
+   *  topic-name label and the radial halo overlay. */
+  centerX: number;
+  centerY: number;
+  /** Top of the cluster's bounding box (label sits above this). */
+  topY: number;
+  /** Furthest distance from centre to any node, used to size the halo. */
+  radius: number;
+  nodeCount: number;
 }
 
 export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
@@ -136,12 +142,19 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     const g = new Graph({ multi: false, type: "directed", allowSelfLoops: false });
     const anchorList: TopicAnchor[] = [];
 
-    // Position each topic's cluster centre on a circular orbit around
-    // (0, 0). Single-topic case sits at origin so the camera doesn't
-    // need an off-centre starting frame.
+    // Position each topic's cluster centre. With one topic, sit at
+    // origin (the camera fits to a single cluster cleanly). With two,
+    // place them on a horizontal line so the canvas reads as
+    // "side-by-side galaxies" rather than two trees stacked
+    // vertically. Three or more lay out on a circular orbit, starting
+    // from the top. Sigma's y axis points up, so a "top" cluster
+    // wants positive y (theta = +π/2), not the visual-down -π/2.
     const N = ready.length;
+    const initialAngle = N === 2 ? Math.PI : Math.PI / 2;
     const orbitRadius =
-      N === 1 ? SINGLE_RADIUS : Math.max(ORBIT_MIN_RADIUS, ORBIT_GAP_PER_CLUSTER * N / (2 * Math.PI));
+      N === 1
+        ? SINGLE_RADIUS
+        : Math.max(ORBIT_MIN_RADIUS, (ORBIT_GAP_PER_CLUSTER * N) / (2 * Math.PI));
 
     for (let i = 0; i < ready.length; i++) {
       const detail = ready[i]!;
@@ -154,34 +167,39 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       });
       if (layout.nodes.length === 0) continue;
 
-      // Orbit angle: start at the top (-π/2) and walk clockwise so the
-      // first topic feels "anchored" up there.
-      const theta = N === 1 ? 0 : (2 * Math.PI * i) / N - Math.PI / 2;
+      const theta = N === 1 ? 0 : (2 * Math.PI * i) / N + initialAngle;
       const cx = Math.cos(theta) * orbitRadius;
       const cy = Math.sin(theta) * orbitRadius;
 
-      // Shift the tree so its (root-aligned) centre lands at (cx, cy).
-      // The tree layout puts the root at x=0 by construction; y is
-      // depth-driven so the root sits at the top. We shift in y so the
-      // bounding box centres on the cluster point.
+      // Shift the tree so its bounding-box centre lands on (cx, cy).
       const treeCY = (layout.bounds.minY + layout.bounds.maxY) / 2;
       const summaryById = new Map(detail.nodes.map((n) => [n.id, n]));
 
+      let maxR = 0;
+      let minSY = Infinity;
       for (const n of layout.nodes) {
         const summary = summaryById.get(n.id);
         const focused = n.id === focusedNodeId;
         const type = summary?.type ?? "misc";
+        const sx = cx + n.x * NODE_SCALE;
+        // Flip tree y (grows down) into sigma y (grows up); centre on
+        // cluster.
+        const sy = cy - (n.y - treeCY) * NODE_SCALE;
         g.addNode(n.id, {
-          x: cx + n.x * NODE_SCALE,
-          // Flip tree y (grows down) into sigma y (grows up); centre on
-          // cluster.
-          y: cy - (n.y - treeCY) * NODE_SCALE,
+          x: sx,
+          y: sy,
           size: focused ? NODE_SIZE_FOCUSED : NODE_SIZE_DEFAULT,
           label: summary?.title || n.title || "Untitled",
           color: focused ? COLOR_FOREST_900 : TYPE_COLOR[type],
           topicId: detail.id,
           nodeType: type,
         });
+        const dx = sx - cx;
+        const dy = sy - cy;
+        const r = Math.sqrt(dx * dx + dy * dy);
+        if (r > maxR) maxR = r;
+        if (sy > minSY === false) minSY = Math.min(minSY, sy);
+        else if (sy < minSY) minSY = sy;
       }
 
       for (const e of layout.edges) {
@@ -192,14 +210,20 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
         });
       }
 
-      // Topic label anchored at the cluster centre, lifted slightly
-      // above so it doesn't collide with the cluster's root node.
-      const treeHeight = (layout.bounds.maxY - layout.bounds.minY) * NODE_SCALE;
+      // Topic label anchored above the cluster's top edge with a touch
+      // of breathing room. Halo radius is the cluster's furthest node
+      // distance plus padding so edges aren't clipped inside. Sigma's
+      // y axis is up, so the cluster's *top* in graph space is the
+      // largest y value — `cy + maxR + …`.
+      const haloPadding = TREE_NODE_H * NODE_SCALE * 0.7;
       anchorList.push({
         topicId: detail.id,
         title: detail.title,
-        graphX: cx,
-        graphY: cy + treeHeight / 2 + TREE_NODE_H * NODE_SCALE,
+        centerX: cx,
+        centerY: cy,
+        topY: cy + maxR + haloPadding,
+        radius: maxR + haloPadding,
+        nodeCount: detail.nodes.length,
       });
     }
 
@@ -249,13 +273,12 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     return { graph: g, anchors: anchorList, hasNoData: false };
   }, [topics, topicDetails, focusedNodeId]);
 
-  // Topic-anchor labels rendered as HTML on top of the canvas. We
-  // mutate `transform` on each label DOM node directly via refs every
-  // time the camera moves — going through React state would re-render
-  // the whole label list at frame rate during pan/zoom, which thrashes
-  // the main thread at scale.
+  // HTML overlay refs. We mutate `transform` directly on these per
+  // camera update — going through React state would re-render the
+  // whole layer at frame rate, which thrashes the main thread.
   const labelsLayerRef = useRef<HTMLDivElement | null>(null);
   const labelNodeRefs = useRef(new Map<TopicId, HTMLDivElement>());
+  const haloNodeRefs = useRef(new Map<TopicId, HTMLDivElement>());
 
   // Mount/remount sigma whenever the assembled graph changes. The
   // sigma instance is single-use — `kill()` releases its WebGL
@@ -272,37 +295,41 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       labelSize: 12,
       labelFont: "system-ui, sans-serif",
       labelColor: { color: COLOR_LABEL },
-      // Density / grid tuned for crowded canvases — at 5k nodes the
-      // default 1 / 80 paints far more text than the eye can use.
       labelDensity: 0.5,
       labelGridCellSize: 120,
-      // Skip labels for nodes too small to read at the current zoom —
-      // lets sigma cull aggressively when the user zooms out to see the
-      // whole forest.
       labelRenderedSizeThreshold: 6,
       defaultEdgeColor: COLOR_FOREST_300,
       defaultNodeColor: COLOR_FOREST_700,
       minCameraRatio: 0.05,
       maxCameraRatio: 4,
-      // Hide labels and edges during drags / zooms — sigma redraws on
-      // every frame, and edge geometry + label layout dominate cost.
-      // Snap them back when the camera settles.
       hideLabelsOnMove: true,
       hideEdgesOnMove: true,
-      // Curved edges are the unlock for cross-topic links — without
-      // this they'd cut straight through the trees in between.
       edgeProgramClasses: {
         curve: EdgeCurveProgram,
       },
     });
 
-    const projectLabels = () => {
+    const projectOverlays = () => {
       for (const a of anchors) {
-        const el = labelNodeRefs.current.get(a.topicId);
-        if (!el) continue;
-        const v = s.graphToViewport({ x: a.graphX, y: a.graphY });
-        // translate3d so the browser keeps these layers on the GPU.
-        el.style.transform = `translate3d(${v.x}px, ${v.y}px, 0) translate(-50%, -100%)`;
+        // Halo: position at cluster centre, scale to cluster radius.
+        const halo = haloNodeRefs.current.get(a.topicId);
+        if (halo) {
+          const c = s.graphToViewport({ x: a.centerX, y: a.centerY });
+          // Sigma's graphToViewport reflects the camera's current
+          // ratio, so a unit graph distance maps to a viewport distance
+          // we can read by sampling a second point.
+          const edge = s.graphToViewport({ x: a.centerX + a.radius, y: a.centerY });
+          const r = Math.abs(edge.x - c.x);
+          halo.style.transform = `translate3d(${c.x - r}px, ${c.y - r}px, 0)`;
+          halo.style.width = `${r * 2}px`;
+          halo.style.height = `${r * 2}px`;
+        }
+        // Label: position above the cluster's top edge.
+        const label = labelNodeRefs.current.get(a.topicId);
+        if (label) {
+          const v = s.graphToViewport({ x: a.centerX, y: a.topY });
+          label.style.transform = `translate3d(${v.x}px, ${v.y}px, 0) translate(-50%, -100%)`;
+        }
       }
     };
 
@@ -310,30 +337,24 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       const topicId = graph.getNodeAttribute(node, "topicId") as TopicId;
       void focus(node as NodeId, topicId);
     });
-    s.getCamera().on("updated", projectLabels);
+    s.getCamera().on("updated", projectOverlays);
+    s.on("afterRender", projectOverlays);
 
     sigmaRef.current = s;
     console.info(`[forest] sigma mounted in ${(performance.now() - mountStart).toFixed(1)}ms`);
 
-    // Initial centre on the focused node so opening Forest mode lands
-    // the user at where they came from.
-    if (graph.hasNode(focusedNodeId)) {
-      const x = graph.getNodeAttribute(focusedNodeId, "x") as number;
-      const y = graph.getNodeAttribute(focusedNodeId, "y") as number;
-      s.getCamera().animate(
-        { x: ratioToCamera(s, x, "x"), y: ratioToCamera(s, y, "y"), ratio: 1 },
-        { duration: 0 },
-      );
-    }
-    // Initial position pass once labels are in the DOM. The labels are
-    // rendered statically below; their transforms get nudged here.
-    projectLabels();
+    // Explicit fit-to-graph. Sigma's default auto-fit only roughly
+    // frames the node bounding box; we want extra padding so clusters
+    // (which extend slightly beyond their root nodes) and their halos
+    // don't graze the viewport edges.
+    fitCameraToGraph(s, graph);
+    projectOverlays();
 
     return () => {
       s.kill();
       sigmaRef.current = null;
     };
-  }, [graph, focusedNodeId, focus, anchors]);
+  }, [graph, focus, anchors]);
 
   if (hasNoData) {
     return (
@@ -351,22 +372,51 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
   }
 
   return (
-    <div className="relative h-full w-full">
+    <div className="bg-noise relative h-full w-full overflow-hidden">
+      {/* Atmosphere layer: a soft radial wash from the workspace centre
+          gives the canvas depth so empty space between clusters reads
+          as "outer dark" rather than blank paper. Stays under the
+          sigma canvas via z-order. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background:
+            "radial-gradient(ellipse at center, rgba(245,247,245,1) 0%, rgba(230,237,233,0.92) 55%, rgba(204,214,209,0.6) 100%)",
+        }}
+      />
+      {/* Per-cluster halo: a translucent radial glow centred on each
+          cluster, sized to the cluster's outermost node. Helps each
+          topic read as "a place" instead of free-floating dots. */}
+      <div className="pointer-events-none absolute inset-0">
+        {anchors.map((a) => (
+          <div
+            key={a.topicId}
+            ref={(el) => {
+              if (el) haloNodeRefs.current.set(a.topicId, el);
+              else haloNodeRefs.current.delete(a.topicId);
+            }}
+            aria-hidden
+            className="absolute left-0 top-0 rounded-full will-change-transform"
+            style={{
+              background:
+                a.topicId === focusedTopicId
+                  ? "radial-gradient(circle, rgba(212,122,93,0.18) 0%, rgba(212,122,93,0.05) 60%, transparent 80%)"
+                  : "radial-gradient(circle, rgba(85,124,104,0.16) 0%, rgba(85,124,104,0.04) 60%, transparent 80%)",
+            }}
+          />
+        ))}
+      </div>
+      {/* Sigma canvas. Transparent bg so atmosphere + halos show
+          through. */}
       <div
         ref={containerRef}
-        className="bg-sand-50 absolute inset-0"
-        // Sigma sets its own cursor on node hover; we keep grab here for
-        // empty-canvas drags.
-        style={{ cursor: "grab" }}
+        className="absolute inset-0"
+        style={{ cursor: "grab", backgroundColor: "transparent" }}
       />
-      {/* Topic-name labels overlaid in HTML so we get crisp text + native
-          accessibility instead of canvas-rasterised typography. Each
-          label sits absolute at (0,0); its transform is updated directly
-          (no React re-render) on every camera tick. */}
-      <div
-        ref={labelsLayerRef}
-        className="pointer-events-none absolute inset-0 overflow-hidden"
-      >
+      {/* Topic-name labels: floating pills above each cluster. Click
+          navigates to that topic's root. */}
+      <div ref={labelsLayerRef} className="pointer-events-none absolute inset-0">
         {anchors.map((a) => {
           const focused = a.topicId === focusedTopicId;
           const detail = topicDetails[a.topicId];
@@ -385,13 +435,16 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
                   if (detail) void focus(detail.root_node_id, detail.id);
                 }}
                 className={
-                  "pointer-events-auto border bg-sand-50/85 hover:bg-sand-100 rounded-full px-3 py-1 font-serif text-sm backdrop-blur-sm transition-colors " +
+                  "pointer-events-auto border-forest-200 bg-sand-50/90 hover:bg-sand-100 hover:border-forest-300 inline-flex items-center gap-2 rounded-full border px-3 py-1.5 font-serif backdrop-blur-md shadow-glass transition-colors " +
                   (focused
-                    ? "text-forest-900 border-accent"
-                    : "text-forest-700 border-forest-200")
+                    ? "text-forest-900 border-accent ring-1 ring-accent/30"
+                    : "text-forest-700")
                 }
               >
-                {a.title}
+                <span className="text-base leading-none">{a.title}</span>
+                <span className="text-forest-400 text-[10px] uppercase tracking-[0.08em] tabular-nums">
+                  {a.nodeCount}
+                </span>
               </button>
             </div>
           );
@@ -402,14 +455,59 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 }
 
 /**
- * Convert graph-space coordinates into the camera state expected by
- * sigma's `Camera.animate`. Sigma's camera uses its own normalized
- * coordinate system; calling `viewportToFramedGraph` round-trips
- * through the sigma graphics pipeline so we don't have to recreate
- * the projection math by hand.
+ * Frame the camera so every node fits inside the viewport with a small
+ * margin. Sigma's default fit is too tight for the galaxy view —
+ * cluster halos extend past the node bounding box, and we want a bit
+ * of "outer dark" visible so the metaphor reads.
  */
-function ratioToCamera(s: Sigma, value: number, axis: "x" | "y"): number {
-  const v = s.graphToViewport(axis === "x" ? { x: value, y: 0 } : { x: 0, y: value });
-  const f = s.viewportToFramedGraph(v);
-  return f[axis];
+function fitCameraToGraph(s: Sigma, graph: Graph) {
+  if (graph.order === 0) return;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  graph.forEachNode((_id, attrs) => {
+    const x = attrs.x as number;
+    const y = attrs.y as number;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  });
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const halfW = Math.max(1, (maxX - minX) / 2);
+  const halfH = Math.max(1, (maxY - minY) / 2);
+  // We want the bounds (with padding) to span the viewport. Sigma's
+  // camera ratio is in normalized graph units; sample two graph points
+  // through the projection to learn how many graph-units of width
+  // currently equal the viewport's width, then scale ratio so the
+  // bounds — padded — match.
+  const container = s.getContainer();
+  const vw = container.clientWidth || 1;
+  const vh = container.clientHeight || 1;
+  const padding = 1.25;
+  // Sample current graph-units-per-pixel via two probes one pixel apart.
+  const probeA = s.viewportToGraph({ x: 0, y: 0 });
+  const probeB = s.viewportToGraph({ x: vw, y: 0 });
+  const graphUnitsPerViewportWidth = Math.abs(probeB.x - probeA.x);
+  // Desired width-in-graph-units so bounds fit with padding.
+  const wantedWidth = halfW * 2 * padding;
+  const wantedHeight = halfH * 2 * padding;
+  // Pick ratio such that the larger of (wanted/vw, wanted/vh) drives
+  // the framing. `ratio` in sigma is (graph-units-per-screen-unit) /
+  // (current-units-per-screen-unit) — multiplying by the wanted/current
+  // ratio scales accordingly.
+  const cam = s.getCamera();
+  const currentRatio = cam.ratio;
+  const ratio =
+    currentRatio *
+    Math.max(
+      wantedWidth / graphUnitsPerViewportWidth,
+      (wantedHeight / graphUnitsPerViewportWidth) * (vw / vh),
+    );
+  const view = s.graphToViewport({ x: cx, y: cy });
+  const framed = s.viewportToFramedGraph(view);
+  cam.setState({ x: framed.x, y: framed.y, ratio, angle: 0 });
 }
+
