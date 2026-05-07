@@ -20,7 +20,16 @@ export function Dock() {
   const setViewMode = useWorkspaceUI((s) => s.setViewMode);
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center">
+    <div
+      className={cn(
+        "pointer-events-none absolute inset-x-0 bottom-4 flex justify-center",
+        // Centre over the main pane, not the full window — shifts
+        // right when the sidebar is open so the dock visually belongs
+        // to the work area, not the chrome.
+        "transition-[padding] duration-300 ease-out",
+        sidebarOpen ? "pl-72" : "pl-0",
+      )}
+    >
       <div
         className={cn(
           "shadow-glass border-forest-200 bg-sand-100/80 pointer-events-auto",
@@ -33,7 +42,7 @@ export function Dock() {
           onClick={toggleSidebar}
           shortcut="⌘\\"
         >
-          {sidebarOpen ? "◧" : "◫"}
+          <SidebarGlyph open={sidebarOpen} />
         </DockButton>
         <DockSeparator />
         <ViewToggle value={viewMode} onChange={setViewMode} />
@@ -115,10 +124,10 @@ interface ViewToggleProps {
   onChange: (m: ViewMode) => void;
 }
 
-const VIEW_MODES: { id: ViewMode; label: string; icon: string }[] = [
-  { id: "editor", label: "Editor", icon: "✎" },
-  { id: "tree", label: "Tree", icon: "⌖" },
-  { id: "forest", label: "Forest", icon: "⌬" },
+const VIEW_MODES: { id: ViewMode; label: string; Icon: () => React.ReactElement }[] = [
+  { id: "editor", label: "Editor", Icon: EditorGlyph },
+  { id: "tree", label: "Tree", Icon: TreeGlyph },
+  { id: "forest", label: "Forest", Icon: ForestGlyph },
 ];
 
 function ViewToggle({ value, onChange }: ViewToggleProps) {
@@ -133,19 +142,100 @@ function ViewToggle({ value, onChange }: ViewToggleProps) {
           title={m.label}
           onClick={() => onChange(m.id)}
           className={cn(
-            "rounded-full px-3 py-1.5 text-sm transition-all duration-200 ease-out",
+            "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm transition-all duration-200 ease-out",
             "hover:-translate-y-px active:translate-y-0",
             value === m.id
               ? "bg-forest-800 text-sand-100 shadow-soft"
               : "text-forest-600 hover:bg-forest-100",
           )}
         >
-          <span aria-hidden className="mr-1">
-            {m.icon}
-          </span>
+          <m.Icon />
           {m.label}
         </button>
       ))}
     </div>
+  );
+}
+
+/**
+ * Stroke-based glyphs sized for the dock — 14×14, currentColor, the
+ * same stroke weight as the search magnifier so the dock reads as a
+ * single icon set instead of an emoji-and-svg mix.
+ */
+function GlyphFrame({ children }: { children: React.ReactNode }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 16 16"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="inline-block flex-none"
+    >
+      {children}
+    </svg>
+  );
+}
+
+/** Editor: a feather / pen nib drawn diagonally. */
+function EditorGlyph() {
+  return (
+    <GlyphFrame>
+      <path d="M3 13 L13 3" />
+      <path d="M11 1 L15 5 L13 7 L9 3 Z" />
+      <path d="M3 13 L1.5 14.5 L1 13 L3 13 Z" />
+    </GlyphFrame>
+  );
+}
+
+/** Tree: root + two leaves. */
+function TreeGlyph() {
+  return (
+    <GlyphFrame>
+      <circle cx="8" cy="3" r="1.6" />
+      <circle cx="3.5" cy="12.5" r="1.6" />
+      <circle cx="12.5" cy="12.5" r="1.6" />
+      <path d="M8 4.6 L8 8 M8 8 L4 11.2 M8 8 L12 11.2" />
+    </GlyphFrame>
+  );
+}
+
+/** Forest: a hub-and-spoke constellation — what the Forest view literally renders. */
+function ForestGlyph() {
+  return (
+    <GlyphFrame>
+      <circle cx="8" cy="8" r="1.6" />
+      <circle cx="3" cy="4" r="1" />
+      <circle cx="13" cy="4" r="1" />
+      <circle cx="2.5" cy="11" r="1" />
+      <circle cx="13.5" cy="11" r="1" />
+      <path d="M8 8 L3 4 M8 8 L13 4 M8 8 L2.5 11 M8 8 L13.5 11" />
+    </GlyphFrame>
+  );
+}
+
+/** Sidebar toggle: panel with a left rail; the rail is filled when open. */
+function SidebarGlyph({ open }: { open: boolean }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 16 16"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="inline-block flex-none"
+    >
+      <rect x="2" y="3" width="12" height="10" rx="1.5" />
+      <line x1="6" y1="3" x2="6" y2="13" />
+      {open && <rect x="2" y="3" width="4" height="10" rx="1.5" fill="currentColor" opacity="0.4" stroke="none" />}
+    </svg>
   );
 }

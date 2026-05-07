@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams, useRouterState } from "@tanstack/react-router";
 
 import { cn } from "@/lib/cn";
+import { useWorkspaceUI } from "@/stores/workspaceUI";
 import { useAgentSession } from "./agentStore";
 
 export function AgentPromptBar() {
@@ -20,6 +21,10 @@ export function AgentPromptBar() {
   const streaming = useAgentSession((s) => s.streaming);
   const startStream = useAgentSession((s) => s.startStream);
   const cancel = useAgentSession((s) => s.cancel);
+  // The bar centres over the main pane, not the full window — so it
+  // shifts right when the sidebar opens. The padding-only animation
+  // composites cleanly without re-rendering the input.
+  const sidebarOpen = useWorkspaceUI((s) => s.sidebarOpen);
 
   // Pull the current topicId / nodeId out of the route so the user
   // doesn't have to retype them. The bar is mounted at the shell so
@@ -61,7 +66,11 @@ export function AgentPromptBar() {
   return (
     <form
       onSubmit={onSubmit}
-      className="pointer-events-none absolute inset-x-0 bottom-20 flex justify-center"
+      className={cn(
+        "pointer-events-none absolute inset-x-0 bottom-20 flex justify-center",
+        "transition-[padding] duration-300 ease-out",
+        sidebarOpen ? "pl-72" : "pl-0",
+      )}
     >
       <div
         className={cn(

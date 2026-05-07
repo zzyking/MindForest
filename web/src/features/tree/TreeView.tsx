@@ -99,25 +99,55 @@ export function TreeView({ topicId, focusedNodeId }: Props) {
     .filter((n): n is NodeSummary => Boolean(n));
 
   return (
-    <Scaffold>
-      {ancestors.length > 0 && <AncestorTrail trail={ancestors} topicId={topicId} onPick={focus} />}
-      <FocusCard
-        summary={focusedSummary}
-        content={focusedFull?.content ?? null}
-        contentLoading={!focusedFull}
-      />
-      {children.length > 0 && (
-        <ChildGrid
-          topicId={topicId}
-          children={children}
-          childCountByParent={childCountByParent}
-          onPick={focus}
+    // Re-key the entire scaffold on focus change so the stagger
+    // animation re-runs every time the user picks a new node.
+    <Scaffold key={focusedNodeId}>
+      {ancestors.length > 0 && (
+        <Stagger index={0}>
+          <AncestorTrail trail={ancestors} topicId={topicId} onPick={focus} />
+        </Stagger>
+      )}
+      <Stagger index={1}>
+        <FocusCard
+          summary={focusedSummary}
+          content={focusedFull?.content ?? null}
+          contentLoading={!focusedFull}
         />
+      </Stagger>
+      {children.length > 0 && (
+        <Stagger index={2}>
+          <ChildGrid
+            topicId={topicId}
+            children={children}
+            childCountByParent={childCountByParent}
+            onPick={focus}
+          />
+        </Stagger>
       )}
       {linkSummaries.length > 0 && (
-        <LinkList topicId={topicId} links={linkSummaries} onPick={focus} />
+        <Stagger index={3}>
+          <LinkList topicId={topicId} links={linkSummaries} onPick={focus} />
+        </Stagger>
       )}
     </Scaffold>
+  );
+}
+
+/**
+ * Wrap a section in the stagger entrance. Each section gets its own
+ * delay (40ms × index) so the eye reads top-to-bottom on focus
+ * change instead of seeing the whole layout pop simultaneously.
+ */
+function Stagger({ children, index }: { children: React.ReactNode; index: number }) {
+  return (
+    <div
+      style={{
+        animation: "tree-card-in 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both",
+        animationDelay: `${index * 40}ms`,
+      }}
+    >
+      {children}
+    </div>
   );
 }
 
