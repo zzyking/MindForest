@@ -46,16 +46,18 @@ interface Props {
 // Galaxy layout. Initial positions seed each topic's nodes inside a
 // disc on a circular orbit (so the simulation starts already roughly
 // clustered); ForceAtlas2 then settles them into an organic layout.
-// Tree-backbone and same-topic link edges share a strong weight so a
-// topic's nodes pull together; cross-topic links carry a weaker weight
-// so distinct topics still drift apart but stay in the same scene.
-const ORBIT_GAP_PER_CLUSTER = 360;
-const ORBIT_MIN_RADIUS = 360;
-const INTRA_TOPIC_SPREAD = 180;
-const FA2_ITERATIONS = 240;
+// Edge weights bias the simulation toward keeping a topic cohesive
+// (tree backbone + same-topic links pull harder than cross-topic
+// links). The settings below trade more iterations + stronger
+// repulsion for a layout that actually spreads — the previous defaults
+// produced a tight central knot.
+const ORBIT_GAP_PER_CLUSTER = 600;
+const ORBIT_MIN_RADIUS = 600;
+const INTRA_TOPIC_SPREAD = 400;
+const FA2_ITERATIONS = 500;
 
-const NODE_SIZE_DEFAULT = 6;
-const NODE_SIZE_FOCUSED = 14;
+const NODE_SIZE_DEFAULT = 7;
+const NODE_SIZE_FOCUSED = 16;
 
 // Palette — sigma renders to canvas/webgl so we hard-code rather than
 // reading CSS variables. Mirrors `globals.css` `forest-*` / `accent`
@@ -179,8 +181,8 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       }
 
       // Tree-backbone edges. Each non-root node has a parent in the
-      // same topic; we use them as strong edges in the simulation so
-      // child nodes stay near their parent post-settle.
+      // same topic; we use them as the simulation's structural force
+      // so child nodes stay near their parent post-settle.
       for (const summary of detail.nodes) {
         if (!summary.parent) continue;
         if (!g.hasNode(summary.parent)) continue;
@@ -188,7 +190,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
           type: "line",
           size: 1.2,
           color: COLOR_FOREST_300,
-          weight: 2.0,
+          weight: 1.0,
         });
       }
     }
@@ -212,36 +214,53 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
               type: "line",
               size: 1.6,
               color: COLOR_ACCENT,
-              // Same-topic links pull harder than cross-topic links —
-              // the topic stays cohesive, distinct subjects drift.
-              weight: 1.2,
+              weight: 0.8,
             });
           } else {
             g.addEdgeWithKey(`xlink:${key}`, summary.id, dst, {
               type: "curve",
               size: 1.8,
               color: COLOR_ACCENT_DEEP,
-              weight: 0.35,
+              // Weak pull — distinct topics drift apart but the link is
+              // still a tug between them.
+              weight: 0.2,
             });
           }
         }
       }
     }
 
-    // Run the force simulation. ForceAtlas2 is iterative; 240 passes
-    // gets us a clean layout for 50–500 nodes without blocking the
-    // main thread for long. barnesHutOptimize keeps the per-pass cost
-    // sub-linear at scale.
+    // Run the force simulation. ForceAtlas2 is iterative; the larger
+    // iteration count + stronger repulsion (scalingRatio) and weaker
+    // gravity together actually let the graph spread. With the previous
+    // values the layout collapsed into a tight central knot.
     if (g.order > 1) {
       forceAtlas2.assign(g, {
         iterations: FA2_ITERATIONS,
         settings: {
-          gravity: 0.6,
-          scalingRatio: 12,
-          slowDown: 5,
-          edgeWeightInfluence: 1,
-          barnesHutOptimize: g.order > 80,
+          // Weak gravity — just enough to stop disconnected components
+          // from drifting infinitely. Stronger gravity (≥0.5) pulls
+          // everything to (0,0) and squashes the layout.
+          gravity: 0.05,
+          // High repulsion. ForceAtlas2 multiplies node-pair repulsion
+          // by `scalingRatio`; values around 30–50 give the airy
+          // Obsidian-style spread.
+          scalingRatio: 40,
+          // adjustSizes prevents nodes from overlapping with each other
+          // (treats `size` as a radius). Crucial when default node
+          // radius is ~7 and the graph wants to pack nodes tight.
           adjustSizes: true,
+          // Default damping; the previous slowDown=5 settled prematurely.
+          slowDown: 1,
+          // Use the edge weights we set so tree-backbone edges pull
+          // harder than cross-topic links.
+          edgeWeightInfluence: 1,
+          // Cheap O(n log n) for graphs above ~80 nodes; below that the
+          // exact O(n²) is faster and produces a better-quality layout.
+          barnesHutOptimize: g.order > 80,
+          // linLogMode emphasises dense subgraphs — good when topics are
+          // small and connected, which is our typical case.
+          linLogMode: true,
         },
       });
     }
