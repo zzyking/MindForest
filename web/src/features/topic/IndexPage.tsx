@@ -101,7 +101,7 @@ export function IndexPage() {
             onChange={(e) => setDraftTitle(e.target.value)}
             placeholder="Topic title"
             disabled={creating}
-            className="border-forest-200 bg-sand-50 placeholder:text-forest-400 focus:border-forest-500 flex-1 rounded-full border px-4 py-2 text-sm focus:outline-none disabled:opacity-60"
+            className="border-forest-200 bg-forest-50 placeholder:text-forest-400 focus:border-forest-500 flex-1 rounded-full border px-4 py-2 text-sm focus:outline-none disabled:opacity-60"
           />
           <button
             type="submit"

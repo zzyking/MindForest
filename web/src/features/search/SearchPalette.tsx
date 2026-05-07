@@ -164,13 +164,13 @@ export function SearchPalette() {
         </ul>
         <footer className="text-forest-400 border-forest-100 flex items-center justify-between border-t px-4 py-2 text-[10px] uppercase tracking-[0.08em] tabular-nums">
           <span className="flex items-center gap-2">
-            <kbd className="border-forest-200 bg-sand-50 rounded border px-1 py-0.5 normal-case tracking-normal">↑↓</kbd>
+            <kbd className="border-forest-200 bg-forest-50 rounded border px-1 py-0.5 normal-case tracking-normal">↑↓</kbd>
             navigate
             <span className="text-forest-200">·</span>
-            <kbd className="border-forest-200 bg-sand-50 rounded border px-1 py-0.5 normal-case tracking-normal">↵</kbd>
+            <kbd className="border-forest-200 bg-forest-50 rounded border px-1 py-0.5 normal-case tracking-normal">↵</kbd>
             open
             <span className="text-forest-200">·</span>
-            <kbd className="border-forest-200 bg-sand-50 rounded border px-1 py-0.5 normal-case tracking-normal">esc</kbd>
+            <kbd className="border-forest-200 bg-forest-50 rounded border px-1 py-0.5 normal-case tracking-normal">esc</kbd>
             close
           </span>
           <span>
