@@ -12,7 +12,7 @@
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useCallback } from "react";
 
-import { useWorkspaceUI } from "@/stores/workspaceUI";
+import { useWorkspaceUI, type ForestCameraMode } from "@/stores/workspaceUI";
 import type { NodeId, TopicId } from "@/lib/types";
 
 interface FocusOptions {
@@ -20,6 +20,8 @@ interface FocusOptions {
       (e.g. landing on /$topicId nudging to /$topicId/$rootNodeId) so
       the redirect target doesn't pollute the back stack. */
   replace?: boolean;
+  /** Forest view camera semantics for this navigation. Defaults to the concrete node. */
+  forestCameraMode?: ForestCameraMode;
 }
 
 /**
@@ -32,9 +34,15 @@ interface FocusOptions {
 export function useFocusNode() {
   const navigate = useNavigate();
   const recordPush = useWorkspaceUI((s) => s.recordPush);
+  const setForestCameraIntent = useWorkspaceUI((s) => s.setForestCameraIntent);
   return useCallback(
     async (nodeId: NodeId, topicId: TopicId, opts?: FocusOptions) => {
       const replace = opts?.replace ?? false;
+      setForestCameraIntent({
+        targetNodeId: nodeId,
+        topicId,
+        mode: opts?.forestCameraMode ?? "node",
+      });
       const result = await navigate({
         to: "/$topicId/$nodeId",
         params: { topicId, nodeId },
@@ -43,7 +51,7 @@ export function useFocusNode() {
       if (!replace) recordPush();
       return result;
     },
-    [navigate, recordPush],
+    [navigate, recordPush, setForestCameraIntent],
   );
 }
 

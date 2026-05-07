@@ -30,6 +30,8 @@ import {
   forceLink,
   forceManyBody,
   forceSimulation,
+  forceX,
+  forceY,
   type SimulationLinkDatum,
   type SimulationNodeDatum,
 } from "d3-force";
@@ -38,6 +40,7 @@ import Sigma from "sigma";
 
 import { useFocusNode } from "@/app/navigation";
 import { useForestData } from "@/stores/forestData";
+import { useWorkspaceUI, type ForestCameraMode } from "@/stores/workspaceUI";
 import type { NodeId, NodeType, TopicDetail, TopicId } from "@/lib/types";
 
 interface Props {
@@ -98,6 +101,8 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
   const detailLoading = useForestData((s) => s.loading.topicDetail);
   const fetchTopics = useForestData((s) => s.fetchTopics);
   const fetchTopic = useForestData((s) => s.fetchTopic);
+  const forestCameraIntent = useWorkspaceUI((s) => s.forestCameraIntent);
+  const consumeForestCameraIntent = useWorkspaceUI((s) => s.consumeForestCameraIntent);
   const focus = useFocusNode();
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -242,6 +247,8 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       const sim = forceSimulation<SimNode>(simNodes)
         .force("charge", forceManyBody().strength(-120))
         .force("center", forceCenter(0, 0).strength(0.3))
+        .force("x", forceX(0).strength(0.04)) // Pull disconnected topics closer
+        .force("y", forceY(0).strength(0.04)) // Pull disconnected topics closer
         .force(
           "link",
           forceLink<SimNode, SimLink>(simLinks)
@@ -260,13 +267,12 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     // Pass 2: write into a graphology graph for sigma to render.
     const g = new Graph({ multi: false, type: "undirected", allowSelfLoops: false });
     for (const node of simNodes) {
-      const focused = node.id === focusedNodeId;
       g.addNode(node.id, {
         x: node.x ?? 0,
         y: node.y ?? 0,
         size: nodeRadius(node),
         label: node.title,
-        color: focused ? COLOR_FOREST_900 : TYPE_COLOR[node.type],
+        color: TYPE_COLOR[node.type],
         topicId: node.topicId,
         nodeType: node.type,
         degree: node.degree,
@@ -329,7 +335,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       `[forest] graph built in ${buildMs}ms · ${ready.length} topics · ${g.order} nodes · ${g.size} edges`,
     );
     return { graph: g, anchors: anchorList, neighbors: adjacency, hasNoData: false };
-  }, [topics, topicDetails, focusedNodeId]);
+  }, [topics, topicDetails]);
 
   // Keep the neighbour map in a ref so the reducer can read it
   // without re-creating sigma.
@@ -339,6 +345,46 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 
   const labelsLayerRef = useRef<HTMLDivElement | null>(null);
   const labelNodeRefs = useRef(new Map<TopicId, HTMLDivElement>());
+
+  const focusedNodeIdRef = useRef(focusedNodeId);
+  const focusedTopicIdRef = useRef(focusedTopicId);
+  useEffect(() => {
+    focusedNodeIdRef.current = focusedNodeId;
+    const s = sigmaRef.current;
+    if (!s || !graph) {
+      focusedTopicIdRef.current = focusedTopicId;
+      return;
+    }
+
+    focusedTopicIdRef.current = focusedTopicId;
+    const cameraMode = getForestCameraMode({
+      focusedNodeId,
+      focusedTopicId,
+      intent: forestCameraIntent,
+    });
+    if (!cameraMode) return;
+
+    const target = resolveCameraTarget({
+      focusedNodeId,
+      focusedTopicId,
+      graph,
+      cameraMode,
+      topicDetails,
+    });
+    if (!target) return;
+
+    s.refresh();
+    animateCameraToPoint(s, target, { duration: 400 });
+    s.refresh();
+    consumeForestCameraIntent(focusedNodeId, focusedTopicId);
+  }, [
+    consumeForestCameraIntent,
+    focusedNodeId,
+    focusedTopicId,
+    forestCameraIntent,
+    graph,
+    topicDetails,
+  ]);
 
   useEffect(() => {
     if (!containerRef.current || !graph) return;
@@ -430,6 +476,11 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 
       nodeReducer: (id, attrs) => {
         const out: any = { ...attrs };
+
+        if (id === focusedNodeIdRef.current) {
+          out.color = COLOR_FOREST_900;
+        }
+
         const hoverBoost = hoverProgressRef.current;
         
         if (hoverBoost > 0) {
@@ -500,7 +551,11 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 
     s.on("clickNode", ({ node }) => {
       const topicId = graph.getNodeAttribute(node, "topicId") as TopicId;
+      const x = graph.getNodeAttribute(node, "x") as number;
+      const y = graph.getNodeAttribute(node, "y") as number;
+      
       void focus(node as NodeId, topicId);
+      animateCameraToPoint(s, { x, y }, { duration: 400 });
     });
     s.on("enterNode", ({ node }) => setHover(node as NodeId));
     s.on("leaveNode", () => setHover(null));
@@ -509,6 +564,33 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 
     sigmaRef.current = s;
     fitCameraToGraph(s, graph);
+    
+    if (focusedNodeIdRef.current && graph.hasNode(focusedNodeIdRef.current)) {
+      const target =
+        resolveCameraTarget({
+          focusedNodeId: focusedNodeIdRef.current,
+          focusedTopicId: focusedTopicIdRef.current,
+          graph,
+          // Graph rebuilds can be caused by background topic-detail hydration
+          // before the route focus changes. Preserve the current node then;
+          // route-driven topic changes are handled by the focus effect above.
+          cameraMode: "node",
+          topicDetails,
+        }) ?? getGraphNodePosition(graph, focusedNodeIdRef.current);
+      if (!target) {
+        projectOverlays();
+        return () => {
+          if (hoverAnimFrameRef.current !== null) {
+            cancelAnimationFrame(hoverAnimFrameRef.current);
+            hoverAnimFrameRef.current = null;
+          }
+          s.kill();
+          sigmaRef.current = null;
+        };
+      }
+      setCameraToPoint(s, target);
+    }
+
     projectOverlays();
 
     return () => {
@@ -590,7 +672,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 
   return (
     <div
-      className="bg-sand-50 relative h-full w-full overflow-hidden"
+      className="bg-forest-50 relative h-full w-full overflow-hidden"
       role="region"
       aria-label="Forest map of the workspace"
     >
@@ -625,10 +707,14 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
               <button
                 type="button"
                 onClick={() => {
-                  if (detail) void focus(detail.root_node_id, detail.id);
+                  if (detail) {
+                    void focus(detail.root_node_id, detail.id, {
+                      forestCameraMode: "topic-root",
+                    });
+                  }
                 }}
                 className={
-                  "pointer-events-auto border-forest-200 bg-sand-50/90 hover:bg-sand-100 hover:border-forest-300 inline-flex items-center gap-2 rounded-full border px-3 py-1.5 font-serif backdrop-blur-md shadow-glass transition-colors " +
+                  "pointer-events-auto border-forest-200 bg-forest-50/90 hover:bg-sand-100 hover:border-forest-300 inline-flex items-center gap-2 rounded-full border px-3 py-1.5 font-serif backdrop-blur-md shadow-glass transition-colors " +
                   (focused
                     ? "text-forest-900 border-accent ring-1 ring-accent/30"
                     : "text-forest-700")
@@ -651,6 +737,83 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 // reducer closures without forcing a full sigma re-create on every
 // hover tick.
 const sigmaHoverRef: { current: NodeId | null } = { current: null };
+
+function getGraphNodePosition(graph: Graph, nodeId: NodeId): { x: number; y: number } | null {
+  if (!graph.hasNode(nodeId)) return null;
+  return {
+    x: graph.getNodeAttribute(nodeId, "x") as number,
+    y: graph.getNodeAttribute(nodeId, "y") as number,
+  };
+}
+
+function getFramedGraphPoint(sigma: Sigma, point: { x: number; y: number }) {
+  const conversion = {
+    cameraState: sigma.getCamera().getState(),
+    viewportDimensions: sigma.getDimensions(),
+    graphDimensions: sigma.getGraphDimensions(),
+    padding: sigma.getStagePadding(),
+  };
+  const view = sigma.graphToViewport(point, conversion);
+  return sigma.viewportToFramedGraph(view, conversion);
+}
+
+function animateCameraToPoint(
+  sigma: Sigma,
+  point: { x: number; y: number },
+  options: { duration: number },
+) {
+  const framed = getFramedGraphPoint(sigma, point);
+  sigma.getCamera().animate({ x: framed.x, y: framed.y }, { duration: options.duration });
+}
+
+function setCameraToPoint(sigma: Sigma, point: { x: number; y: number }) {
+  const framed = getFramedGraphPoint(sigma, point);
+  sigma.getCamera().setState({ x: framed.x, y: framed.y });
+}
+
+function resolveCameraTarget({
+  focusedNodeId,
+  focusedTopicId,
+  cameraMode,
+  graph,
+  topicDetails,
+}: {
+  focusedNodeId: NodeId;
+  focusedTopicId: TopicId;
+  cameraMode: ForestCameraMode;
+  graph: Graph;
+  topicDetails: Record<TopicId, TopicDetail | undefined>;
+}): { x: number; y: number } | null {
+  if (cameraMode === "node") {
+    return getGraphNodePosition(graph, focusedNodeId);
+  }
+
+  const detail = topicDetails[focusedTopicId];
+  const topicRootTarget = detail ? getGraphNodePosition(graph, detail.root_node_id) : null;
+  if (topicRootTarget) return topicRootTarget;
+
+  return getGraphNodePosition(graph, focusedNodeId);
+}
+
+function getForestCameraMode({
+  focusedNodeId,
+  focusedTopicId,
+  intent,
+}: {
+  focusedNodeId: NodeId;
+  focusedTopicId: TopicId;
+  intent: {
+    targetNodeId: NodeId;
+    topicId: TopicId;
+    mode: ForestCameraMode;
+  } | null;
+}): ForestCameraMode | null {
+  if (!intent) return "node";
+  if (intent.targetNodeId === focusedNodeId && intent.topicId === focusedTopicId) {
+    return intent.mode;
+  }
+  return null;
+}
 
 /** Blend a #rrggbb with the sand background to simulate alpha. */
 function withAlpha(color: string, alpha: number): string {

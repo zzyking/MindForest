@@ -47,7 +47,7 @@ export function Sidebar() {
       const topic = await createTopic(title);
       setDraftTitle("");
       setCreating(false);
-      await focus(topic.root_node_id, topic.id);
+      await focus(topic.root_node_id, topic.id, { forestCameraMode: "topic-root" });
     } catch (err) {
       setCreateError(
         err instanceof ApiError
@@ -114,7 +114,7 @@ export function Sidebar() {
         {creating && (
           <form
             onSubmit={onCreateTopic}
-            className="mb-1 flex items-center gap-1 px-1"
+            className="mb-2 flex items-center gap-1 px-1"
           >
             <input
               autoFocus
@@ -130,7 +130,7 @@ export function Sidebar() {
               }}
               placeholder="Topic title"
               disabled={submitting}
-              className="border-forest-200 bg-sand-50 placeholder:text-forest-400 focus:border-forest-500 min-w-0 flex-1 rounded border px-2 py-1 text-sm focus:outline-none disabled:opacity-60"
+              className="border-forest-200 bg-sand-50 placeholder:text-forest-400 focus:border-forest-500 min-w-0 flex-1 rounded border px-2 py-0.5 text-xs focus:outline-none disabled:opacity-60"
             />
             <button
               type="submit"
@@ -153,11 +153,13 @@ export function Sidebar() {
                   type="button"
                   onClick={async () => {
                     const detail = await fetchTopic(t.id);
-                    await focus(detail.root_node_id, detail.id);
+                    await focus(detail.root_node_id, detail.id, {
+                      forestCameraMode: "topic-root",
+                    });
                   }}
                   className={cn(
-                    "relative w-full truncate rounded px-2 py-1 pl-3 text-left text-sm transition-colors",
-                    "before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full",
+                    "relative w-full truncate rounded px-2 py-1 pl-3 text-left text-sm font-semibold transition-colors",
+                    "before:absolute before:left-0.5 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full",
                     active
                       ? "bg-forest-100 text-forest-900 before:bg-accent"
                       : "text-forest-600 hover:bg-forest-100/50 before:bg-transparent",
@@ -287,14 +289,14 @@ function NodeRow({
     <li>
       <div
         className="group relative flex items-stretch text-sm text-forest-600"
-        style={{ paddingLeft: `${depth * 0.75 + 0.5}rem` }}
+        style={{ paddingLeft: `${depth * 0.75}rem` }}
       >
         {guides.map((k) => (
           <span
             key={k}
             aria-hidden
             className="bg-forest-200/50 pointer-events-none absolute top-0 bottom-0 w-px"
-            style={{ left: `calc(${k * 0.75}rem + 1.25rem)` }}
+            style={{ left: `calc(${k * 0.75}rem + 0.5rem)` }}
           />
         ))}
         {/* Highlight surface starts where the chevron column begins,
@@ -304,7 +306,7 @@ function NodeRow({
         <div
           className={cn(
             "relative flex w-full items-center gap-1 rounded transition-colors",
-            "before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full",
+            "before:absolute before:left-0.5 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full",
             isFocused
               ? "bg-forest-100 text-forest-900 before:bg-accent"
               : "hover:bg-forest-100/50 before:bg-transparent",
@@ -314,7 +316,7 @@ function NodeRow({
             type="button"
             aria-label={children.length > 0 ? (isOpen ? "Collapse" : "Expand") : undefined}
             className={cn(
-              "text-forest-500 hover:text-forest-800 inline-flex h-6 w-6 flex-none items-center justify-center text-base leading-none",
+              "text-forest-500 hover:text-forest-800 inline-flex h-6 w-1 flex-none items-center justify-center text-base leading-none px-2",
               children.length === 0 && "invisible",
             )}
             onClick={() => toggle(node.id)}
@@ -324,7 +326,12 @@ function NodeRow({
           </button>
           <button
             type="button"
-            onClick={() => focus(node.id, topicId)}
+            onClick={() => {
+              focus(node.id, topicId);
+              if (children.length > 0 && !isOpen) {
+                toggle(node.id);
+              }
+            }}
             className="min-w-0 flex-1 truncate py-1 text-left"
             title={node.title}
           >

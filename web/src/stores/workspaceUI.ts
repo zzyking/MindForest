@@ -18,13 +18,23 @@
 
 import { create } from "zustand";
 
+import type { NodeId, TopicId } from "@/lib/types";
+
 export type ViewMode = "editor" | "tree" | "forest";
+export type ForestCameraMode = "node" | "topic-root";
+
+interface ForestCameraIntent {
+  targetNodeId: NodeId;
+  topicId: TopicId;
+  mode: ForestCameraMode;
+}
 
 interface WorkspaceUIState {
   sidebarOpen: boolean;
   searchPaletteOpen: boolean;
   agentSettingsOpen: boolean;
   viewMode: ViewMode;
+  forestCameraIntent: ForestCameraIntent | null;
   /** Number of focus-pushes behind the current cursor (≥ 0). */
   navBack: number;
   /** Number of focus-pushes ahead of the current cursor (≥ 0). */
@@ -35,6 +45,8 @@ interface WorkspaceUIState {
   setSearchPalette: (open: boolean) => void;
   setAgentSettings: (open: boolean) => void;
   setViewMode: (mode: ViewMode) => void;
+  setForestCameraIntent: (intent: ForestCameraIntent | null) => void;
+  consumeForestCameraIntent: (targetNodeId: NodeId, topicId: TopicId) => void;
   /** Called by `useFocusNode` when a *non-replace* push lands. */
   recordPush: () => void;
   /** Called by `useNav.back` immediately before triggering history.back. */
@@ -48,6 +60,7 @@ export const useWorkspaceUI = create<WorkspaceUIState>((set) => ({
   searchPaletteOpen: false,
   agentSettingsOpen: false,
   viewMode: "editor",
+  forestCameraIntent: null,
   navBack: 0,
   navForward: 0,
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
@@ -56,6 +69,14 @@ export const useWorkspaceUI = create<WorkspaceUIState>((set) => ({
   setSearchPalette: (open) => set({ searchPaletteOpen: open }),
   setAgentSettings: (open) => set({ agentSettingsOpen: open }),
   setViewMode: (mode) => set({ viewMode: mode }),
+  setForestCameraIntent: (intent) => set({ forestCameraIntent: intent }),
+  consumeForestCameraIntent: (targetNodeId, topicId) =>
+    set((s) =>
+      s.forestCameraIntent?.targetNodeId === targetNodeId &&
+      s.forestCameraIntent.topicId === topicId
+        ? { forestCameraIntent: null }
+        : s,
+    ),
   // Pushing a new entry truncates the forward stack — same semantics as
   // browser history.
   recordPush: () => set((s) => ({ navBack: s.navBack + 1, navForward: 0 })),
