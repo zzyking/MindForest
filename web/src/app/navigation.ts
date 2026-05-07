@@ -40,17 +40,27 @@ export function useFocusNode() {
 
 /**
  * Browser-style history primitives. Buttons can be wired straight to
- * these and disabled state is read from the same router state.
+ * these.
+ *
+ * `canGoBack` / `canGoForward` are intentionally always `true` here.
+ * TanStack Router 1.x's `BrowserHistory` does not expose the cursor
+ * index — the previous attempt to read `(router.history as { index }).index`
+ * always returned `undefined`, so both flags were permanently `false`
+ * and the buttons stayed disabled forever. `window.history` API also
+ * doesn't expose "can-go-back" — the closest signals (`length`,
+ * `state`) are unreliable. We delegate to `router.history.back()` /
+ * `forward()` which no-op gracefully at history edges, so an
+ * always-enabled button is correct: clicking at the edge does nothing
+ * which is the same as clicking a disabled button.
+ *
+ * Trade-off: the affordance for "no further history" is weaker — but
+ * for a knowledge tool where the user is constantly hopping between
+ * nodes, the previous always-disabled state was the worse end of that
+ * trade-off.
  */
 export function useNav() {
   const router = useRouter();
   const back = useCallback(() => router.history.back(), [router]);
   const forward = useCallback(() => router.history.forward(), [router]);
-  // TanStack Router's history exposes `length` and `index` so we can
-  // derive can-go-back / can-go-forward without poking window.history.
-  const canGoBack = router.history.length > 1 && (router.history as unknown as { index: number }).index > 0;
-  const canGoForward =
-    (router.history as unknown as { index: number }).index <
-    router.history.length - 1;
-  return { back, forward, canGoBack, canGoForward } as const;
+  return { back, forward, canGoBack: true, canGoForward: true } as const;
 }
