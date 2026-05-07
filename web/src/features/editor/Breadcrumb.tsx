@@ -48,7 +48,7 @@ export function Breadcrumb({ nodeId, topicId }: Props) {
                 type="button"
                 onClick={() => void focusNode(c.id as NodeId, topicId)}
                 className={cn(
-                  "hover:text-forest-700 max-w-[16ch] truncate underline-offset-4 hover:underline",
+                  "hover:text-forest-700 max-w-[28ch] truncate underline-offset-4 hover:underline",
                 )}
                 title={c.label}
               >
@@ -56,7 +56,12 @@ export function Breadcrumb({ nodeId, topicId }: Props) {
               </button>
             ) : (
               <span
-                className={cn("max-w-[16ch] truncate", isLast && "text-forest-800 font-medium")}
+                className={cn(
+                  "truncate",
+                  // The current item gets more room than ancestors —
+                  // it's where the user's eye lands.
+                  isLast ? "max-w-[40ch] text-forest-800 font-medium" : "max-w-[28ch]",
+                )}
                 title={c.label}
               >
                 {c.label}
