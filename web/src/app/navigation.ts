@@ -12,6 +12,7 @@
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useCallback } from "react";
 
+import { useWorkspaceUI } from "@/stores/workspaceUI";
 import type { NodeId, TopicId } from "@/lib/types";
 
 interface FocusOptions {
@@ -24,43 +25,58 @@ interface FocusOptions {
 /**
  * Returns a stable `(nodeId, topicId, opts?) => Promise<void>` that
  * routes the webview to the editor for that node.
+ *
+ * On a non-replace push we also bump the workspaceUI nav counters so
+ * the toolbar's Back / Forward affordances reflect the right edges.
  */
 export function useFocusNode() {
   const navigate = useNavigate();
+  const recordPush = useWorkspaceUI((s) => s.recordPush);
   return useCallback(
-    (nodeId: NodeId, topicId: TopicId, opts?: FocusOptions) =>
-      navigate({
+    async (nodeId: NodeId, topicId: TopicId, opts?: FocusOptions) => {
+      const replace = opts?.replace ?? false;
+      const result = await navigate({
         to: "/$topicId/$nodeId",
         params: { topicId, nodeId },
-        replace: opts?.replace ?? false,
-      }),
-    [navigate],
+        replace,
+      });
+      if (!replace) recordPush();
+      return result;
+    },
+    [navigate, recordPush],
   );
 }
 
 /**
- * Browser-style history primitives. Buttons can be wired straight to
- * these.
+ * Browser-style history primitives.
  *
- * `canGoBack` / `canGoForward` are intentionally always `true` here.
- * TanStack Router 1.x's `BrowserHistory` does not expose the cursor
- * index — the previous attempt to read `(router.history as { index }).index`
- * always returned `undefined`, so both flags were permanently `false`
- * and the buttons stayed disabled forever. `window.history` API also
- * doesn't expose "can-go-back" — the closest signals (`length`,
- * `state`) are unreliable. We delegate to `router.history.back()` /
- * `forward()` which no-op gracefully at history edges, so an
- * always-enabled button is correct: clicking at the edge does nothing
- * which is the same as clicking a disabled button.
- *
- * Trade-off: the affordance for "no further history" is weaker — but
- * for a knowledge tool where the user is constantly hopping between
- * nodes, the previous always-disabled state was the worse end of that
- * trade-off.
+ * The cursor is tracked in `workspaceUI` (`navBack` / `navForward`)
+ * because TanStack Router's `BrowserHistory` doesn't expose its index
+ * and `window.history.length` counts entries from outside the SPA too.
+ * Each `useFocusNode` push bumps `navBack`; back/forward swap a count
+ * between the two sides. We clamp here too so a click at the edge is
+ * a true no-op — no chance of falling out of the SPA's history range.
  */
 export function useNav() {
   const router = useRouter();
-  const back = useCallback(() => router.history.back(), [router]);
-  const forward = useCallback(() => router.history.forward(), [router]);
-  return { back, forward, canGoBack: true, canGoForward: true } as const;
+  const navBack = useWorkspaceUI((s) => s.navBack);
+  const navForward = useWorkspaceUI((s) => s.navForward);
+  const recordBack = useWorkspaceUI((s) => s.recordBack);
+  const recordForward = useWorkspaceUI((s) => s.recordForward);
+  const back = useCallback(() => {
+    if (navBack <= 0) return;
+    recordBack();
+    router.history.back();
+  }, [navBack, recordBack, router]);
+  const forward = useCallback(() => {
+    if (navForward <= 0) return;
+    recordForward();
+    router.history.forward();
+  }, [navForward, recordForward, router]);
+  return {
+    back,
+    forward,
+    canGoBack: navBack > 0,
+    canGoForward: navForward > 0,
+  } as const;
 }
