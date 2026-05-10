@@ -9,9 +9,11 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { Sparkles } from "lucide-react";
 import { useParams, useRouterState } from "@tanstack/react-router";
 
 import { cn } from "@/lib/cn";
+import { useMediaQuery } from "@/lib/useMediaQuery";
 import { useWorkspaceUI } from "@/stores/workspaceUI";
 import { useAgentSession } from "./agentStore";
 
@@ -25,6 +27,9 @@ export function AgentPromptBar() {
   // shifts right when the sidebar opens. The padding-only animation
   // composites cleanly without re-rendering the input.
   const sidebarOpen = useWorkspaceUI((s) => s.sidebarOpen);
+  const isLg = useMediaQuery("(min-width: 1024px)");
+  const dockExpanded = useWorkspaceUI((s) => s.dockExpanded);
+  const expandDock = useWorkspaceUI((s) => s.expandDock);
 
   // Pull the current topicId / nodeId out of the route so the user
   // doesn't have to retype them. The bar is mounted at the shell so
@@ -48,6 +53,8 @@ export function AgentPromptBar() {
       }
       if (!cmd && e.key === "/" && !inEditable) {
         e.preventDefault();
+        // Auto-expand the dock so the bar is visible before focusing.
+        if (!dockExpanded) expandDock();
         inputRef.current?.focus();
       }
     };
@@ -68,8 +75,12 @@ export function AgentPromptBar() {
       onSubmit={onSubmit}
       className={cn(
         "pointer-events-none absolute inset-x-0 bottom-20 flex justify-center",
-        "transition-[padding] duration-300 ease-out",
-        sidebarOpen ? "pl-72" : "pl-0",
+        "transition-all duration-300 ease-out will-change-transform",
+        sidebarOpen && isLg ? "pl-72" : "",
+        // Stagger slightly behind the dock on expand, collapse together.
+        dockExpanded
+          ? "translate-y-0 opacity-100 delay-75"
+          : "translate-y-4 opacity-0 pointer-events-none",
       )}
     >
       <div
@@ -78,8 +89,8 @@ export function AgentPromptBar() {
           "flex w-[min(620px,calc(100vw-2rem))] items-center gap-3 rounded-full border px-4 py-2 backdrop-blur-md",
         )}
       >
-        <span className="text-forest-500 flex items-center gap-1 text-[10px] uppercase tracking-[0.12em]">
-          <SparkGlyph />
+        <span className="text-forest-500 flex items-center gap-1.5 text-[10px] uppercase tracking-[0.12em]">
+          <Sparkles size={12} strokeWidth={2} aria-hidden />
           Agent
         </span>
         <input
@@ -122,34 +133,6 @@ export function AgentPromptBar() {
         )}
       </div>
     </form>
-  );
-}
-
-/**
- * Tiny three-stroke spark — sits next to the "Agent" label so the
- * prompt bar reads as agentic rather than a generic input. Hand-drawn
- * feel matches the rest of the chrome's Unicode-glyph aesthetic.
- */
-function SparkGlyph() {
-  return (
-    <svg
-      aria-hidden
-      viewBox="0 0 12 12"
-      width="11"
-      height="11"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="opacity-80"
-    >
-      <path d="M6 1 L6 5" />
-      <path d="M6 7 L6 11" />
-      <path d="M1 6 L4 6" />
-      <path d="M8 6 L11 6" />
-      <circle cx="6" cy="6" r="1" />
-    </svg>
   );
 }
 

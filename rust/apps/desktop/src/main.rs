@@ -97,6 +97,7 @@ fn main() {
       WebviewWindowBuilder::new(app, "main", url)
         .title("MindForest")
         .inner_size(1280.0, 800.0)
+        .min_inner_size(640.0, 480.0)
         .resizable(true)
         .initialization_script(&init_script)
         .build()?;

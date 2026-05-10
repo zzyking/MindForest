@@ -25,6 +25,8 @@ import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 
+import { ArrowLeft, ArrowRight, BookOpen, Plus, SquarePen, Trash2 } from "lucide-react";
+
 import { cn } from "@/lib/cn";
 import { useFocusNode, useNav } from "@/app/navigation";
 import { useForestData } from "@/stores/forestData";
@@ -268,7 +270,7 @@ export function NodeEditor({ nodeId }: Props) {
 
 function EditorScaffold({ children }: { children: React.ReactNode }) {
   return (
-    <article className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-6 py-6">
+    <article className="@container mx-auto flex w-full max-w-3xl flex-col gap-4 px-6 py-6">
       {children}
     </article>
   );
@@ -310,77 +312,79 @@ function Toolbar({
   canDelete,
   deleteArmed,
 }: ToolbarProps) {
-  // All toolbar buttons share the same vertical metrics so the row
-  // reads as a single horizontal rhythm — no pills, no boxed groups,
-  // just text buttons with consistent padding and a hairline divider
-  // between logical clusters.
-  const navBtn =
-    "text-forest-600 hover:text-forest-900 disabled:text-forest-300 disabled:cursor-not-allowed h-7 px-2 text-sm transition-colors inline-flex items-center";
+  const btn =
+    "inline-flex items-center gap-1.5 h-7 px-2 text-sm transition-colors rounded whitespace-nowrap";
+  const navBtn = cn(btn, "text-forest-600 hover:text-forest-900 disabled:text-forest-300 disabled:cursor-not-allowed");
+
   return (
     <div className="text-forest-600 flex items-center justify-between text-sm">
       <div className="flex items-center">
         <button type="button" className={navBtn} onClick={onBack} disabled={!canBack} aria-label="Back">
-          ← Back
+          <ArrowLeft size={14} strokeWidth={2} aria-hidden />
+          <span className="hidden @[480px]:inline">Back</span>
         </button>
-        <button
-          type="button"
-          className={navBtn}
-          onClick={onForward}
-          disabled={!canForward}
-          aria-label="Forward"
-        >
-          Forward →
+        <button type="button" className={navBtn} onClick={onForward} disabled={!canForward} aria-label="Forward">
+          <span className="hidden @[480px]:inline">Forward</span>
+          <ArrowRight size={14} strokeWidth={2} aria-hidden />
         </button>
       </div>
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-0.5">
         <ModeToggle value={mode} onChange={onModeChange} />
         <span aria-hidden className="bg-forest-200/60 mx-1 h-4 w-px" />
-        <button type="button" className={navBtn} onClick={onAddChild}>
-          + Add child
+        <button type="button" className={cn(btn, "text-forest-600 hover:text-forest-900")} onClick={onAddChild} aria-label="Add child node">
+          <Plus size={14} strokeWidth={2} aria-hidden />
+          <span className="hidden @[480px]:inline">Add child</span>
         </button>
         <button
           type="button"
           className={cn(
-            "h-7 px-2 text-sm inline-flex items-center transition-colors",
+            btn,
             canDelete ? "text-accent hover:text-rust-700" : "text-forest-200 cursor-not-allowed",
             deleteArmed && "underline underline-offset-4",
           )}
           onClick={onDelete}
           disabled={!canDelete}
+          aria-label={canDelete ? "Delete this node" : "Topic root cannot be deleted"}
           title={canDelete ? "Delete this node" : "Topic root cannot be deleted"}
         >
-          {deleteArmed ? "Click again to confirm" : "Delete"}
+          <Trash2 size={14} strokeWidth={2} aria-hidden />
+          <span className="hidden @[480px]:inline">
+            {deleteArmed ? "Confirm?" : "Delete"}
+          </span>
         </button>
       </div>
     </div>
   );
 }
 
+const MODE_ITEMS = [
+  { id: "write" as const, label: "Write", Icon: SquarePen },
+  { id: "read"  as const, label: "Read",  Icon: BookOpen  },
+];
+
 function ModeToggle({ value, onChange }: { value: Mode; onChange: (m: Mode) => void }) {
-  // No pill, no rounded frame: each mode is a flat text button. The
-  // active mode is anchored visually by a 2px accent underline that
-  // sits below the baseline — same height as the rest of the toolbar
-  // so the row's vertical rhythm stays clean.
   return (
-    <div role="tablist" aria-label="View mode" className="inline-flex items-center">
-      {(["write", "read"] as const).map((m) => {
-        const active = value === m;
+    <div role="tablist" aria-label="Editor mode" className="inline-flex items-center">
+      {MODE_ITEMS.map(({ id, label, Icon }) => {
+        const active = value === id;
         return (
           <button
-            key={m}
+            key={id}
             type="button"
             role="tab"
             aria-selected={active}
-            onClick={() => onChange(m)}
+            aria-label={label}
+            onClick={() => onChange(id)}
             className={cn(
-              "relative h-7 px-2 text-sm inline-flex items-center transition-colors",
+              "relative h-7 px-2 text-sm inline-flex items-center gap-1.5 transition-colors rounded",
               "after:absolute after:left-2 after:right-2 after:bottom-0.5 after:h-[2px] after:rounded-full after:transition-colors",
               active
                 ? "text-forest-900 font-medium after:bg-accent"
                 : "text-forest-500 hover:text-forest-800 after:bg-transparent",
             )}
           >
-            {m === "write" ? "Write" : "Read"}
+            <Icon size={14} strokeWidth={2} aria-hidden />
+            <span className="hidden @[480px]:inline">{label}</span>
           </button>
         );
       })}

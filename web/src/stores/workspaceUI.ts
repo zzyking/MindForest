@@ -33,6 +33,7 @@ interface WorkspaceUIState {
   sidebarOpen: boolean;
   searchPaletteOpen: boolean;
   agentSettingsOpen: boolean;
+  dockExpanded: boolean;
   viewMode: ViewMode;
   forestCameraIntent: ForestCameraIntent | null;
   /** Number of focus-pushes behind the current cursor (≥ 0). */
@@ -44,6 +45,8 @@ interface WorkspaceUIState {
   toggleSearchPalette: () => void;
   setSearchPalette: (open: boolean) => void;
   setAgentSettings: (open: boolean) => void;
+  toggleDock: () => void;
+  expandDock: () => void;
   setViewMode: (mode: ViewMode) => void;
   setForestCameraIntent: (intent: ForestCameraIntent | null) => void;
   consumeForestCameraIntent: (targetNodeId: NodeId, topicId: TopicId) => void;
@@ -59,6 +62,7 @@ export const useWorkspaceUI = create<WorkspaceUIState>((set) => ({
   sidebarOpen: true,
   searchPaletteOpen: false,
   agentSettingsOpen: false,
+  dockExpanded: true,
   viewMode: "editor",
   forestCameraIntent: null,
   navBack: 0,
@@ -68,6 +72,8 @@ export const useWorkspaceUI = create<WorkspaceUIState>((set) => ({
   toggleSearchPalette: () => set((s) => ({ searchPaletteOpen: !s.searchPaletteOpen })),
   setSearchPalette: (open) => set({ searchPaletteOpen: open }),
   setAgentSettings: (open) => set({ agentSettingsOpen: open }),
+  toggleDock: () => set((s) => ({ dockExpanded: !s.dockExpanded })),
+  expandDock: () => set({ dockExpanded: true }),
   setViewMode: (mode) => set({ viewMode: mode }),
   setForestCameraIntent: (intent) => set({ forestCameraIntent: intent }),
   consumeForestCameraIntent: (targetNodeId, topicId) =>

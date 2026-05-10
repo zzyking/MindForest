@@ -15,6 +15,7 @@ import { useParams } from "@tanstack/react-router";
 import { cn } from "@/lib/cn";
 import { useFocusNode } from "@/app/navigation";
 import { useForestData } from "@/stores/forestData";
+import { useAgentStatus } from "@/features/agent/useAgentStatus";
 import { ApiError } from "@/lib/api";
 import type { NodeId, NodeSummary, TopicId } from "@/lib/types";
 
@@ -82,8 +83,12 @@ export function Sidebar() {
   const topicList = Object.values(topics).sort((a, b) => a.id.localeCompare(b.id));
   const focusedDetail = focusedTopicId ? topicDetails[focusedTopicId] : undefined;
 
+  const backend = useAgentStatus();
+  const backendLabel = backend?.split(" (")[0] ?? null;
+  const isStub = !backend || backend === "stub";
+
   return (
-    <div className="flex h-full flex-col gap-4 px-4 py-5">
+    <div className="flex h-full w-72 flex-col gap-4 px-4 py-5">
       <header>
         <h2 className="text-forest-900 font-serif text-2xl font-medium tracking-tight leading-none">
           MindForest
@@ -188,6 +193,20 @@ export function Sidebar() {
         </section>
       )}
 
+      <footer className="mt-auto pt-2 border-t border-forest-100">
+        <div className="flex items-center gap-2 px-1">
+          <span
+            className={cn(
+              "h-1.5 w-1.5 flex-none rounded-full",
+              isStub ? "bg-forest-300" : "bg-emerald-500 shadow-[0_0_4px_1px_rgba(52,211,153,0.5)]",
+            )}
+            aria-hidden
+          />
+          <span className="text-forest-400 truncate text-[10px]">
+            {backendLabel ?? "…"}
+          </span>
+        </div>
+      </footer>
     </div>
   );
 }

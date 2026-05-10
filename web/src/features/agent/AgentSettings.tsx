@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { cn } from "@/lib/cn";
-import { ApiError, getAgentConfig, putAgentConfig } from "@/lib/api";
+import { ApiError, getAgentConfig, getAgentStatus, putAgentConfig } from "@/lib/api";
 import type { AgentConfig, AgentProvider } from "@/lib/types";
 
 interface Props {
@@ -70,9 +70,12 @@ export function AgentSettings({ open, onClose }: Props) {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    getAgentConfig()
-      .then((c) => {
-        if (!cancelled) setConfig(c);
+    Promise.all([getAgentConfig(), getAgentStatus()])
+      .then(([c, s]) => {
+        if (!cancelled) {
+          setConfig(c);
+          setBackend(s.backend);
+        }
       })
       .catch((e) => {
         if (!cancelled) setError(toMessage(e));
