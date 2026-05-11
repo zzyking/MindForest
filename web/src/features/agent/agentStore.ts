@@ -30,6 +30,7 @@ import type {
   NodeId,
   TopicId,
 } from "@/lib/types";
+import type { ResolveTable } from "./applyProposal";
 
 export type ProposalStatus = "pending" | "accepted" | "rejected" | "failed";
 
@@ -60,6 +61,10 @@ interface AgentSessionState {
   history: AgentTurn[];
   /** 1-based index of the in-flight turn (for grouping proposals). */
   turnCount: number;
+  /** Accumulated client_id → real NodeId mappings across all accepted
+   *  proposals in this session. Used to resolve cross-proposal references
+   *  when the user accepts cards individually rather than via Accept all. */
+  resolvedTable: ResolveTable;
 
   startStream: (input: {
     topicId: TopicId;
@@ -69,6 +74,7 @@ interface AgentSessionState {
   cancel: () => void;
   close: () => void;
   setProposalStatus: (id: string, status: ProposalStatus, error?: string) => void;
+  mergeResolvedTable: (updates: ResolveTable) => void;
   reset: () => void;
 }
 
@@ -82,6 +88,7 @@ const initial = {
   abort: null as AbortController | null,
   history: [] as AgentTurn[],
   turnCount: 0,
+  resolvedTable: {} as ResolveTable,
 };
 
 let proposalCounter = 0;
@@ -205,6 +212,9 @@ export const useAgentSession = create<AgentSessionState>((set, get) => ({
         p.id === id ? { ...p, status, error } : p,
       ),
     })),
+
+  mergeResolvedTable: (updates) =>
+    set((s) => ({ resolvedTable: { ...s.resolvedTable, ...updates } })),
 
   reset: () => set({ ...initial }),
 }));

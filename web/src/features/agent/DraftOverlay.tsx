@@ -29,6 +29,8 @@ export function DraftOverlay() {
   const turnCount = useAgentSession((s) => s.turnCount);
   const close = useAgentSession((s) => s.close);
   const setProposalStatus = useAgentSession((s) => s.setProposalStatus);
+  const resolvedTable = useAgentSession((s) => s.resolvedTable);
+  const mergeResolvedTable = useAgentSession((s) => s.mergeResolvedTable);
   const params = useParams({ strict: false }) as { topicId?: string };
   const [bulkBusy, setBulkBusy] = useState(false);
 
@@ -46,9 +48,14 @@ export function DraftOverlay() {
 
   const acceptOne = async (entry: ProposalEntry, table: ResolveTable): Promise<ResolveTable> => {
     if (entry.status !== "pending" || !params.topicId) return table;
+    // Merge the store's accumulated table with the local threading table so
+    // individual-card accepts can resolve client_ids created earlier in the
+    // same session, not just within a single acceptAll run.
+    const base = { ...resolvedTable, ...table };
     try {
-      const next = await applyProposal(entry.proposal, params.topicId, table);
+      const next = await applyProposal(entry.proposal, params.topicId, base);
       setProposalStatus(entry.id, "accepted");
+      mergeResolvedTable(next);
       return { ...table, ...next };
     } catch (e) {
       setProposalStatus(entry.id, "failed", errorMessage(e));
