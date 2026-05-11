@@ -25,7 +25,7 @@ import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 
-import { ArrowLeft, ArrowRight, BookOpen, Plus, SquarePen, Trash2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, BookOpen, CircleHelp, Plus, SquarePen, Trash2 } from "lucide-react";
 
 import { cn } from "@/lib/cn";
 import { useFocusNode, useNav } from "@/app/navigation";
@@ -339,17 +339,33 @@ function Toolbar({
           type="button"
           className={cn(
             btn,
-            canDelete ? "text-accent hover:text-rust-700" : "text-forest-200 cursor-not-allowed",
-            deleteArmed && "underline underline-offset-4",
+            canDelete
+              ? deleteArmed
+                ? "text-rust-700"
+                : "text-accent hover:text-rust-700"
+              : "text-forest-200 cursor-not-allowed",
           )}
           onClick={onDelete}
           disabled={!canDelete}
           aria-label={canDelete ? "Delete this node" : "Topic root cannot be deleted"}
           title={canDelete ? "Delete this node" : "Topic root cannot be deleted"}
         >
-          <Trash2 size={14} strokeWidth={2} aria-hidden />
-          <span className="hidden @[480px]:inline">
-            {deleteArmed ? "Confirm?" : "Delete"}
+          {/* Narrow: icon only */}
+          {deleteArmed
+            ? <CircleHelp size={14} strokeWidth={2} aria-hidden className="@[480px]:hidden" />
+            : <Trash2    size={14} strokeWidth={2} aria-hidden className="@[480px]:hidden" />}
+          {/* Wide: icon+text in a fixed-width grid — spacer always holds
+              the not-armed [Trash2 + "Delete"] dimensions so armed
+              "Confirm?" text lands in the same footprint. */}
+          <span className="hidden @[480px]:inline-grid">
+            <span className="col-start-1 row-start-1 invisible inline-flex items-center gap-1.5" aria-hidden>
+              <Trash2 size={14} strokeWidth={2} />Delete
+            </span>
+            <span className="col-start-1 row-start-1 inline-flex items-center gap-1.5 justify-center">
+              {deleteArmed
+                ? "Confirm?"
+                : <><Trash2 size={14} strokeWidth={2} aria-hidden />Delete</>}
+            </span>
           </span>
         </button>
       </div>

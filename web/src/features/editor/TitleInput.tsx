@@ -45,7 +45,7 @@ export function TitleInput({
 }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
 
-  // Resize on value change too — nav switches to a longer title would
+  // Resize on value change — nav switches to a longer title would
   // otherwise leave the textarea sized to the previous one until the
   // user types.
   useEffect(() => {
@@ -53,6 +53,17 @@ export function TitleInput({
     if (!el) return;
     fit(el);
   }, [value]);
+
+  // Resize when the container width changes (e.g. window narrowed) so
+  // content that re-wraps gets the correct new height rather than being
+  // clipped by overflow-hidden.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => fit(el));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   return (
     <textarea
