@@ -33,6 +33,31 @@
   /* Accent — autumn leaf / fruit. Used for CTAs, focused-node strokes,
      active dock items. Sparingly. */
   --color-accent: #d47a5d;
+  /* Deeper accent shade for focus rings/strokes on saturated surfaces
+     (e.g. the focused node's ring in the forest graph). */
+  --color-accent-deep: #a85c3f;
+
+  /* Node type colors. Sourced from a palette tuned for legibility as
+     small dots on the noise-textured sand backdrop in ForestView.
+     ForestView reads these via getComputedStyle at sigma init because
+     canvas/webgl can't consume CSS vars directly. TreeView chips use
+     semantic Tailwind utilities (bg-forest-100 etc.) instead, so the
+     two views can evolve independently if needed. */
+  --color-type-concept: #7b9082;
+  --color-type-fact: #a8b3a0;
+  --color-type-source: #c1ad7c;
+  --color-type-example: #d4a574;
+  --color-type-question: #b8a36d;
+  --color-type-task: #7e9ba8;
+  --color-type-misc: #9d9b91;
+
+  /* Forest canvas shades. Distinct from --color-forest-*: the sigma
+     renderer needs slightly heavier ink + lighter dim than the web
+     palette to read against the noise backdrop at small sizes.
+     Read via getComputedStyle in ForestView. */
+  --color-forest-canvas-ink: #152019;
+  --color-forest-canvas-dim: #b8c8be;
+  --color-forest-canvas-label: #3e4b41;
 
   /* Rust scale — warm error / destructive / cancel state. Built around
      the accent hue so warning UI doesn't clash with the rest of the

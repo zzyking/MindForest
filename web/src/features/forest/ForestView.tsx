@@ -52,24 +52,61 @@ interface Props {
 const DIM_ALPHA = 0.3;
 const HOVER_SCALE = 0.16;
 
-// Palette — sigma renders to canvas/webgl so we hard-code rather than
-// reading CSS variables. Mirrors `globals.css` `forest-*` / `accent`
-// tokens.
-const COLOR_FOREST_900 = "#152019";
-const COLOR_FOREST_300 = "#b8c8be";
-const COLOR_ACCENT = "#d47a5d";
-const COLOR_ACCENT_DEEP = "#a85c3f";
-const COLOR_LABEL = "#3e4b41";
+// Palette — sigma renders to canvas/webgl so we can't reach CSS vars
+// from inside its render loop. Read them once at module-first-use,
+// cache the result, and serve a plain JS object from there. tokens.css
+// is the single source of truth; adjust shades there.
+interface Palette {
+  ink: string;
+  dim: string;
+  accent: string;
+  accentDeep: string;
+  label: string;
+  /** RGB triplet form of `label`, so callers can splice an alpha
+   *  channel in (`rgba(${r}, ${g}, ${b}, ${a})`) without re-parsing. */
+  labelRgb: [number, number, number];
+  types: Record<NodeType, string>;
+}
 
-const TYPE_COLOR: Record<NodeType, string> = {
-  concept: "#7b9082",
-  fact: "#a8b3a0",
-  source: "#c1ad7c",
-  example: "#d4a574",
-  question: "#b8a36d",
-  task: "#7e9ba8",
-  misc: "#9d9b91",
-};
+function hexToRgb(hex: string): [number, number, number] {
+  const c = hex.replace("#", "").trim();
+  return [
+    parseInt(c.slice(0, 2), 16),
+    parseInt(c.slice(2, 4), 16),
+    parseInt(c.slice(4, 6), 16),
+  ];
+}
+
+let _palette: Palette | null = null;
+function palette(): Palette {
+  if (_palette) return _palette;
+  const cs = getComputedStyle(document.documentElement);
+  // Fallbacks match tokens.css 1:1. If Tailwind's @theme block ever
+  // stops emitting a custom var (e.g. it gets pruned as "unused"), the
+  // canvas keeps a defined colour instead of "" which would draw
+  // nothing.
+  const v = (name: string, fallback: string) =>
+    cs.getPropertyValue(name).trim() || fallback;
+  const label = v("--color-forest-canvas-label", "#3e4b41");
+  _palette = {
+    ink: v("--color-forest-canvas-ink", "#152019"),
+    dim: v("--color-forest-canvas-dim", "#b8c8be"),
+    accent: v("--color-accent", "#d47a5d"),
+    accentDeep: v("--color-accent-deep", "#a85c3f"),
+    label,
+    labelRgb: hexToRgb(label),
+    types: {
+      concept: v("--color-type-concept", "#7b9082"),
+      fact: v("--color-type-fact", "#a8b3a0"),
+      source: v("--color-type-source", "#c1ad7c"),
+      example: v("--color-type-example", "#d4a574"),
+      question: v("--color-type-question", "#b8a36d"),
+      task: v("--color-type-task", "#7e9ba8"),
+      misc: v("--color-type-misc", "#9d9b91"),
+    },
+  };
+  return _palette;
+}
 
 interface SimNode extends SimulationNodeDatum {
   id: NodeId;
@@ -272,7 +309,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
         y: node.y ?? 0,
         size: nodeRadius(node),
         label: node.title,
-        color: TYPE_COLOR[node.type],
+        color: palette().types[node.type],
         topicId: node.topicId,
         nodeType: node.type,
         degree: node.degree,
@@ -290,10 +327,10 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
         size: link.kind === "tree" ? 1 : 1.4,
         color:
           link.kind === "tree"
-            ? COLOR_FOREST_300
+            ? palette().dim
             : link.kind === "link"
-              ? COLOR_ACCENT
-              : COLOR_ACCENT_DEEP,
+              ? palette().accent
+              : palette().accentDeep,
         kind: link.kind,
       });
     }
@@ -446,11 +483,13 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
         // 裁切区域释放后，重新在顶层画出高亮的节点实体，避免被沙色背景遮挡
         context.beginPath();
         context.arc(data.x, data.y, data.size, 0, Math.PI * 2);
-        context.fillStyle = data.color || COLOR_FOREST_300;
+        context.fillStyle = data.color || palette().dim;
         context.fill();
       } else {
-        // 仅文字无背板 (color-label)
-        context.fillStyle = `rgba(62, 75, 65, ${labelAlpha})`;
+        // Label text without a backdrop. Tracks --color-forest-canvas-label
+        // via the palette so a token tweak doesn't desync this line.
+        const [lr, lg, lb] = palette().labelRgb;
+        context.fillStyle = `rgba(${lr}, ${lg}, ${lb}, ${labelAlpha})`;
         context.fillText(data.label, data.x + data.size + 3, data.y + size / 3);
       }
     };
@@ -461,10 +500,10 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       renderLabels: true,
       labelSize: 12,
       labelFont: "system-ui, sans-serif",
-      labelColor: { attribute: "labelColor", color: COLOR_LABEL },
+      labelColor: { attribute: "labelColor", color: palette().label },
       labelRenderedSizeThreshold: Infinity,
-      defaultEdgeColor: COLOR_FOREST_300,
-      defaultNodeColor: COLOR_FOREST_300,
+      defaultEdgeColor: palette().dim,
+      defaultNodeColor: palette().dim,
       minCameraRatio: 0.05,
       maxCameraRatio: 4,
       hideLabelsOnMove: true,
@@ -478,7 +517,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
         const out: any = { ...attrs };
 
         if (id === focusedNodeIdRef.current) {
-          out.color = COLOR_FOREST_900;
+          out.color = palette().ink;
         }
 
         const hoverBoost = hoverProgressRef.current;
@@ -763,6 +802,16 @@ function animateCameraToPoint(
   options: { duration: number },
 ) {
   const framed = getFramedGraphPoint(sigma, point);
+  // sigma camera animations are JS-driven (not CSS), so the global
+  // prefers-reduced-motion override in globals.css doesn't reach them.
+  // Honour the preference here by jumping to the target instead.
+  const reduceMotion =
+    typeof window !== "undefined" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduceMotion) {
+    sigma.getCamera().setState({ x: framed.x, y: framed.y });
+    return;
+  }
   sigma.getCamera().animate({ x: framed.x, y: framed.y }, { duration: options.duration });
 }
 
