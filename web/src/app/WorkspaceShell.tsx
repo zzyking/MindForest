@@ -4,9 +4,17 @@
  * survives every per-node navigation.
  *
  * Layout uses CSS Grid with two columns; the sidebar column collapses
- * to 0 when `sidebarOpen` is false (animated via `width` transition).
- * The main area is `overflow-y: auto` so it can scroll independently
- * — Tree / Graph viewports in P2 will host themselves inside it.
+ * from 18rem to 0 when `sidebarOpen` is false. The transition is on
+ * `grid-template-columns` rather than `width` on a flex item — same
+ * visual result, but a single property on a single container is far
+ * cheaper for the browser than a flex+width animation that cascades
+ * recalc through every flex item. `contain: layout` on the aside
+ * scopes the sidebar's internal reflow during the transition.
+ *
+ * Dock and AgentPromptBar shift horizontally to track the centred-on-
+ * main-pane axis; those use `translate-x` (compositor-only) instead of
+ * `padding-left` so they don't pile additional layout work onto the
+ * same 300 ms window.
  */
 
 import { useEffect } from "react";
@@ -73,18 +81,29 @@ export function WorkspaceShell({ children }: Props) {
       >
         Skip to main content
       </a>
-      <div className="flex flex-1 overflow-hidden">
+      <div
+        className={cn(
+          "grid flex-1 overflow-hidden",
+          // 350ms (vs the typical 300ms for a UI tween) gives the eye
+          // a beat to follow the sidebar's 18rem-to-0 collapse without
+          // feeling rushed. Dock + AgentPromptBar use the same duration
+          // so the three transitions finish in lockstep.
+          "transition-[grid-template-columns] duration-[350ms] ease-out",
+          sidebarOpen ? "grid-cols-[18rem_1fr]" : "grid-cols-[0_1fr]",
+        )}
+      >
         <aside
-          className={cn(
-            "border-forest-100 bg-sand-100/70 overflow-hidden border-r backdrop-blur-md transition-[width] duration-300 ease-out",
-            sidebarOpen ? "w-72" : "w-0",
-          )}
+          className="border-forest-100 bg-sand-100/70 overflow-hidden border-r backdrop-blur-md [contain:layout]"
           aria-hidden={!sidebarOpen}
           aria-label="Topics and nodes"
+          // inert removes the collapsed sidebar's descendants from the
+          // tab order and the accessibility tree. aria-hidden alone
+          // hides from AT but doesn't change keyboard reachability.
+          inert={!sidebarOpen}
         >
           <Sidebar />
         </aside>
-        <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto">
+        <main id="main-content" tabIndex={-1} className="min-w-0 overflow-y-auto">
           <ModelDownloadCard />
           {children}
         </main>

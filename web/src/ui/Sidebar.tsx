@@ -111,7 +111,7 @@ export function Sidebar() {
               setCreating(true);
               setCreateError(null);
             }}
-            className="text-forest-400 hover:text-forest-700 inline-flex h-5 w-5 items-center justify-center rounded text-sm leading-none"
+            className="text-forest-400 hover:text-forest-700 hover:bg-forest-100/60 inline-flex h-7 w-7 items-center justify-center rounded text-base leading-none"
           >
             +
           </button>
@@ -334,8 +334,12 @@ function NodeRow({
           <button
             type="button"
             aria-label={children.length > 0 ? (isOpen ? "Collapse" : "Expand") : undefined}
+            // Visible glyph stays compact so the indent rhythm holds,
+            // but a transparent before:-inset-1 pseudo expands the hit
+            // target to ~28×32 — clears WCAG 2.5.8 (24×24 minimum).
             className={cn(
-              "text-forest-500 hover:text-forest-800 inline-flex h-6 w-1 flex-none items-center justify-center text-base leading-none px-2",
+              "text-forest-500 hover:text-forest-800 relative inline-flex h-6 w-1 flex-none items-center justify-center text-base leading-none px-2",
+              "before:absolute before:-inset-1 before:content-['']",
               children.length === 0 && "invisible",
             )}
             onClick={() => toggle(node.id)}

@@ -70,67 +70,87 @@ export function AgentPromptBar() {
     await startStream({ topicId, focusedNodeId, prompt });
   };
 
+  // Horizontal shift tracks the dock: when the sidebar is open at lg+
+  // we translate-x by half the sidebar width so the bar stays centred
+  // over the main pane. Pure transform composites cleanly on top of
+  // the sidebar's grid-track transition (see WorkspaceShell).
+  //
+  // Vertical shift handles dock collapse/expand and is staggered 75ms
+  // behind the dock. Two concerns split onto separate elements so
+  // that the dock-stagger delay never bleeds onto the sidebar-tracking
+  // transform — otherwise the bar lags 75ms behind the dock when
+  // toggling the sidebar, which reads as a stutter.
+  const horizontalShift = sidebarOpen && isLg ? "translate-x-36" : "translate-x-0";
+  const verticalShift = dockExpanded
+    ? "translate-y-0 opacity-100 delay-75"
+    : "translate-y-4 opacity-0 pointer-events-none";
+
   return (
     <form
       onSubmit={onSubmit}
       className={cn(
-        "pointer-events-none absolute inset-x-0 bottom-20 flex justify-center",
-        "transition-all duration-300 ease-out will-change-transform",
-        sidebarOpen && isLg ? "pl-72" : "",
-        // Stagger slightly behind the dock on expand, collapse together.
-        dockExpanded
-          ? "translate-y-0 opacity-100 delay-75"
-          : "translate-y-4 opacity-0 pointer-events-none",
+        "pointer-events-none absolute inset-x-0 bottom-20 flex justify-center will-change-transform",
+        // 350ms matches the sidebar grid + dock transitions so the
+        // three finish in lockstep when the sidebar toggles.
+        "transition-transform duration-[350ms] ease-out",
+        horizontalShift,
       )}
     >
       <div
         className={cn(
-          "shadow-glass border-forest-200 bg-sand-100/90 pointer-events-auto",
-          "flex w-[min(620px,calc(100vw-2rem))] items-center gap-3 rounded-full border px-4 py-2 backdrop-blur-md",
+          "transition-all duration-300 ease-out will-change-transform",
+          verticalShift,
         )}
       >
-        <span className="text-forest-500 flex items-center gap-1.5 text-[10px] uppercase tracking-[0.12em]">
-          <Sparkles size={12} strokeWidth={2} aria-hidden />
-          Agent
-        </span>
-        <input
-          ref={inputRef}
-          type="text"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder={
-            topicId
-              ? "Ask the agent to refine, expand, or restructure…"
-              : "Open a topic to use the agent"
-          }
-          disabled={streaming || !topicId}
-          aria-label="Agent prompt"
+        <div
           className={cn(
-            "flex-1 bg-transparent text-sm placeholder:text-forest-400 focus:outline-none",
-            "disabled:cursor-not-allowed disabled:opacity-60",
+            "shadow-glass border-forest-200 bg-sand-100/90 pointer-events-auto",
+            "flex w-[min(620px,calc(100vw-2rem))] items-center gap-3 rounded-full border px-4 py-2 backdrop-blur-md",
           )}
-        />
-        {streaming ? (
-          <button
-            type="button"
-            onClick={cancel}
-            className="text-sand-100 bg-rust-600 hover:bg-rust-700 rounded-full px-3 py-1 text-xs transition-colors"
-          >
-            Cancel
-          </button>
-        ) : (
-          <button
-            type="submit"
-            disabled={!text.trim() || !topicId}
+        >
+          <span className="text-forest-500 flex items-center gap-1.5 text-[10px] uppercase tracking-[0.12em]">
+            <Sparkles size={12} strokeWidth={2} aria-hidden />
+            Agent
+          </span>
+          <input
+            ref={inputRef}
+            type="text"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={
+              topicId
+                ? "Ask the agent to refine, expand, or restructure…"
+                : "Open a topic to use the agent"
+            }
+            disabled={streaming || !topicId}
+            aria-label="Agent prompt"
             className={cn(
-              "text-sand-100 rounded-full px-3 py-1 text-xs transition-colors",
-              "bg-forest-700 hover:bg-forest-800",
-              "disabled:cursor-not-allowed disabled:opacity-50",
+              "flex-1 bg-transparent text-sm placeholder:text-forest-400 focus:outline-none",
+              "disabled:cursor-not-allowed disabled:opacity-60",
             )}
-          >
-            Send
-          </button>
-        )}
+          />
+          {streaming ? (
+            <button
+              type="button"
+              onClick={cancel}
+              className="text-sand-100 bg-rust-600 hover:bg-rust-700 rounded-full px-3 py-1.5 text-xs transition-colors"
+            >
+              Cancel
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={!text.trim() || !topicId}
+              className={cn(
+                "text-sand-100 rounded-full px-3 py-1.5 text-xs transition-colors",
+                "bg-forest-700 hover:bg-forest-800",
+                "disabled:cursor-not-allowed disabled:opacity-50",
+              )}
+            >
+              Send
+            </button>
+          )}
+        </div>
       </div>
     </form>
   );

@@ -38,11 +38,13 @@ export function Dock() {
       {/* ── Main dock pill — centred over the main pane ── */}
       <div
         className={cn(
-          "flex justify-center",
-          "transition-[padding] duration-300 ease-out",
-          // Below lg (≈sidebar+agent bar) centre over full viewport; above it
-          // shift right so the dock tracks the main content area.
-          sidebarOpen && isLg ? "pl-72" : "",
+          "flex justify-center will-change-transform",
+          // 350ms matches the sidebar grid track transition in
+          // WorkspaceShell so the three sidebar-tracking animations
+          // (sidebar collapse, dock shift, agent bar shift) finish in
+          // lockstep. translate-x is a compositor-only op.
+          "transition-transform duration-[350ms] ease-out",
+          sidebarOpen && isLg ? "translate-x-36" : "translate-x-0",
         )}
       >
         <div
@@ -88,7 +90,7 @@ export function Dock() {
         aria-label="Expand dock"
         className={cn(
           "shadow-glass border-forest-200 bg-sand-100/80 pointer-events-auto",
-          "absolute right-4 bottom-0 flex items-center gap-1.5 rounded-full border px-3 py-1.5 backdrop-blur-md",
+          "absolute right-4 bottom-0 flex items-center gap-1.5 rounded-full border px-3 py-2 backdrop-blur-md",
           "[-webkit-font-smoothing:antialiased]",
           "transition-all duration-300 ease-out will-change-transform",
           dockExpanded
@@ -120,7 +122,7 @@ function DockButton({ children, label, active, shortcut, onClick }: DockButtonPr
       title={shortcut ? `${label} (${shortcut})` : label}
       aria-label={label}
       className={cn(
-        "rounded-full px-3 py-1.5 text-sm transition-all duration-200 ease-out",
+        "rounded-full px-3 py-2 text-sm transition-all duration-200 ease-out",
         // will-change pre-promotes the element to a compositor layer so
         // WKWebView (Tauri) doesn't re-rasterize SVG strokes on each hover
         // frame — prevents the 1px translate jitter visible on macOS.
@@ -163,7 +165,7 @@ function ViewToggle({ value, onChange }: ViewToggleProps) {
           title={m.label}
           onClick={() => onChange(m.id)}
           className={cn(
-            "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm transition-all duration-200 ease-out",
+            "inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-sm transition-all duration-200 ease-out",
             "will-change-transform hover:-translate-y-px active:translate-y-0",
             value === m.id
               ? "bg-forest-800 text-sand-100 shadow-soft"
