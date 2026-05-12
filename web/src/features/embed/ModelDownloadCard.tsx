@@ -247,7 +247,7 @@ function Body({ phase, status }: { phase: Phase; status: ModelStatusResponse }) 
   const missing = status.files.filter((f) => !f.present).length;
   return (
     <div className="text-forest-500 text-xs">
-      {missing} of {status.files.length} files missing — download to enable semantic search.
+      {missing} of {status.files.length} files missing. Download to enable semantic search.
     </div>
   );
 }

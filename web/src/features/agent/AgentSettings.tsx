@@ -33,12 +33,12 @@ const PROVIDERS: { id: AgentProvider; label: string; hint: string }[] = [
   {
     id: "stub",
     label: "Stub",
-    hint: "Canned offline response — useful when you just want to exercise the UI.",
+    hint: "Canned offline response. Useful when you just want to exercise the UI.",
   },
   {
     id: "openai",
     label: "OpenAI-compatible",
-    hint: "OpenAI, DeepSeek, Groq, Together, vLLM, Ollama — anything that speaks /v1/chat/completions.",
+    hint: "OpenAI, DeepSeek, Groq, Together, vLLM, Ollama: anything that speaks /v1/chat/completions.",
   },
   {
     id: "anthropic",

@@ -416,7 +416,7 @@ function ReadView({ content }: { content: string }) {
   if (content.trim().length === 0) {
     return (
       <p className="text-forest-400 mt-2 font-serif text-base italic">
-        Nothing here yet — switch to Write mode to start drafting.
+        Nothing here yet. Switch to Write mode to start drafting.
       </p>
     );
   }
