@@ -78,6 +78,7 @@ fi
 install -m 0755 "$BIN_SRC" "$STAGE_DIR/mindforest-embed-$RUST_TRIPLE"
 echo "stage-for-tauri.sh: staged $STAGE_DIR/mindforest-embed-$RUST_TRIPLE"
 
+METALLIB_DST="$STAGE_DIR/mlx.metallib-$RUST_TRIPLE"
 if [[ "$USE_MLX" = "1" ]]; then
   if [[ ! -f "$METALLIB_SRC" ]]; then
     echo "stage-for-tauri.sh: expected $METALLIB_SRC after MLX build but it's missing" >&2
@@ -87,6 +88,19 @@ if [[ "$USE_MLX" = "1" ]]; then
   # next to the sidecar in Contents/MacOS/. Tauri only looks at file
   # name and exec bit when staging externalBin entries; the contents
   # don't need to be Mach-O.
-  install -m 0755 "$METALLIB_SRC" "$STAGE_DIR/mlx.metallib-$RUST_TRIPLE"
-  echo "stage-for-tauri.sh: staged $STAGE_DIR/mlx.metallib-$RUST_TRIPLE"
+  install -m 0755 "$METALLIB_SRC" "$METALLIB_DST"
+  echo "stage-for-tauri.sh: staged $METALLIB_DST"
+else
+  # MLX=0 (stub) path. Tauri's `bundle.externalBin` in tauri.conf.json
+  # still lists mlx.metallib unconditionally, so the file must exist
+  # for `cargo build` to succeed even when the runtime won't read it.
+  # Drop an empty placeholder with the exec bit set; the stub embedder
+  # never touches it. Run `MLX=1 ./stage-for-tauri.sh` to replace this
+  # with a real metallib before shipping or before exercising the MLX
+  # inference path.
+  if [[ ! -f "$METALLIB_DST" ]]; then
+    : > "$METALLIB_DST"
+    chmod 0755 "$METALLIB_DST"
+    echo "stage-for-tauri.sh: staged empty placeholder $METALLIB_DST (MLX=0)"
+  fi
 fi
