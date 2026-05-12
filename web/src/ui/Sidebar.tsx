@@ -88,12 +88,16 @@ export function Sidebar() {
   const isStub = !backend || backend === "stub";
 
   return (
-    <div className="flex h-full w-72 flex-col gap-4 px-4 py-5">
-      <header>
+    // pt-8 (32px) clears macOS traffic lights at top-left (they
+    // extend to ~y=22) and stays within 8px of the main pane's
+    // scaffold `py-6`, keeping the two sides visually aligned along
+    // the same top horizon.
+    <div className="flex h-full w-72 flex-col gap-4 px-4 pb-5 pt-8">
+      <header className="flex items-baseline justify-between gap-3">
         <h2 className="text-forest-900 font-serif text-2xl font-medium tracking-tight leading-none">
           MindForest
         </h2>
-        <p className="text-forest-400 mt-1.5 text-[10px] uppercase tracking-[0.12em] tabular-nums">
+        <p className="text-forest-400 -translate-y-0.5 text-[10px] uppercase tracking-[0.12em] tabular-nums">
           {topicList.length} {topicList.length === 1 ? "topic" : "topics"}
         </p>
       </header>

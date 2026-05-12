@@ -132,6 +132,36 @@ button:disabled,
   }
 }
 
+/* During an active window-edge drag, freeze every effect that forces a
+   full-window recomposite. WKWebView is already 1 frame behind the
+   NSWindow on each resize tick — backdrop-filter, mix-blend-mode, and
+   running transitions compound on top of that and the user sees
+   per-frame jitter. The `data-resizing` flag is set in main.tsx on the
+   window's `resize` event with a 120ms debounce.
+   - animation / transition: avoid keyframe layout work mid-resize
+   - backdrop-filter: the sidebar's `backdrop-blur-md` is the single
+     most expensive op per frame; killing it is the biggest single win
+   - mix-blend-mode: the .bg-noise overlay otherwise forces a
+     full-window composite on every paint
+   - filter / opacity layers: same family; remove them so the
+     compositor can short-circuit */
+html[data-resizing] *,
+html[data-resizing] *::before,
+html[data-resizing] *::after {
+  animation: none !important;
+  transition: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  mix-blend-mode: normal !important;
+}
+
+/* Noise overlay specifically — its mix-blend-mode triggers a full-window
+   composite even when the rest of the page is static. Hide it entirely
+   during resize; restores cleanly once the debounce clears. */
+html[data-resizing] .bg-noise::before {
+  display: none;
+}
+
 /* Indeterminate progress bar — used by ModelDownloadCard when the
    server hasn't reported a total size yet. Slides a slim bar across
    the track at constant velocity. */

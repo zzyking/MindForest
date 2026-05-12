@@ -81,6 +81,19 @@ export function WorkspaceShell({ children }: Props) {
       >
         Skip to main content
       </a>
+      {/* Window drag affordance. With TitleBarStyle::Overlay there's no
+          system titlebar to grab — this invisible strip across the top
+          ~32px makes the same area draggable. `left-[78px]` starts the
+          strip after the traffic lights (which AppKit owns and which
+          must continue to receive clicks). Requires
+          `core:window:allow-start-dragging` in capabilities/default.json
+          — without that permission the IPC call silently fails and
+          drag stops working. */}
+      <div
+        data-tauri-drag-region
+        aria-hidden
+        className="absolute left-[78px] right-0 top-0 z-30 h-8"
+      />
       <div
         className={cn(
           "grid flex-1 overflow-hidden",
@@ -93,7 +106,12 @@ export function WorkspaceShell({ children }: Props) {
         )}
       >
         <aside
-          className="border-forest-100 bg-sand-100/70 overflow-hidden border-r backdrop-blur-md [contain:layout]"
+          // `contain: layout paint` (was `layout` only) scopes both
+          // reflow and paint to the sidebar — during a live window
+          // resize the browser doesn't have to invalidate paint
+          // regions outside this element, which kills a major source
+          // of jitter on left-edge drag.
+          className="border-forest-100 bg-sand-100/70 overflow-hidden border-r backdrop-blur-md [contain:layout_paint]"
           aria-hidden={!sidebarOpen}
           aria-label="Topics and nodes"
           // inert removes the collapsed sidebar's descendants from the
@@ -103,7 +121,21 @@ export function WorkspaceShell({ children }: Props) {
         >
           <Sidebar />
         </aside>
-        <main id="main-content" tabIndex={-1} className="min-w-0 overflow-y-auto">
+        <main
+          id="main-content"
+          tabIndex={-1}
+          // `relative` is required for `contain: paint` to take effect
+          // (the spec needs a positioning context). `contain: layout
+          // paint` keeps the editor / tree / forest panes from
+          // pushing their reflow up to the grid root during a live
+          // resize — measurable reduction in per-frame compositor work.
+          // `pt-2` (8px) keeps every view's first card / toolbar clear
+          // of the traffic-light overlay at top-left (the Tauri
+          // TitleBarStyle::Overlay window has no system titlebar). The
+          // inner scaffold's `py-6` (24px) compounds to 32px above
+          // first content, matching the sidebar's `pt-8`.
+          className="relative min-w-0 overflow-y-auto pt-2 [contain:layout_paint]"
+        >
           <ModelDownloadCard />
           {children}
         </main>

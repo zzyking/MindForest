@@ -94,11 +94,30 @@ fn main() {
         WebviewUrl::App("index.html".into())
       };
 
+      // WKWebView background — keep it matched to `--color-forest-50` in
+      // `web/src/styles/tokens.css` so any 1-frame WKWebView lag during
+      // a resize doesn't expose a contrasting color underneath. Keep
+      // both this value and the NSWindow fix below in lockstep with
+      // tokens.css.
+      // `TitleBarStyle::Overlay` removes the system titlebar entirely;
+      // traffic lights float at top-left and the WKWebView content
+      // extends to the very top of the window. `hidden_title(true)`
+      // suppresses the window title text that would otherwise sit
+      // alongside the lights.
+      //
+      // We deliberately leave NSWindow.backgroundColor at its system
+      // default — see `feedback_wkwebview_rendering.md` memory note.
+      // The drag affordance is restored by a `data-tauri-drag-region`
+      // strip at the top of `WorkspaceShell` (requires the
+      // `core:window:allow-start-dragging` permission in
+      // `capabilities/default.json`).
       WebviewWindowBuilder::new(app, "main", url)
         .title("MindForest")
         .inner_size(1280.0, 800.0)
         .min_inner_size(640.0, 480.0)
         .resizable(true)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
         .initialization_script(&init_script)
         .build()?;
 

@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"Permissions for the main MindForest window. `start-dragging` is required for the custom drag-region strip in WorkspaceShell (the window uses TitleBarStyle::Overlay so there's no system titlebar to grab).","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-start-dragging"]}}
