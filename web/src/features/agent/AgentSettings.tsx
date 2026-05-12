@@ -12,10 +12,11 @@
  * is the loopback HTTP between this UI and the in-process API.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { cn } from "@/lib/cn";
 import { ApiError, getAgentConfig, getAgentStatus, putAgentConfig } from "@/lib/api";
+import { useFocusTrap } from "@/lib/useFocusTrap";
 import type { AgentConfig, AgentProvider } from "@/lib/types";
 
 interface Props {
@@ -61,6 +62,8 @@ export function AgentSettings({ open, onClose }: Props) {
   const [backend, setBackend] = useState<string | null>(null);
   const [showOpenAIKey, setShowOpenAIKey] = useState(false);
   const [showAnthropicKey, setShowAnthropicKey] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, open);
 
   // Load config every time the dialog opens — the file might have been
   // edited externally between opens (e.g. via the seed.mjs path or env
@@ -126,9 +129,11 @@ export function AgentSettings({ open, onClose }: Props) {
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         className={cn(
           "shadow-xl border-forest-200 bg-forest-50 max-h-[85vh] w-full max-w-lg",
-          "flex flex-col gap-4 overflow-y-auto rounded-xl border p-5",
+          "flex flex-col gap-4 overflow-y-auto rounded-xl border p-5 focus:outline-none",
           "animate-[scale-in_220ms_cubic-bezier(0.2,0.8,0.2,1)_both]",
         )}
         onClick={(e) => e.stopPropagation()}
@@ -311,17 +316,21 @@ interface FieldProps {
 }
 
 function Field({ label, value, onChange, placeholder }: FieldProps) {
+  const id = useId();
   return (
-    <label className="flex flex-col gap-1">
-      <span className="text-forest-500 text-xs">{label}</span>
+    <div className="flex flex-col gap-1">
+      <label htmlFor={id} className="text-forest-500 text-xs">
+        {label}
+      </label>
       <input
+        id={id}
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         className="border-forest-200 bg-sand-100 placeholder:text-forest-400 focus:border-forest-500 rounded-md border px-3 py-1.5 text-sm focus:outline-none"
       />
-    </label>
+    </div>
   );
 }
 
@@ -340,33 +349,38 @@ function SecretField({
   onToggleVisible,
   envFallback,
 }: SecretFieldProps) {
+  const id = useId();
+  const hintId = useId();
   return (
-    <label className="flex flex-col gap-1">
+    <div className="flex flex-col gap-1">
       <span className="text-forest-500 flex items-center justify-between text-xs">
-        <span>{label}</span>
+        <label htmlFor={id}>{label}</label>
         <button
           type="button"
           onClick={onToggleVisible}
+          aria-pressed={visible}
           className="text-forest-400 hover:text-forest-700 text-[10px] uppercase tracking-wide"
         >
           {visible ? "Hide" : "Show"}
         </button>
       </span>
       <input
+        id={id}
         type={visible ? "text" : "password"}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         autoComplete="off"
         spellCheck={false}
+        aria-describedby={envFallback && !value ? hintId : undefined}
         className="border-forest-200 bg-sand-100 placeholder:text-forest-400 focus:border-forest-500 rounded-md border px-3 py-1.5 font-mono text-sm focus:outline-none"
       />
       {envFallback && !value && (
-        <span className="text-forest-400 text-[10px]">
+        <span id={hintId} className="text-forest-400 text-[10px]">
           Empty → fall back to <code className="font-mono">{envFallback}</code>.
         </span>
       )}
-    </label>
+    </div>
   );
 }
 

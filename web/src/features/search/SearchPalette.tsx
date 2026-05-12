@@ -9,6 +9,7 @@ import { Search } from "lucide-react";
 
 import { cn } from "@/lib/cn";
 import { useFocusNode } from "@/app/navigation";
+import { useFocusTrap } from "@/lib/useFocusTrap";
 import { useWorkspaceUI } from "@/stores/workspaceUI";
 import * as api from "@/lib/api";
 import type { SearchHit } from "@/lib/types";
@@ -26,6 +27,8 @@ export function SearchPalette() {
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, open);
 
   // Reset state when the palette closes; auto-focus the input on open.
   useEffect(() => {
@@ -93,6 +96,7 @@ export function SearchPalette() {
       role="presentation"
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Search nodes"
@@ -125,6 +129,15 @@ export function SearchPalette() {
             aria-label="Search query"
             className="placeholder:text-forest-300 w-full bg-transparent text-base text-forest-900 outline-none"
           />
+        </div>
+        <div role="status" aria-live="polite" className="sr-only">
+          {query.trim() === ""
+            ? ""
+            : error
+              ? `Search error: ${error}`
+              : visibleHits.length === 0
+                ? "No matches"
+                : `${visibleHits.length} result${visibleHits.length === 1 ? "" : "s"}`}
         </div>
         <ul className="max-h-80 overflow-y-auto" role="listbox" aria-label="Search results">
           {visibleHits.length === 0 && query.trim() && !error && (

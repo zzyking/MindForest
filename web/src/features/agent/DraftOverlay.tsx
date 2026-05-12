@@ -80,8 +80,11 @@ export function DraftOverlay() {
   };
 
   return (
+    // Not role="dialog": this is a non-modal companion panel. The user
+    // keeps editing the main pane while it's open, so trapping focus
+    // here would actively hurt the flow. aria-label is enough to land
+    // landmark-navigation users on it.
     <aside
-      role="dialog"
       aria-label="Agent draft"
       className={cn(
         "absolute right-4 top-4 bottom-24 w-[min(440px,calc(100vw-2rem))]",
@@ -122,9 +125,17 @@ export function DraftOverlay() {
             ))}
           </div>
         )}
-        {/* Active (in-flight or just-finished) turn. */}
+        {/* Active (in-flight or just-finished) turn. aria-live lets
+            screen readers announce streamed tokens and the proposal list
+            as it materialises. aria-busy flips off when streaming ends
+            so the reader knows the response is final. */}
         {(streaming || draft || proposals.some((p) => p.turnIndex === turnCount)) && (
-          <div className="border-forest-100 flex flex-col gap-2 border-t pt-3">
+          <div
+            aria-live="polite"
+            aria-atomic="false"
+            aria-busy={streaming}
+            className="border-forest-100 flex flex-col gap-2 border-t pt-3"
+          >
             {history.length > 0 && (
               <div className="text-forest-400 text-[10px] uppercase tracking-wider">
                 Turn {turnCount}
@@ -147,7 +158,10 @@ export function DraftOverlay() {
           </div>
         )}
         {errors.length > 0 && (
-          <div className="mt-3 rounded-md border border-rust-300 bg-rust-50 px-3 py-2 text-xs text-rust-800">
+          <div
+            role="alert"
+            className="mt-3 rounded-md border border-rust-300 bg-rust-50 px-3 py-2 text-xs text-rust-800"
+          >
             {errors.map((m, i) => (
               <div key={i}>{m}</div>
             ))}
