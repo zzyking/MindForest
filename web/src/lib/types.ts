@@ -184,21 +184,58 @@ export interface AgentStatusResponse {
 /** Persisted agent settings. Mirrors `app_core::AgentConfig`. */
 export type AgentProvider = "auto" | "stub" | "openai" | "anthropic";
 
-export interface AgentOpenAIConfig {
+/**
+ * What `GET /v1/agent/config` returns. The plaintext `api_key` never
+ * crosses the wire — instead we get a boolean + a fingerprint. The UI
+ * uses these to render the SecretField in its three states (unset,
+ * locked-with-hint, or editing).
+ */
+export interface AgentOpenAIConfigView {
+  base_url: string | null;
+  model: string | null;
+  api_key_set: boolean;
+  api_key_hint: string | null;
+}
+
+export interface AgentAnthropicConfigView {
+  model: string | null;
+  api_key_set: boolean;
+  api_key_hint: string | null;
+}
+
+export interface AgentConfigView {
+  provider: AgentProvider;
+  openai: AgentOpenAIConfigView;
+  anthropic: AgentAnthropicConfigView;
+}
+
+/**
+ * What `PUT /v1/agent/config` accepts. `api_key` is **triple-state**:
+ *
+ * - omit the field → keep the existing keychain entry
+ * - `null` → clear the entry
+ * - string → set a new value
+ *
+ * Other fields are whole-value replacements. `undefined` here means
+ * "omit from the JSON" because `JSON.stringify` drops undefined values
+ * — that's the encoding the server's `deserialize_optional_field`
+ * helper reads as `None`.
+ */
+export interface AgentOpenAIConfigUpdate {
   base_url?: string | null;
   model?: string | null;
   api_key?: string | null;
 }
 
-export interface AgentAnthropicConfig {
+export interface AgentAnthropicConfigUpdate {
   model?: string | null;
   api_key?: string | null;
 }
 
-export interface AgentConfig {
+export interface AgentConfigUpdate {
   provider: AgentProvider;
-  openai: AgentOpenAIConfig;
-  anthropic: AgentAnthropicConfig;
+  openai: AgentOpenAIConfigUpdate;
+  anthropic: AgentAnthropicConfigUpdate;
 }
 
 export interface AgentTurn {

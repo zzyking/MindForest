@@ -13,7 +13,8 @@
  */
 
 import type {
-  AgentConfig,
+  AgentConfigUpdate,
+  AgentConfigView,
   AgentEvent,
   AgentStatusResponse,
   ApiErrorBody,
@@ -206,16 +207,17 @@ export function getAgentStatus(): Promise<AgentStatusResponse> {
   return request<AgentStatusResponse>("/v1/agent/status");
 }
 
-export function getAgentConfig(): Promise<AgentConfig> {
-  return request<AgentConfig>("/v1/agent/config");
+export function getAgentConfig(): Promise<AgentConfigView> {
+  return request<AgentConfigView>("/v1/agent/config");
 }
 
 /**
- * Persist new agent settings. Server rebuilds the proposer in place
- * and returns the new backend label so the UI doesn't need a separate
- * status fetch.
+ * Persist new agent settings. The body's `api_key` is triple-state — see
+ * `AgentConfigUpdate` for the JSON encoding (omit = keep, null = clear,
+ * string = set). Server rebuilds the proposer in place and returns the
+ * new backend label so the UI doesn't need a separate status fetch.
  */
-export function putAgentConfig(config: AgentConfig): Promise<{ backend: string }> {
+export function putAgentConfig(config: AgentConfigUpdate): Promise<{ backend: string }> {
   return request<{ backend: string }>("/v1/agent/config", {
     method: "PUT",
     headers: { "content-type": "application/json" },
