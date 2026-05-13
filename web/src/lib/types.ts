@@ -112,6 +112,12 @@ export interface ModelFileStatus {
   name: string;
   present: boolean;
   size: number | null;
+  /**
+   * Bytes already in `<name>.partial` from a prior interrupted attempt.
+   * `null` when the file isn't mid-flight (either complete or untouched).
+   * Lets the UI render "Resume" vs. "Download" and seed the progress bar.
+   */
+  partial_size: number | null;
 }
 
 /** Server reply for `GET /v1/embed/model/status`. */

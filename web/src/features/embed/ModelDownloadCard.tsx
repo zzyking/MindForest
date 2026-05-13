@@ -14,8 +14,14 @@
  * the current file name, transfer rate (rolling 3 s window), and an
  * ETA derived from the rate. Cancellation aborts the fetch, which
  * closes the SSE channel, which drops the server-side mpsc, which
- * tears the download task down. Any partial files on disk are
- * overwritten by the next attempt.
+ * tears the download task down.
+ *
+ * Resumes are transparent. The Rust side writes to `<name>.partial`,
+ * renames on completion, and replays a `Range: bytes=N-` request when
+ * resuming. From this component's perspective the only visible signal
+ * is `ModelFileStatus.partial_size` — when any file reports it, the
+ * button reads "Resume" and the progress bar pre-seeds at the bytes
+ * already on disk so it doesn't snap from zero on the first event.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -74,13 +80,18 @@ export function ModelDownloadCard() {
 
   const startDownload = useCallback(async () => {
     rateSamplesRef.current = [];
+    // Pre-seed `overallSoFar` from bytes already on disk so a resume
+    // doesn't visually snap from 0 → N on the first progress event. The
+    // server's first event will overwrite this within ~150 ms regardless;
+    // this just smooths the very first frame.
+    const seededBytes = sumBytesOnDisk(status);
     setPhase({
       kind: "downloading",
       currentFile: null,
-      overallSoFar: 0,
+      overallSoFar: seededBytes,
       overallTotal: null,
-      filesDone: 0,
-      totalFiles: 0,
+      filesDone: countCompletedFiles(status),
+      totalFiles: status?.files.length ?? 0,
       bytesPerSec: null,
     });
     const { events, cancel } = downloadModel();
@@ -101,7 +112,7 @@ export function ModelDownloadCard() {
     } finally {
       cancelRef.current = null;
     }
-  }, [refreshStatus]);
+  }, [refreshStatus, status]);
 
   const stopDownload = useCallback(() => {
     cancelRef.current?.();
@@ -129,7 +140,7 @@ export function ModelDownloadCard() {
         </div>
         <Action
           phase={phase}
-          present={status.present}
+          status={status}
           onStart={startDownload}
           onStop={stopDownload}
         />
@@ -141,12 +152,17 @@ export function ModelDownloadCard() {
 
 interface ActionProps {
   phase: Phase;
-  present: boolean;
+  status: ModelStatusResponse;
   onStart: () => void;
   onStop: () => void;
 }
 
-function Action({ phase, present, onStart, onStop }: ActionProps) {
+function Action({ phase, status, onStart, onStop }: ActionProps) {
+  // "Resume" reflects what the user is actually doing — the server will
+  // pick up from `<file>.partial` automatically. We don't ship a separate
+  // endpoint; the only visible difference is the verb.
+  const hasPartial = hasPartialBytes(status);
+  const fillVerb = hasPartial ? "Resume" : "Download";
   switch (phase.kind) {
     case "downloading":
       return (
@@ -165,11 +181,11 @@ function Action({ phase, present, onStart, onStop }: ActionProps) {
           onClick={onStart}
           className="bg-forest-800 text-sand-100 hover:bg-forest-700 rounded-full px-3 py-1 text-xs"
         >
-          Retry
+          {hasPartial ? "Resume" : "Retry"}
         </button>
       );
     case "done":
-      return present ? (
+      return status.present ? (
         <span className="text-forest-500 text-xs">Installed</span>
       ) : (
         <button
@@ -177,7 +193,7 @@ function Action({ phase, present, onStart, onStop }: ActionProps) {
           onClick={onStart}
           className="bg-forest-800 text-sand-100 hover:bg-forest-700 rounded-full px-3 py-1 text-xs"
         >
-          Download
+          {fillVerb}
         </button>
       );
     default:
@@ -187,7 +203,7 @@ function Action({ phase, present, onStart, onStop }: ActionProps) {
           onClick={onStart}
           className="bg-forest-800 text-sand-100 hover:bg-forest-700 rounded-full px-3 py-1 text-xs"
         >
-          Download
+          {fillVerb}
         </button>
       );
   }
@@ -243,13 +259,42 @@ function Body({ phase, status }: { phase: Phase; status: ModelStatusResponse }) 
   if (phase.kind === "done" && status.present) {
     return <div className="text-forest-500 text-xs">All files present.</div>;
   }
-  // Idle and not present: show a one-line summary of what's missing.
+  // Idle and not present: show a one-line summary, switching tone when
+  // a partial download is sitting on disk waiting to be resumed.
   const missing = status.files.filter((f) => !f.present).length;
+  const onDisk = sumBytesOnDisk(status);
+  if (onDisk > 0) {
+    return (
+      <div className="text-forest-500 text-xs">
+        {formatBytes(onDisk)} already downloaded. Resume to finish the remaining {missing}{" "}
+        file{missing === 1 ? "" : "s"}.
+      </div>
+    );
+  }
   return (
     <div className="text-forest-500 text-xs">
       {missing} of {status.files.length} files missing. Download to enable semantic search.
     </div>
   );
+}
+
+/** Bytes already on disk — completed files at full size + partial bytes. */
+function sumBytesOnDisk(status: ModelStatusResponse | null): number {
+  if (!status) return 0;
+  return status.files.reduce((acc, f) => {
+    if (f.present) return acc + (f.size ?? 0);
+    return acc + (f.partial_size ?? 0);
+  }, 0);
+}
+
+function hasPartialBytes(status: ModelStatusResponse | null): boolean {
+  if (!status) return false;
+  return status.files.some((f) => !f.present && (f.partial_size ?? 0) > 0);
+}
+
+function countCompletedFiles(status: ModelStatusResponse | null): number {
+  if (!status) return 0;
+  return status.files.filter((f) => f.present).length;
 }
 
 function applyEvent(

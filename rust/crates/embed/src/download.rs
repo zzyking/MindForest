@@ -16,13 +16,16 @@
 //!   the whole service for the duration. The download task lives until
 //!   the receiver is dropped, so an aborted SSE connection cancels
 //!   transparently.
-//! - **No partial-resume** in P3c-3a. If the connection drops mid-file
-//!   the user clicks "Retry" and we re-download from scratch. Adding
-//!   range-request resume later is a self-contained change that doesn't
-//!   touch the public API.
-//! - **No SHA-256 verification** in this commit either. HuggingFace serves
+//! - **Resumable.** Each file streams into `<name>.partial` and is only
+//!   renamed to the final name once the body is fully read. On retry
+//!   we look at the sibling's existing size, send `Range: bytes=N-`,
+//!   and append. A 200 response on a resume attempt (server ignored
+//!   the Range header) falls back to "truncate and start over" so we
+//!   never silently concatenate two prefixes. Files that already exist
+//!   at the final name are skipped entirely.
+//! - **No SHA-256 verification** in this commit. HuggingFace serves
 //!   `X-Linked-Etag: <sha256>` on resolved redirects; integrating that is
-//!   another self-contained follow-up. Until then we trust HF's TLS.
+//!   a self-contained follow-up. Until then we trust HF's TLS.
 //!
 //! The HuggingFace public API needs no auth for the small embedding
 //! repos we target; we don't read any token by default. If the user sets
@@ -54,6 +57,11 @@ pub struct FileStatus {
   pub present: bool,
   /// Size in bytes when present locally; `None` until we know.
   pub size: Option<u64>,
+  /// Bytes already on disk in `<name>.partial`. Set only when the final
+  /// file is *not* present — a leftover partial next to a completed file
+  /// would be stale and isn't surfaced. Lets the UI show "Resume" instead
+  /// of "Download" and pre-seed the progress bar.
+  pub partial_size: Option<u64>,
 }
 
 /// One event in the download stream. Serialized as the `data` payload of
@@ -153,10 +161,24 @@ impl ModelDownloader {
     for name in expected_files {
       let path = dir.join(name);
       let meta = tokio::fs::metadata(&path).await.ok();
+      let present = meta.is_some();
+      let size = meta.as_ref().map(|m| m.len());
+      // Only surface a `.partial` if the final isn't already present —
+      // a stale partial next to a renamed final is meaningless for the
+      // UI's "resume vs. download" decision.
+      let partial_size = if present {
+        None
+      } else {
+        tokio::fs::metadata(partial_path_for(&path))
+          .await
+          .ok()
+          .map(|m| m.len())
+      };
       files.push(FileStatus {
         name: (*name).to_string(),
-        present: meta.is_some(),
-        size: meta.map(|m| m.len()),
+        present,
+        size,
+        partial_size,
       });
     }
     // If the caller didn't provide a manifest, fall back to "dir exists
@@ -322,17 +344,68 @@ struct StreamCtx<'a> {
 
 async fn stream_file(ctx: &mut StreamCtx<'_>) -> Result<u64, String> {
   use futures::StreamExt;
-  let resp = ctx
-    .client
-    .get(ctx.url)
+
+  // A previous attempt already renamed this file. Skip the network and
+  // fold its bytes into the overall counter so the bar shows where we
+  // really are.
+  if let Ok(meta) = tokio::fs::metadata(ctx.target).await {
+    let size = meta.len();
+    *ctx.overall_so_far += size;
+    let _ = ctx.tx.send(DownloadEvent::Progress {
+      name: ctx.name.to_string(),
+      bytes_so_far: size,
+      file_total: ctx.declared_size.or(Some(size)),
+      overall_so_far: *ctx.overall_so_far,
+      overall_total: ctx.overall_total,
+    });
+    return Ok(size);
+  }
+
+  let partial_path = partial_path_for(ctx.target);
+  let resume_from: u64 = tokio::fs::metadata(&partial_path)
+    .await
+    .map(|m| m.len())
+    .unwrap_or(0);
+
+  let mut req = ctx.client.get(ctx.url);
+  if resume_from > 0 {
+    // RFC 7233 byte-range, open-ended. CDNs serving HF content (cloudfront,
+    // mostly) honor this consistently; we still defend against a server
+    // that ignores it below by inspecting the status code.
+    req = req.header(
+      reqwest::header::RANGE,
+      format!("bytes={resume_from}-"),
+    );
+  }
+  let resp = req
     .send()
     .await
-    .and_then(|r| r.error_for_status())
-    .map_err(|e| format!("GET {}: {e}", ctx.url))?;
-  let mut file = tokio::fs::File::create(ctx.target)
-    .await
-    .map_err(|e| format!("create {:?}: {e}", ctx.target))?;
-  let mut bytes_so_far: u64 = 0;
+    .map_err(|e| format!("GET {}: {e}", ctx.url))?
+    .error_for_status()
+    .map_err(|e| format!("HTTP {}: {e}", ctx.url))?;
+
+  let status = resp.status();
+  let mut bytes_so_far: u64;
+  let mut file = if resume_from > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT {
+    // Server honored the range. Append to what we already had on disk.
+    bytes_so_far = resume_from;
+    *ctx.overall_so_far += resume_from;
+    tokio::fs::OpenOptions::new()
+      .append(true)
+      .open(&partial_path)
+      .await
+      .map_err(|e| format!("open {partial_path:?}: {e}"))?
+  } else {
+    // Either no resume was requested, or the server returned 200 instead
+    // of 206 (some proxies silently drop the Range header). Start fresh —
+    // creating with `File::create` truncates any stale partial, so we
+    // never end up concatenating two byte prefixes.
+    bytes_so_far = 0;
+    tokio::fs::File::create(&partial_path)
+      .await
+      .map_err(|e| format!("create {partial_path:?}: {e}"))?
+  };
+
   let mut last_emit = std::time::Instant::now();
   let emit_every = std::time::Duration::from_millis(150);
   let mut stream = resp.bytes_stream();
@@ -341,7 +414,7 @@ async fn stream_file(ctx: &mut StreamCtx<'_>) -> Result<u64, String> {
     file
       .write_all(&chunk)
       .await
-      .map_err(|e| format!("write {:?}: {e}", ctx.target))?;
+      .map_err(|e| format!("write {partial_path:?}: {e}"))?;
     bytes_so_far += chunk.len() as u64;
     *ctx.overall_so_far += chunk.len() as u64;
     // Throttle progress events — at gigabit speeds we'd otherwise emit
@@ -360,8 +433,15 @@ async fn stream_file(ctx: &mut StreamCtx<'_>) -> Result<u64, String> {
   file
     .flush()
     .await
-    .map_err(|e| format!("flush {:?}: {e}", ctx.target))?;
-  // One final progress event so the UI shows the file completed visually.
+    .map_err(|e| format!("flush {partial_path:?}: {e}"))?;
+  // Drop the handle before renaming — Windows rejects renames on open
+  // files. macOS/Linux are fine either way, but the cost is zero.
+  drop(file);
+  tokio::fs::rename(&partial_path, ctx.target)
+    .await
+    .map_err(|e| format!("rename {partial_path:?} -> {:?}: {e}", ctx.target))?;
+
+  // Final progress tick so the UI snaps the bar to the just-finished file.
   let _ = ctx.tx.send(DownloadEvent::Progress {
     name: ctx.name.to_string(),
     bytes_so_far,
@@ -370,6 +450,20 @@ async fn stream_file(ctx: &mut StreamCtx<'_>) -> Result<u64, String> {
     overall_total: ctx.overall_total,
   });
   Ok(bytes_so_far)
+}
+
+/// Sibling path used for in-flight bytes: `model.safetensors` →
+/// `model.safetensors.partial`. We keep the original name in the suffix
+/// chain (`with_extension` would clobber `.safetensors`) so debugging on
+/// disk is unambiguous.
+fn partial_path_for(target: &Path) -> PathBuf {
+  let name = target
+    .file_name()
+    .map(|n| n.to_os_string())
+    .unwrap_or_default();
+  let mut s = name;
+  s.push(".partial");
+  target.with_file_name(s)
 }
 
 fn resolve_url(repo_id: &str, filename: &str) -> String {
@@ -448,6 +542,7 @@ mod tests {
     assert!(!s.present);
     assert_eq!(s.files.len(), 2);
     assert!(s.files.iter().all(|f| !f.present));
+    assert!(s.files.iter().all(|f| f.partial_size.is_none()));
   }
 
   #[tokio::test]
@@ -470,6 +565,63 @@ mod tests {
     assert!(s.present);
     assert_eq!(s.files[0].size, Some(2));
     assert_eq!(s.files[1].size, Some(4));
+    // No partial_size noise on completed files even if a stale `.partial`
+    // somehow lingers — that's a separate invariant tested below.
+    assert!(s.files.iter().all(|f| f.partial_size.is_none()));
+  }
+
+  #[tokio::test]
+  async fn local_status_surfaces_partial_size_when_only_partial_exists() {
+    let tmp = TempDir::new().unwrap();
+    let dl = ModelDownloader::new(tmp.path());
+    let dir = dl.target_dir("foo/bar");
+    tokio::fs::create_dir_all(&dir).await.unwrap();
+    // Mid-transfer: the partial is on disk; the final isn't.
+    tokio::fs::write(dir.join("model.safetensors.partial"), b"123456")
+      .await
+      .unwrap();
+    let s = dl
+      .local_status("foo/bar", &["config.json", "model.safetensors"])
+      .await
+      .unwrap();
+    assert!(!s.present);
+    // config.json: nothing on disk at all.
+    assert!(!s.files[0].present);
+    assert_eq!(s.files[0].partial_size, None);
+    // model.safetensors: 6 bytes downloaded so far.
+    assert!(!s.files[1].present);
+    assert_eq!(s.files[1].partial_size, Some(6));
+  }
+
+  #[tokio::test]
+  async fn local_status_ignores_stale_partial_next_to_completed_file() {
+    let tmp = TempDir::new().unwrap();
+    let dl = ModelDownloader::new(tmp.path());
+    let dir = dl.target_dir("foo/bar");
+    tokio::fs::create_dir_all(&dir).await.unwrap();
+    tokio::fs::write(dir.join("config.json"), b"{}").await.unwrap();
+    // A `.partial` that survived a botched cleanup. Surfacing it would
+    // make the UI claim there's a download in progress when there isn't.
+    tokio::fs::write(dir.join("config.json.partial"), b"\0\0\0\0")
+      .await
+      .unwrap();
+    let s = dl.local_status("foo/bar", &["config.json"]).await.unwrap();
+    assert!(s.files[0].present);
+    assert_eq!(s.files[0].partial_size, None);
+  }
+
+  #[test]
+  fn partial_path_for_appends_suffix_preserving_extension() {
+    let p = std::path::Path::new("/tmp/models/foo/model.safetensors");
+    assert_eq!(
+      partial_path_for(p),
+      std::path::PathBuf::from("/tmp/models/foo/model.safetensors.partial")
+    );
+    // Idempotency check: applying twice produces a `.partial.partial`,
+    // which is fine — we never call it twice in practice but a runaway
+    // bug should still be locally debuggable.
+    let twice = partial_path_for(&partial_path_for(p));
+    assert!(twice.to_string_lossy().ends_with(".partial.partial"));
   }
 
   #[tokio::test]
