@@ -198,7 +198,7 @@ function AncestorTrail({ trail, topicId, onPick }: AncestorTrailProps) {
             onClick={() => void onPick(n.id, topicId)}
             className={cn(
               "border-forest-200 bg-sand-100 hover:border-forest-400 hover:bg-sand-200/60",
-              "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors",
+              "flex items-center gap-1.5 rounded-full border px-1.25 py-1 text-xs transition-colors",
             )}
             title={n.title || "Untitled"}
           >
