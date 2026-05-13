@@ -10,10 +10,19 @@
 # to "default.metallib" / "mlx.metallib" relative to the executing
 # binary, so colocation is non-negotiable.
 #
-# Idempotent. Skips swift build if the binary already exists and is
-# newer than every Swift source under Sources/EmbedSidecar — passing
-# FORCE=1 forces a rebuild. MLX inference is the default; pass
-# MLX=0 to stage the stub-only build instead (useful for CI).
+# Pipeline (MLX=1):
+#   1. `swift build` — produces the Swift binary, but NOT the metallib
+#      (SwiftPM has no Metal compiler integration; see build-metallib.sh
+#      for the full story).
+#   2. `build-metallib.sh` — compiles the .metal kernels out of the
+#      mlx-swift checkout into `.build/release/mlx.metallib`.
+#   3. Stage both as `<name>-<triple>` for Tauri's externalBin.
+#
+# Idempotent. Skips swift build if the binary is newer than every Swift
+# source under Sources/EmbedSidecar; the metallib build is independently
+# cached against the .metal sources. FORCE=1 forces both rebuilds.
+# MLX=0 stages the stub-only build instead (useful for CI without the
+# Metal toolchain).
 
 set -euo pipefail
 
@@ -71,6 +80,14 @@ if [[ "$needs_rebuild" = "1" ]]; then
     swift build -c release
   fi
   popd >/dev/null
+fi
+
+# Build mlx.metallib from the kernel sources. Independent of `swift
+# build` because SwiftPM doesn't run the Metal compiler — without this
+# step the binary runs but throws "Failed to load the default metallib"
+# the moment it touches a GPU op.
+if [[ "$USE_MLX" = "1" ]]; then
+  FORCE=${FORCE:-0} "$HERE/build-metallib.sh"
 fi
 
 # Stage the binary. Tauri requires the triple suffix at this stage;
