@@ -25,6 +25,19 @@ bytemuck = "1.18"
 chrono = { version = "0.4", features = ["serde"] }
 governor = "0.7"
 futures = "0.3"
+# OS-native secret storage. `keyring` 3.x ships with no platform
+# backend enabled by default (the "mock" mode silently keeps secrets
+# in-process and loses them on restart — surprising default). We opt
+# in to the native backends per OS: Security.framework on macOS,
+# Credential Manager on Windows, sync D-Bus Secret Service on Linux
+# (pure-Rust, doesn't drag in libsecret). `crypto-rust` is what the
+# secret-service backend needs to encrypt session-bus messages.
+keyring = { version = "3", default-features = false, features = [
+  "apple-native",
+  "windows-native",
+  "sync-secret-service",
+  "crypto-rust",
+] }
 notify = "6"
 notify-debouncer-full = "0.3"
 # Default-disabled rustls — we opt into the system's TLS via

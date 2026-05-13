@@ -34,8 +34,11 @@ use domain::{
 };
 
 pub use agent::{
-  AgentAnthropicConfig, AgentConfig, AgentEvent, AgentOpenAIConfig, AgentProposer, AgentProvider,
-  AgentRequest, AgentRole, AgentStream, AgentTurn,
+  merge_config_update, secret_accounts, AgentAnthropicConfig, AgentAnthropicConfigUpdate,
+  AgentAnthropicConfigView, AgentConfig, AgentConfigUpdate, AgentConfigView, AgentEvent,
+  AgentOpenAIConfig, AgentOpenAIConfigUpdate, AgentOpenAIConfigView, AgentProposer, AgentProvider,
+  AgentRequest, AgentRole, AgentStream, AgentTurn, InMemoryStore, KeyringStore, SecretError,
+  SecretStore, SECRET_SERVICE,
 };
 pub use embed::download::{DownloadEvent, FileStatus, ModelDownloader, ModelStatus};
 pub use embed::{EmbedMode, StubEmbedder, UnavailableEmbedder};
@@ -93,26 +96,134 @@ fn embed_mode_label(mode: &EmbedMode) -> String {
   }
 }
 
-/// Read `agent.json` from disk, falling back to the default config when
-/// the file is missing or malformed. Reasons to fail soft: a clean
-/// install hasn't written one yet, and we don't want a broken settings
-/// file to brick the entire app.
-async fn load_agent_config(path: &std::path::Path) -> AgentConfig {
+/// Read `agent.json` from disk and hydrate API keys from the SecretStore.
+///
+/// Behavior:
+/// 1. Read the JSON file (missing/malformed → defaults, fail soft —
+///    don't brick the app over a broken settings file).
+/// 2. If the JSON contains legacy plaintext `api_key` fields (pre-keychain
+///    installs), migrate them into the SecretStore.
+/// 3. For each provider with no key already in memory, pull from the
+///    SecretStore.
+/// 4. If anything was migrated, rewrite the file atomically so the
+///    plaintext is gone on the next boot — old keys never linger on
+///    disk after they've been moved to the keychain.
+async fn load_and_hydrate_agent_config(
+  path: &std::path::Path,
+  secret_store: &Arc<dyn SecretStore>,
+) -> AgentConfig {
   let bytes = match tokio::fs::read(path).await {
     Ok(b) => b,
-    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return AgentConfig::default(),
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+      // No file yet — still hydrate from keychain so a user who set
+      // keys on a prior install gets them back even after `agent.json`
+      // is deleted.
+      let mut cfg = AgentConfig::default();
+      hydrate_secrets(&mut cfg, secret_store);
+      return cfg;
+    }
     Err(e) => {
       tracing::warn!("agent config read failed at {path:?}: {e}; using defaults");
       return AgentConfig::default();
     }
   };
-  match serde_json::from_slice::<AgentConfig>(&bytes) {
-    Ok(cfg) => cfg,
+  let mut cfg = match serde_json::from_slice::<AgentConfig>(&bytes) {
+    Ok(c) => c,
     Err(e) => {
       tracing::warn!("agent config parse failed at {path:?}: {e}; using defaults");
       AgentConfig::default()
     }
+  };
+
+  // Step 2 — migrate any legacy plaintext keys.
+  let mut migrated = false;
+  if let Some(k) = cfg.openai.api_key.as_deref() {
+    if !k.is_empty() {
+      if let Err(e) = secret_store.set(secret_accounts::OPENAI, k) {
+        tracing::warn!("migrate openai api_key into keychain failed: {e}");
+      } else {
+        migrated = true;
+      }
+    }
   }
+  if let Some(k) = cfg.anthropic.api_key.as_deref() {
+    if !k.is_empty() {
+      if let Err(e) = secret_store.set(secret_accounts::ANTHROPIC, k) {
+        tracing::warn!("migrate anthropic api_key into keychain failed: {e}");
+      } else {
+        migrated = true;
+      }
+    }
+  }
+
+  // Step 3 — for providers without an in-memory key, read from keychain.
+  hydrate_secrets(&mut cfg, secret_store);
+
+  // Step 4 — rewrite the file so plaintext keys are wiped.
+  if migrated {
+    tracing::info!(
+      "migrated legacy plaintext agent api_key(s) from {path:?} into the OS keychain ({}). \
+       The file has been rewritten without secrets.",
+      SECRET_SERVICE
+    );
+    if let Err(e) = write_agent_config_file(path, &cfg).await {
+      tracing::warn!("failed to rewrite agent.json after migration: {e}");
+    }
+  }
+
+  cfg
+}
+
+/// Pull `api_key`s from the SecretStore into the in-memory config for
+/// any provider that doesn't already have one. Errors are logged and
+/// swallowed — a keychain access failure shouldn't take the agent path
+/// down; the user will see an empty `api_key` in the settings UI and
+/// can re-enter.
+fn hydrate_secrets(cfg: &mut AgentConfig, secret_store: &Arc<dyn SecretStore>) {
+  if cfg.openai.api_key.as_deref().unwrap_or("").is_empty() {
+    match secret_store.get(secret_accounts::OPENAI) {
+      Ok(Some(k)) => cfg.openai.api_key = Some(k),
+      Ok(None) => {}
+      Err(e) => tracing::warn!("read openai api_key from keychain failed: {e}"),
+    }
+  }
+  if cfg.anthropic.api_key.as_deref().unwrap_or("").is_empty() {
+    match secret_store.get(secret_accounts::ANTHROPIC) {
+      Ok(Some(k)) => cfg.anthropic.api_key = Some(k),
+      Ok(None) => {}
+      Err(e) => tracing::warn!("read anthropic api_key from keychain failed: {e}"),
+    }
+  }
+}
+
+/// Atomic-ish write of `agent.json`. Shared between the initial migration
+/// path and the runtime `set_agent_config` path. Writes to a sibling
+/// `.tmp` then renames, so a crash mid-write can't leave a truncated
+/// file. Sets 0600 on unix.
+async fn write_agent_config_file(
+  path: &std::path::Path,
+  config: &AgentConfig,
+) -> Result<(), String> {
+  let bytes =
+    serde_json::to_vec_pretty(config).map_err(|e| format!("serialize agent config: {e}"))?;
+  if let Some(parent) = path.parent() {
+    tokio::fs::create_dir_all(parent)
+      .await
+      .map_err(|e| format!("create {parent:?}: {e}"))?;
+  }
+  let tmp = path.with_extension("json.tmp");
+  tokio::fs::write(&tmp, &bytes)
+    .await
+    .map_err(|e| format!("write {tmp:?}: {e}"))?;
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await;
+  }
+  tokio::fs::rename(&tmp, path)
+    .await
+    .map_err(|e| format!("rename {tmp:?}→{path:?}: {e}"))?;
+  Ok(())
 }
 
 /// Open the vault, prepare the derived SQLite index, build an embedder
@@ -152,9 +263,12 @@ pub async fn bootstrap(
   );
   // Persisted agent settings live next to the index. If the file is
   // missing or unreadable we fall back to env-driven defaults so a
-  // first-time launch still works without writing to disk.
+  // first-time launch still works without writing to disk. API keys
+  // are pulled from / migrated to the OS keychain — see
+  // `load_and_hydrate_agent_config`.
+  let secret_store: Arc<dyn SecretStore> = Arc::new(KeyringStore::new(SECRET_SERVICE));
   let agent_config_path = data_dir.join("agent.json");
-  let agent_config = load_agent_config(&agent_config_path).await;
+  let agent_config = load_and_hydrate_agent_config(&agent_config_path, &secret_store).await;
   let proposer = agent::build_proposer_from_config(&agent_config);
   let service = Arc::new(ForestService::new(
     repo.clone(),
@@ -165,6 +279,7 @@ pub async fn bootstrap(
     proposer,
     agent_config,
     agent_config_path,
+    secret_store,
   ));
   let watcher = repo.watch()?;
   Ok(Bootstrap { service, watcher })
@@ -196,6 +311,12 @@ pub struct ForestService {
   /// Where the persisted agent config lives. `None` for in-memory test
   /// fixtures that don't want disk writes.
   agent_config_path: Option<PathBuf>,
+  /// Where API keys actually live. The plaintext `api_key` fields in
+  /// `agent_config` are a view onto this — `set_agent_config` writes
+  /// through to the store, `load_and_hydrate_agent_config` reads from
+  /// it on boot. Tests can pass `InMemoryStore` to avoid mutating the
+  /// host's real keyring.
+  secret_store: Arc<dyn SecretStore>,
 }
 
 impl ForestService {
@@ -208,6 +329,7 @@ impl ForestService {
     proposer: Arc<dyn AgentProposer>,
     agent_config: AgentConfig,
     agent_config_path: impl Into<Option<PathBuf>>,
+    secret_store: Arc<dyn SecretStore>,
   ) -> Self {
     Self {
       repo,
@@ -219,6 +341,7 @@ impl ForestService {
       proposer: Arc::new(RwLock::new(proposer)),
       agent_config: Arc::new(RwLock::new(agent_config)),
       agent_config_path: agent_config_path.into(),
+      secret_store,
     }
   }
 
@@ -478,36 +601,47 @@ impl ForestService {
   /// Persist a new `AgentConfig` and rebuild the proposer. Returns the
   /// new backend label so the caller (HTTP route) can echo it back to
   /// the UI without a second round-trip.
+  ///
+  /// API keys are written through to the `SecretStore` (OS keychain).
+  /// The serialized `agent.json` does not contain plaintext keys —
+  /// `AgentOpenAIConfig::api_key` and friends are `skip_serializing`.
+  /// An empty/None key clears the keychain entry, matching the user's
+  /// intent ("revoke this provider's key").
   pub async fn set_agent_config(&self, config: AgentConfig) -> ForestResult<String> {
+    // Secrets first. Doing this before the file write means a keychain
+    // failure surfaces as a hard error rather than a half-applied state
+    // where the file says one provider but the keychain says another.
+    self.write_secret(secret_accounts::OPENAI, config.openai.api_key.as_deref())?;
+    self.write_secret(
+      secret_accounts::ANTHROPIC,
+      config.anthropic.api_key.as_deref(),
+    )?;
     if let Some(path) = self.agent_config_path.as_ref() {
-      let bytes = serde_json::to_vec_pretty(&config)
-        .map_err(|e| ForestError::Storage(format!("serialize agent config: {e}")))?;
-      // Atomic-ish: write to a sibling path then rename. Stops a crash
-      // mid-write from leaving an empty / truncated file.
-      if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-          .await
-          .map_err(|e| ForestError::Storage(format!("create {parent:?}: {e}")))?;
-      }
-      let tmp = path.with_extension("json.tmp");
-      tokio::fs::write(&tmp, &bytes)
+      write_agent_config_file(path, &config)
         .await
-        .map_err(|e| ForestError::Storage(format!("write {tmp:?}: {e}")))?;
-      // 0600 — best-effort on unix; ignored on platforms without it.
-      #[cfg(unix)]
-      {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await;
-      }
-      tokio::fs::rename(&tmp, path)
-        .await
-        .map_err(|e| ForestError::Storage(format!("rename {tmp:?}→{path:?}: {e}")))?;
+        .map_err(ForestError::Storage)?;
     }
     let new_proposer = agent::build_proposer_from_config(&config);
     let backend = new_proposer.backend().to_string();
     *self.proposer.write().await = new_proposer;
     *self.agent_config.write().await = config;
     Ok(backend)
+  }
+
+  /// `Some("non-empty")` writes the secret; `None` or `Some("")` deletes
+  /// it. Errors map onto `ForestError::Storage` so the route handler
+  /// returns a clean 500 with the underlying reason.
+  fn write_secret(&self, account: &str, value: Option<&str>) -> ForestResult<()> {
+    match value {
+      Some(v) if !v.is_empty() => self
+        .secret_store
+        .set(account, v)
+        .map_err(|e| ForestError::Storage(format!("keychain set {account}: {e}"))),
+      _ => self
+        .secret_store
+        .delete(account)
+        .map_err(|e| ForestError::Storage(format!("keychain delete {account}: {e}"))),
+    }
   }
 
   // ─── Index ────────────────────────────────────────────────────────
@@ -715,6 +849,7 @@ mod tests {
     let repo = FsRepository::open(tmp.path()).await.unwrap();
     let index = SqliteIndex::open_in_memory().await.unwrap();
     let downloader = ModelDownloader::new(tmp.path().join("models"));
+    let secret_store: Arc<dyn SecretStore> = Arc::new(InMemoryStore::new());
     let svc = Arc::new(ForestService::new(
       Arc::new(repo),
       Arc::new(index),
@@ -724,6 +859,7 @@ mod tests {
       Arc::new(StubProposer::new()),
       AgentConfig::default(),
       None,
+      secret_store,
     ));
     (tmp, svc)
   }
@@ -733,6 +869,7 @@ mod tests {
     let repo = FsRepository::open(tmp.path()).await.unwrap();
     let index = SqliteIndex::open_in_memory().await.unwrap();
     let downloader = ModelDownloader::new(tmp.path().join("models"));
+    let secret_store: Arc<dyn SecretStore> = Arc::new(InMemoryStore::new());
     let svc = Arc::new(ForestService::new(
       Arc::new(repo),
       Arc::new(index),
@@ -742,6 +879,7 @@ mod tests {
       Arc::new(StubProposer::new()),
       AgentConfig::default(),
       None,
+      secret_store,
     ));
     (tmp, svc)
   }
@@ -1004,6 +1142,7 @@ mod tests {
     let repo = Arc::new(FsRepository::open(tmp.path()).await.unwrap());
     let index = Arc::new(SqliteIndex::open_in_memory().await.unwrap());
     let downloader = ModelDownloader::new(tmp.path().join("models"));
+    let secret_store: Arc<dyn SecretStore> = Arc::new(InMemoryStore::new());
     let svc = Arc::new(ForestService::new(
       repo.clone(),
       index.clone(),
@@ -1013,6 +1152,7 @@ mod tests {
       Arc::new(StubProposer::new()),
       AgentConfig::default(),
       None,
+      secret_store,
     ));
 
     let topic = svc
@@ -1096,6 +1236,7 @@ mod tests {
       Ok(s) => (s.repo, s.embedder, s.downloader),
       Err(s) => (s.repo.clone(), s.embedder.clone(), s.downloader.clone()),
     };
+    let secret_store: Arc<dyn SecretStore> = Arc::new(InMemoryStore::new());
     let svc2 = ForestService::new(
       repo_arc,
       fresh,
@@ -1105,6 +1246,7 @@ mod tests {
       Arc::new(StubProposer::new()),
       AgentConfig::default(),
       None,
+      secret_store,
     );
     svc2.rebuild_index().await.unwrap();
     let hits = svc2.search("findme", None, 10).await.unwrap();
@@ -1214,6 +1356,90 @@ mod tests {
     let status2 = svc.model_status().await.unwrap();
     assert!(status2.present);
     assert!(status2.files.iter().all(|f| f.present));
+  }
+
+  #[tokio::test]
+  async fn legacy_plaintext_api_key_migrates_into_keychain() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("agent.json");
+    // Pre-keychain build: api_key sits in the JSON in plaintext.
+    let legacy = serde_json::json!({
+      "provider": "openai",
+      "openai": { "base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini", "api_key": "sk-legacy-abcd1234" },
+      "anthropic": { "model": "claude-sonnet-4-6", "api_key": null }
+    });
+    tokio::fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap())
+      .await
+      .unwrap();
+
+    let store: Arc<dyn SecretStore> = Arc::new(InMemoryStore::new());
+    let cfg = super::load_and_hydrate_agent_config(&path, &store).await;
+
+    // In-memory state still carries the key (so the proposer can build).
+    assert_eq!(cfg.openai.api_key.as_deref(), Some("sk-legacy-abcd1234"));
+    // SecretStore got it.
+    assert_eq!(
+      store.get(secret_accounts::OPENAI).unwrap().as_deref(),
+      Some("sk-legacy-abcd1234"),
+    );
+    // File was rewritten without the plaintext field.
+    let rewritten: serde_json::Value =
+      serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
+    assert!(rewritten.get("openai").unwrap().get("api_key").is_none());
+  }
+
+  #[tokio::test]
+  async fn missing_agent_json_hydrates_from_keychain() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("agent.json"); // not created
+    let store: Arc<dyn SecretStore> = Arc::new(InMemoryStore::new());
+    store
+      .set(secret_accounts::ANTHROPIC, "sk-ant-from-store")
+      .unwrap();
+    let cfg = super::load_and_hydrate_agent_config(&path, &store).await;
+    assert_eq!(cfg.anthropic.api_key.as_deref(), Some("sk-ant-from-store"));
+  }
+
+  #[tokio::test]
+  async fn set_agent_config_writes_secret_then_file() {
+    let (tmp, svc) = fixture_with_persistence().await;
+    let mut cfg = AgentConfig::default();
+    cfg.provider = AgentProvider::Openai;
+    cfg.openai.api_key = Some("sk-new-XXXX9999".into());
+    cfg.openai.model = Some("gpt-4o-mini".into());
+    svc.set_agent_config(cfg).await.unwrap();
+
+    // File on disk: no plaintext api_key.
+    let path = tmp.path().join("agent.json");
+    let raw: serde_json::Value =
+      serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
+    assert!(raw.get("openai").unwrap().get("api_key").is_none());
+
+    // SecretStore got the value (via the service's store).
+    let echoed = svc.agent_config().await;
+    assert_eq!(echoed.openai.api_key.as_deref(), Some("sk-new-XXXX9999"));
+  }
+
+  /// A fixture that, unlike `fixture()`, owns a real path on disk so we
+  /// can inspect what `set_agent_config` writes.
+  async fn fixture_with_persistence() -> (TempDir, Arc<ForestService>) {
+    let tmp = TempDir::new().unwrap();
+    let repo = FsRepository::open(tmp.path()).await.unwrap();
+    let index = SqliteIndex::open_in_memory().await.unwrap();
+    let downloader = ModelDownloader::new(tmp.path().join("models"));
+    let secret_store: Arc<dyn SecretStore> = Arc::new(InMemoryStore::new());
+    let svc = Arc::new(ForestService::new(
+      Arc::new(repo),
+      Arc::new(index),
+      Arc::new(StubEmbedder::new(EMBED_DIM)),
+      EmbedMode::Stub,
+      downloader,
+      Arc::new(StubProposer::new()),
+      AgentConfig::default(),
+      Some(tmp.path().join("agent.json")),
+      secret_store,
+    ));
+    (tmp, svc)
   }
 
   #[tokio::test]

@@ -10,8 +10,8 @@ use std::sync::Arc;
 use api::router;
 use agent::StubProposer;
 use app_core::{
-  AgentConfig, EmbedMode, ForestService, FsRepository, ModelDownloader, SqliteIndex, StubEmbedder,
-  EMBED_DIM,
+  AgentConfig, EmbedMode, ForestService, FsRepository, InMemoryStore, ModelDownloader, SecretStore,
+  SqliteIndex, StubEmbedder, EMBED_DIM,
 };
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -26,6 +26,7 @@ async fn fixture() -> (TempDir, axum::Router) {
   let index = Arc::new(SqliteIndex::open_in_memory().await.unwrap());
   let embedder = Arc::new(StubEmbedder::new(EMBED_DIM));
   let downloader = ModelDownloader::new(tmp.path().join("models"));
+  let secret_store: Arc<dyn SecretStore> = Arc::new(InMemoryStore::new());
   let svc = Arc::new(ForestService::new(
     repo,
     index,
@@ -35,6 +36,7 @@ async fn fixture() -> (TempDir, axum::Router) {
     Arc::new(StubProposer::new()),
     AgentConfig::default(),
     None,
+    secret_store,
   ));
   (tmp, router(svc))
 }
@@ -440,4 +442,124 @@ async fn agent_propose_streams_token_proposal_and_done_events() {
     body.matches("event: proposal").count() == 1,
     "expected exactly one proposal event, got body:\n{body}"
   );
+}
+
+#[tokio::test]
+async fn agent_config_get_returns_masked_view_no_plaintext_key() {
+  let (_tmp, app) = fixture().await;
+
+  // Seed an OpenAI key + model via PUT first.
+  let resp = app
+    .clone()
+    .oneshot(req_json(
+      "PUT",
+      "/v1/agent/config",
+      json!({
+        "provider": "openai",
+        "openai": { "base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini", "api_key": "sk-test-abcd1234" },
+        "anthropic": {}
+      }),
+    ))
+    .await
+    .unwrap();
+  assert_eq!(resp.status(), StatusCode::OK);
+
+  let resp = app.oneshot(req_get("/v1/agent/config")).await.unwrap();
+  assert_eq!(resp.status(), StatusCode::OK);
+  let body = json_body(resp).await;
+  // No plaintext `api_key` anywhere in the GET response — secret stays
+  // in the keychain, hint is the fingerprint format.
+  assert!(body["openai"].get("api_key").is_none());
+  assert_eq!(body["openai"]["api_key_set"], true);
+  assert_eq!(body["openai"]["api_key_hint"], "sk-…1234");
+  assert_eq!(body["openai"]["model"], "gpt-4o-mini");
+  assert_eq!(body["anthropic"]["api_key_set"], false);
+  assert!(body["anthropic"]["api_key_hint"].is_null());
+}
+
+#[tokio::test]
+async fn agent_config_put_triple_state_api_key() {
+  let (_tmp, app) = fixture().await;
+
+  // Seed.
+  app
+    .clone()
+    .oneshot(req_json(
+      "PUT",
+      "/v1/agent/config",
+      json!({
+        "provider": "openai",
+        "openai": { "base_url": "https://api.openai.com/v1", "model": "m1", "api_key": "sk-init-XXXX" },
+        "anthropic": {}
+      }),
+    ))
+    .await
+    .unwrap();
+
+  // 1. PUT without `api_key` field → keep current; only model changes.
+  app
+    .clone()
+    .oneshot(req_json(
+      "PUT",
+      "/v1/agent/config",
+      json!({
+        "provider": "openai",
+        "openai": { "base_url": "https://api.openai.com/v1", "model": "m2" },
+        "anthropic": {}
+      }),
+    ))
+    .await
+    .unwrap();
+  let body = json_body(
+    app
+      .clone()
+      .oneshot(req_get("/v1/agent/config"))
+      .await
+      .unwrap(),
+  )
+  .await;
+  assert_eq!(body["openai"]["api_key_set"], true);
+  assert_eq!(body["openai"]["model"], "m2");
+
+  // 2. PUT api_key=null → clear.
+  app
+    .clone()
+    .oneshot(req_json(
+      "PUT",
+      "/v1/agent/config",
+      json!({
+        "provider": "openai",
+        "openai": { "model": "m2", "api_key": null },
+        "anthropic": {}
+      }),
+    ))
+    .await
+    .unwrap();
+  let body = json_body(
+    app
+      .clone()
+      .oneshot(req_get("/v1/agent/config"))
+      .await
+      .unwrap(),
+  )
+  .await;
+  assert_eq!(body["openai"]["api_key_set"], false);
+
+  // 3. PUT api_key="sk-fresh" → set.
+  app
+    .clone()
+    .oneshot(req_json(
+      "PUT",
+      "/v1/agent/config",
+      json!({
+        "provider": "openai",
+        "openai": { "model": "m2", "api_key": "sk-fresh-1234" },
+        "anthropic": {}
+      }),
+    ))
+    .await
+    .unwrap();
+  let body = json_body(app.oneshot(req_get("/v1/agent/config")).await.unwrap()).await;
+  assert_eq!(body["openai"]["api_key_set"], true);
+  assert_eq!(body["openai"]["api_key_hint"], "sk-…1234");
 }

@@ -43,12 +43,14 @@ mod anthropic;
 mod openai;
 mod parse;
 mod prompt;
+pub mod secrets;
 mod sse;
 mod stub;
 
 pub use anthropic::{AnthropicConfig, AnthropicProposer};
 pub use openai::{OpenAICompatibleProposer, OpenAIConfig};
 pub use parse::{extract_proposals, ProposalParseError};
+pub use secrets::{mask_secret, InMemoryStore, KeyringStore, SecretError, SecretStore};
 pub use stub::StubProposer;
 
 use std::sync::Arc;
@@ -74,6 +76,17 @@ pub enum AgentProvider {
 /// `None` fields fall back to the matching `OPENAI_*` / `ANTHROPIC_*`
 /// env vars so a power user who already has a key in their shell
 /// environment doesn't have to retype it into the UI.
+///
+/// ## Where the api_key lives
+///
+/// In memory the `api_key` field on each provider sub-struct is the
+/// authoritative current secret used by `build_proposer_from_config`.
+/// On disk only the non-secret fields persist (`#[serde(skip_serializing)]`
+/// on `api_key`). The composition layer (`app-core::bootstrap`) reads
+/// the secret from a `SecretStore` (OS Keychain) and injects it into
+/// the in-memory struct at load time. Legacy plaintext keys still in
+/// `agent.json` from older builds deserialize successfully and get
+/// migrated into the SecretStore on first load.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentConfig {
@@ -91,6 +104,11 @@ pub struct AgentOpenAIConfig {
   /// e.g. `gpt-4o-mini`. Empty → `gpt-4o-mini`.
   pub model: Option<String>,
   /// Empty → fall back to `OPENAI_API_KEY` env at proposer-build time.
+  /// `skip_serializing` keeps this out of `agent.json`; the value lives
+  /// in the SecretStore (OS keychain) and is injected at load time.
+  /// Deserialize is still wired up so legacy plaintext entries from
+  /// pre-keychain installs are detected and migrated.
+  #[serde(skip_serializing, default)]
   pub api_key: Option<String>,
 }
 
@@ -100,7 +118,148 @@ pub struct AgentAnthropicConfig {
   /// e.g. `claude-sonnet-4-6`. Empty → `claude-sonnet-4-6`.
   pub model: Option<String>,
   /// Empty → fall back to `ANTHROPIC_API_KEY` env at proposer-build time.
+  /// See `AgentOpenAIConfig::api_key` for the storage rationale.
+  #[serde(skip_serializing, default)]
   pub api_key: Option<String>,
+}
+
+/// SecretStore "account" identifiers — one row per provider.
+pub mod secret_accounts {
+  pub const OPENAI: &str = "openai";
+  pub const ANTHROPIC: &str = "anthropic";
+}
+
+/// SecretStore "service" identifier used across the codebase. Reverse-DNS
+/// form because it surfaces in the user's OS credential UI.
+pub const SECRET_SERVICE: &str = "com.mindforest.agent";
+
+// ─────────────────────────────────────────────────────────────────────
+// HTTP wire types
+//
+// `AgentConfigView` / `AgentConfigUpdate` are deliberately separate from
+// `AgentConfig`. The frontend gets a masked view (no plaintext secrets
+// over the wire even on loopback) and submits a triple-state update
+// (omit = keep, null = clear, string = set) so editing a non-secret
+// field doesn't accidentally erase the keychain entry.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Read view returned by `GET /v1/agent/config`. Same shape as
+/// `AgentConfig` minus plaintext `api_key`s: each provider section
+/// exposes `api_key_set` + `api_key_hint` (e.g. `"sk-…1234"`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfigView {
+  pub provider: AgentProvider,
+  pub openai: AgentOpenAIConfigView,
+  pub anthropic: AgentAnthropicConfigView,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentOpenAIConfigView {
+  pub base_url: Option<String>,
+  pub model: Option<String>,
+  pub api_key_set: bool,
+  pub api_key_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentAnthropicConfigView {
+  pub model: Option<String>,
+  pub api_key_set: bool,
+  pub api_key_hint: Option<String>,
+}
+
+impl From<&AgentConfig> for AgentConfigView {
+  fn from(c: &AgentConfig) -> Self {
+    let openai_key = c.openai.api_key.as_deref().unwrap_or("");
+    let anthropic_key = c.anthropic.api_key.as_deref().unwrap_or("");
+    Self {
+      provider: c.provider,
+      openai: AgentOpenAIConfigView {
+        base_url: c.openai.base_url.clone(),
+        model: c.openai.model.clone(),
+        api_key_set: !openai_key.is_empty(),
+        api_key_hint: secrets::mask_secret(openai_key),
+      },
+      anthropic: AgentAnthropicConfigView {
+        model: c.anthropic.model.clone(),
+        api_key_set: !anthropic_key.is_empty(),
+        api_key_hint: secrets::mask_secret(anthropic_key),
+      },
+    }
+  }
+}
+
+/// Write payload for `PUT /v1/agent/config`. provider / base_url / model
+/// are whole-value replacements (the frontend always sends them).
+/// `api_key` is **triple-state** — the JSON encoding distinguishes:
+///
+/// - field omitted from the request → `None` → keep the current key
+/// - field is JSON `null` → `Some(None)` → clear the key (delete from keychain)
+/// - field is a JSON string → `Some(Some(s))` → replace with `s`
+///
+/// This matters because the settings UI lets the user tweak `base_url`
+/// or `model` without re-entering the secret; without the triple state
+/// the server would have to choose between "always require api_key" or
+/// "treat missing key as clear", both of which are footguns.
+#[derive(Debug, Deserialize)]
+pub struct AgentConfigUpdate {
+  pub provider: AgentProvider,
+  pub openai: AgentOpenAIConfigUpdate,
+  pub anthropic: AgentAnthropicConfigUpdate,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct AgentOpenAIConfigUpdate {
+  pub base_url: Option<String>,
+  pub model: Option<String>,
+  #[serde(default, deserialize_with = "deserialize_optional_field")]
+  pub api_key: Option<Option<String>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct AgentAnthropicConfigUpdate {
+  pub model: Option<String>,
+  #[serde(default, deserialize_with = "deserialize_optional_field")]
+  pub api_key: Option<Option<String>>,
+}
+
+/// "Double-option" deserializer. serde's `default` skips this function
+/// entirely when the field is missing, yielding the outer `None`. When
+/// the field is present (including `null`), serde calls in here and we
+/// wrap the inner `Option<T>` in `Some(...)`. Together that gives us
+/// the three states described on `AgentConfigUpdate`.
+fn deserialize_optional_field<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+  T: serde::Deserialize<'de>,
+  D: serde::Deserializer<'de>,
+{
+  serde::Deserialize::deserialize(deserializer).map(Some)
+}
+
+/// Apply an `AgentConfigUpdate` to a current `AgentConfig`, returning
+/// the merged result. Triple-state `api_key` fields collapse against
+/// the current values; non-secret fields are overwritten.
+pub fn merge_config_update(current: &AgentConfig, update: AgentConfigUpdate) -> AgentConfig {
+  let mut next = current.clone();
+  next.provider = update.provider;
+  next.openai.base_url = update.openai.base_url;
+  next.openai.model = update.openai.model;
+  next.openai.api_key = match update.openai.api_key {
+    None => current.openai.api_key.clone(), // keep
+    Some(None) => None,                     // clear
+    Some(Some(s)) if s.is_empty() => None,  // empty string also clears, matches UI "type then delete"
+    Some(Some(s)) => Some(s),               // set
+  };
+  next.anthropic.model = update.anthropic.model;
+  next.anthropic.api_key = match update.anthropic.api_key {
+    None => current.anthropic.api_key.clone(),
+    Some(None) => None,
+    Some(Some(s)) if s.is_empty() => None,
+    Some(Some(s)) => Some(s),
+  };
+  next
 }
 
 /// Construct a proposer from explicit user config, falling back to
@@ -323,4 +482,83 @@ pub trait AgentProposer: Send + Sync {
   /// Human-readable backend name, surfaced to clients via
   /// `GET /v1/agent/status` so the UI can show "powered by …".
   fn backend(&self) -> &str;
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn current_with_keys() -> AgentConfig {
+    let mut c = AgentConfig::default();
+    c.provider = AgentProvider::Openai;
+    c.openai.model = Some("gpt-4o-mini".into());
+    c.openai.api_key = Some("sk-openai-existing".into());
+    c.anthropic.api_key = Some("sk-ant-existing".into());
+    c
+  }
+
+  #[test]
+  fn view_masks_keys_and_reports_set_flag() {
+    let v = AgentConfigView::from(&current_with_keys());
+    assert!(v.openai.api_key_set);
+    assert_eq!(v.openai.api_key_hint.as_deref(), Some("sk-…ting"));
+    assert!(v.anthropic.api_key_set);
+    let none = AgentConfig::default();
+    let v2 = AgentConfigView::from(&none);
+    assert!(!v2.openai.api_key_set);
+    assert_eq!(v2.openai.api_key_hint, None);
+  }
+
+  #[test]
+  fn update_omitted_api_key_keeps_current() {
+    let body = serde_json::json!({
+      "provider": "openai",
+      "openai": { "base_url": null, "model": "gpt-4o" },
+      "anthropic": { "model": null }
+    });
+    let upd: AgentConfigUpdate = serde_json::from_value(body).unwrap();
+    let merged = merge_config_update(&current_with_keys(), upd);
+    assert_eq!(merged.openai.api_key.as_deref(), Some("sk-openai-existing"));
+    assert_eq!(merged.openai.model.as_deref(), Some("gpt-4o"));
+    assert_eq!(merged.anthropic.api_key.as_deref(), Some("sk-ant-existing"));
+  }
+
+  #[test]
+  fn update_null_api_key_clears() {
+    let body = serde_json::json!({
+      "provider": "openai",
+      "openai": { "api_key": null },
+      "anthropic": {}
+    });
+    let upd: AgentConfigUpdate = serde_json::from_value(body).unwrap();
+    let merged = merge_config_update(&current_with_keys(), upd);
+    assert_eq!(merged.openai.api_key, None);
+    // unaffected
+    assert_eq!(merged.anthropic.api_key.as_deref(), Some("sk-ant-existing"));
+  }
+
+  #[test]
+  fn update_string_api_key_sets() {
+    let body = serde_json::json!({
+      "provider": "anthropic",
+      "openai": {},
+      "anthropic": { "api_key": "sk-ant-new" }
+    });
+    let upd: AgentConfigUpdate = serde_json::from_value(body).unwrap();
+    let merged = merge_config_update(&current_with_keys(), upd);
+    assert_eq!(merged.anthropic.api_key.as_deref(), Some("sk-ant-new"));
+    assert_eq!(merged.provider, AgentProvider::Anthropic);
+  }
+
+  #[test]
+  fn update_empty_string_api_key_clears() {
+    let body = serde_json::json!({
+      "provider": "openai",
+      "openai": { "api_key": "" },
+      "anthropic": {}
+    });
+    let upd: AgentConfigUpdate = serde_json::from_value(body).unwrap();
+    let merged = merge_config_update(&current_with_keys(), upd);
+    assert_eq!(merged.openai.api_key, None);
+  }
 }

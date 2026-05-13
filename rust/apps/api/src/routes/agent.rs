@@ -19,7 +19,7 @@ use futures::stream::{Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 
-use app_core::{AgentConfig, AgentEvent, AgentTurn};
+use app_core::{merge_config_update, AgentConfigUpdate, AgentConfigView, AgentEvent, AgentTurn};
 use domain::{NodeId, TopicId};
 
 use crate::error::ApiError;
@@ -43,21 +43,28 @@ pub async fn status(State(svc): State<AppState>) -> Json<serde_json::Value> {
   }))
 }
 
-/// `GET /v1/agent/config` — current persisted agent settings, including
-/// API keys verbatim. Loopback-only; the frontend reflects this into a
-/// settings panel.
-pub async fn get_config(State(svc): State<AppState>) -> Json<AgentConfig> {
-  Json(svc.agent_config().await)
+/// `GET /v1/agent/config` — current persisted agent settings as a
+/// masked view: provider + per-provider `base_url`/`model` plus an
+/// `api_key_set` boolean and an `api_key_hint` like `"sk-…1234"`. The
+/// plaintext key never crosses the wire — `AgentConfigView` is built
+/// from the in-memory `AgentConfig` and the secret stays in the OS
+/// keychain.
+pub async fn get_config(State(svc): State<AppState>) -> Json<AgentConfigView> {
+  Json(AgentConfigView::from(&svc.agent_config().await))
 }
 
-/// `PUT /v1/agent/config` — write new agent settings to disk and rebuild
-/// the proposer in place. Returns the post-write backend label so the
+/// `PUT /v1/agent/config` — write new agent settings. `provider`,
+/// `base_url`, and `model` are whole-value replacements; `api_key` is
+/// triple-state (see `AgentConfigUpdate` for the JSON encoding). The
+/// proposer is rebuilt in place; returns the new backend label so the
 /// UI can update its "powered by …" hint without a separate fetch.
 pub async fn put_config(
   State(svc): State<AppState>,
-  Json(body): Json<AgentConfig>,
+  Json(body): Json<AgentConfigUpdate>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-  let backend = svc.set_agent_config(body).await?;
+  let current = svc.agent_config().await;
+  let merged = merge_config_update(&current, body);
+  let backend = svc.set_agent_config(merged).await?;
   Ok(Json(json!({ "backend": backend })))
 }
 

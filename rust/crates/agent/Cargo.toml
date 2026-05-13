@@ -21,6 +21,7 @@ async-trait = { workspace = true }
 bytes = "1"
 domain = { path = "../domain" }
 futures = { workspace = true }
+keyring = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
