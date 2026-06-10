@@ -155,6 +155,24 @@ html[data-resizing] *::after {
   mix-blend-mode: normal !important;
 }
 
+/* Carve-out from the freeze above: the sidebar-tracking translate-x on
+   the Dock and AgentPromptBar wrappers. Narrowing the window across the
+   lg breakpoint swaps their shift class mid-drag — with transitions
+   frozen that 9rem move lands as an abrupt snap. A transform tween on
+   a small will-change-transform element is compositor-only and doesn't
+   touch the layout/recomposite costs the freeze exists to avoid, so it
+   keeps animating. Duration + easing mirror the `duration-[350ms]
+   ease-out` utilities on those wrappers. */
+html[data-resizing] .resize-keep-transform {
+  /* Tailwind v4's translate-x-* utilities drive the independent
+     `translate` property, not `transform` — the property list must
+     mirror the `transition-transform` utility or the carve-out
+     silently misses the actual animated property. */
+  transition-property: transform, translate, scale, rotate !important;
+  transition-duration: 350ms !important;
+  transition-timing-function: cubic-bezier(0, 0, 0.2, 1) !important;
+}
+
 /* Noise overlay specifically — its mix-blend-mode triggers a full-window
    composite even when the rest of the page is static. Hide it entirely
    during resize; restores cleanly once the debounce clears. */

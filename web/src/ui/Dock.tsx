@@ -44,8 +44,11 @@ export function Dock() {
           // (sidebar collapse, dock shift, agent bar shift) finish in
           // lockstep. translate-x is a compositor-only op; the shift
           // is half the sidebar width, derived from --spacing-sidebar
-          // so a width change can't desync it.
-          "transition-transform duration-[350ms] ease-out",
+          // so a width change can't desync it. `resize-keep-transform`
+          // exempts this tween from the data-resizing freeze so
+          // crossing the lg breakpoint mid window-drag still animates
+          // (globals.css).
+          "transition-transform duration-[350ms] ease-out resize-keep-transform",
           sidebarOpen && isLg
             ? "translate-x-[calc(var(--spacing-sidebar)/2)]"
             : "translate-x-0",

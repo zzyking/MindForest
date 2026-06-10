@@ -95,7 +95,10 @@ export function AgentPromptBar() {
         "pointer-events-none absolute inset-x-0 bottom-20 flex justify-center will-change-transform",
         // 350ms matches the sidebar grid + dock transitions so the
         // three finish in lockstep when the sidebar toggles.
-        "transition-transform duration-[350ms] ease-out",
+        // `resize-keep-transform` exempts this tween from the
+        // data-resizing freeze so crossing the lg breakpoint mid
+        // window-drag still animates (globals.css).
+        "transition-transform duration-[350ms] ease-out resize-keep-transform",
         horizontalShift,
       )}
     >
