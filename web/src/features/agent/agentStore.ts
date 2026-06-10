@@ -1,23 +1,32 @@
 /**
  * Zustand store driving the agent prompt bar + draft overlay.
  *
- * One pending session at a time. While `streaming` is true the bar
- * stays disabled and a Cancel button replaces Send. The overlay reads
- * `tokens` (concatenated draft text) and `proposals` (parsed structured
- * edits) and the user-applied flags per proposal.
+ * One in-flight stream at a time, but MANY conversations: one per
+ * topic plus a single global one, kept in `conversations` keyed by
+ * `ConversationKey` (a TopicId, or GLOBAL_KEY). Which conversation the
+ * bar talks to is `scope` + the current route's topic — see
+ * `useConversationKey` in conversationKey.ts.
  *
- * Multi-turn: the store tracks `history` — every prior turn in the
- * current session. The first user prompt opens the session; follow-ups
- * append to history (the previous user prompt + the streamed assistant
- * draft) and ship that history with the next request. The model gets to
- * see what it said last time and what the user said next.
+ * - Topic conversations are isolated by construction: each request
+ *   ships only its own key's history, so topic A's exchange can never
+ *   leak into a request about topic B.
+ * - The global conversation deliberately spans topics: history rides
+ *   along as the user navigates, while each request still anchors on
+ *   the topic currently open (the server hydrates context from
+ *   `topic_id` — there is no topic-less request).
  *
- * Sessions are per-topic and survive hiding the panel: `close()` only
- * flips visibility (Esc / ✕ / collapsing the agent surface), and the
- * conversation continues on the next prompt. It actually ends on the
- * panel's explicit Clear (`reset`) or when a prompt is issued from a
- * different topic (`sessionTopicId` mismatch starts a fresh session —
- * history from topic A must never ship with a request about topic B).
+ * Multi-turn: each conversation tracks `history` — every prior closed
+ * turn. Follow-ups ship that history with the next request, so the
+ * model sees what it said last time and what the user said next.
+ *
+ * Conversations survive hiding the panel: `close()` only flips
+ * visibility (Esc / ✕ / collapsing the agent surface). A conversation
+ * actually ends on the panel's explicit Clear (`clear(key)`).
+ *
+ * Proposals remember the topic they were generated against
+ * (`ProposalEntry.topicId`), so accepting applies to that topic even
+ * if the user has navigated elsewhere — essential for the global
+ * conversation, where proposals from different topics coexist.
  *
  * Aborting mid-stream just closes the underlying fetch — the server
  * tears down its task on the next chunk because the SSE response is
@@ -38,6 +47,14 @@ import type { ResolveTable } from "./applyProposal";
 
 export type ProposalStatus = "pending" | "accepted" | "rejected" | "failed";
 
+export type AgentScope = "topic" | "global";
+
+/** Key of the workspace-wide conversation in `conversations`. The
+ *  sentinel can't collide with a TopicId (slugs never start with
+ *  underscores). */
+export const GLOBAL_KEY = "__global__";
+export type ConversationKey = TopicId | typeof GLOBAL_KEY;
+
 export interface ProposalEntry {
   id: string;
   proposal: AgentProposal;
@@ -45,64 +62,76 @@ export interface ProposalEntry {
   /** Which turn in the conversation produced this proposal. Lets the
    *  overlay group proposals by turn for clarity in long sessions. */
   turnIndex: number;
+  /** Topic the proposal was generated against (the request's anchor).
+   *  Accepts apply here, not to wherever the user navigated since. */
+  topicId: TopicId;
   error?: string;
 }
 
-interface AgentSessionState {
-  /** Panel visibility — NOT session lifetime. See header comment. */
-  open: boolean;
-  streaming: boolean;
-  /** Topic this session belongs to. Proposals are applied against it
-   *  (not the current route, which the user may have navigated away
-   *  from), and a prompt from a different topic starts a new session. */
-  sessionTopicId: TopicId | null;
-  /** Most recent user prompt the bar issued. */
+export interface Conversation {
+  /** In-flight (uncommitted) user prompt. Cleared when the turn lands
+   *  in history — doubles as the "an uncommitted turn exists" flag. */
   prompt: string;
-  /** Live tokens for the *current* (in-flight) assistant turn only. */
+  /** Live tokens for the in-flight assistant turn only. */
   draft: string;
-  /** All proposals across the session, oldest first. */
+  /** Confirmed conversation history — closed turns, oldest first. */
+  history: AgentTurn[];
+  /** 1-based index of the latest turn (for grouping proposals). */
+  turnCount: number;
+  /** All proposals across the conversation, oldest first. */
   proposals: ProposalEntry[];
   errors: string[];
-  abort: AbortController | null;
-  /** Confirmed conversation history — closed turns. The latest user
-   *  prompt + streamed draft become a pair of entries here when a turn
-   *  finishes successfully. */
-  history: AgentTurn[];
-  /** 1-based index of the in-flight turn (for grouping proposals). */
-  turnCount: number;
-  /** Accumulated client_id → real NodeId mappings across all accepted
-   *  proposals in this session. Used to resolve cross-proposal references
-   *  when the user accepts cards individually rather than via Accept all. */
+  /** Accumulated client_id → real NodeId mappings across accepted
+   *  proposals. Resolves cross-proposal references when the user
+   *  accepts cards individually rather than via Accept all. */
   resolvedTable: ResolveTable;
+}
 
+const emptyConversation = (): Conversation => ({
+  prompt: "",
+  draft: "",
+  history: [],
+  turnCount: 0,
+  proposals: [],
+  errors: [],
+  resolvedTable: {},
+});
+
+interface AgentSessionState {
+  /** Panel visibility — NOT conversation lifetime. */
+  open: boolean;
+  streaming: boolean;
+  /** Conversation the in-flight stream writes into. Captured at
+   *  startStream so switching scope/topic mid-stream can't cross-wire
+   *  tokens into the wrong conversation. */
+  streamingKey: ConversationKey | null;
+  /** Which conversation the bar talks to: the open topic's, or the
+   *  global one. */
+  scope: AgentScope;
+  conversations: Partial<Record<ConversationKey, Conversation>>;
+  abort: AbortController | null;
+
+  setScope: (scope: AgentScope) => void;
   startStream: (input: {
     topicId: TopicId;
     focusedNodeId: NodeId | null;
     prompt: string;
   }) => Promise<void>;
   cancel: () => void;
-  /** Hide the panel. The session (history, proposals) survives. */
+  /** Hide the panel. Conversations survive. */
   close: () => void;
-  /** Re-show a hidden panel if there's a session worth showing. */
-  show: () => void;
-  setProposalStatus: (id: string, status: ProposalStatus, error?: string) => void;
-  mergeResolvedTable: (updates: ResolveTable) => void;
-  reset: () => void;
+  /** Re-show a hidden panel if the given conversation has content. */
+  show: (key: ConversationKey | null) => void;
+  /** Explicitly end one conversation (aborts its in-flight stream). */
+  clear: (key: ConversationKey) => void;
+  setProposalStatus: (
+    key: ConversationKey,
+    id: string,
+    status: ProposalStatus,
+    error?: string,
+  ) => void;
+  mergeResolvedTable: (key: ConversationKey, updates: ResolveTable) => void;
 }
-
-const initial = {
-  open: false,
-  streaming: false,
-  sessionTopicId: null as TopicId | null,
-  prompt: "",
-  draft: "",
-  proposals: [] as ProposalEntry[],
-  errors: [] as string[],
-  abort: null as AbortController | null,
-  history: [] as AgentTurn[],
-  turnCount: 0,
-  resolvedTable: {} as ResolveTable,
-};
 
 let proposalCounter = 0;
 function nextProposalId(): string {
@@ -110,151 +139,162 @@ function nextProposalId(): string {
   return `p-${proposalCounter}`;
 }
 
-export const useAgentSession = create<AgentSessionState>((set, get) => ({
-  ...initial,
+export const useAgentSession = create<AgentSessionState>((set, get) => {
+  /** Apply `fn` to one conversation, creating it on first touch. */
+  const patch = (key: ConversationKey, fn: (c: Conversation) => Partial<Conversation>) =>
+    set((s) => {
+      const conv = s.conversations[key] ?? emptyConversation();
+      return { conversations: { ...s.conversations, [key]: { ...conv, ...fn(conv) } } };
+    });
 
-  startStream: async ({ topicId, focusedNodeId, prompt }) => {
-    // If a previous stream is still in flight, drop it before starting
-    // a new one — only one in-flight stream at a time per session.
-    get().abort?.abort();
-    const controller = new AbortController();
-    // A prompt from a different topic starts a fresh session — topic A's
-    // history must not ship with (or render next to) topic B's request.
-    const sameTopic = get().sessionTopicId === topicId;
-    // Snapshot history at request time. The user's *new* prompt is
-    // attached separately on the request body; we don't double-include
-    // it in `history`.
-    const historyForRequest = sameTopic ? get().history : [];
-    const turnIndex = sameTopic ? get().turnCount + 1 : 1;
-    set((s) => ({
-      open: true,
-      streaming: true,
-      sessionTopicId: topicId,
-      prompt,
-      draft: "",
-      // Keep prior proposals so the user can still accept/reject them
-      // after asking a follow-up. Fresh ones land alongside.
-      proposals: sameTopic ? s.proposals : [],
-      errors: [],
-      abort: controller,
-      turnCount: turnIndex,
-      history: sameTopic ? s.history : [],
-      resolvedTable: sameTopic ? s.resolvedTable : {},
-    }));
+  return {
+    open: false,
+    streaming: false,
+    streamingKey: null,
+    scope: "topic",
+    conversations: {},
+    abort: null,
 
-    let stream;
-    try {
-      stream = streamAgentPropose(
-        {
-          topic_id: topicId,
-          focused_node_id: focusedNodeId,
-          prompt,
-          history: historyForRequest,
-        },
-        controller.signal,
-      );
-    } catch (e) {
-      set((s) => ({
-        ...s,
-        streaming: false,
-        errors: [...s.errors, errorMessage(e)],
-        abort: null,
+    setScope: (scope) => set({ scope }),
+
+    startStream: async ({ topicId, focusedNodeId, prompt }) => {
+      // If a previous stream is still in flight, drop it before
+      // starting a new one — one in-flight stream at a time.
+      get().abort?.abort();
+      const controller = new AbortController();
+      const key: ConversationKey = get().scope === "global" ? GLOBAL_KEY : topicId;
+      const conv = get().conversations[key] ?? emptyConversation();
+      // Snapshot history at request time. The user's *new* prompt is
+      // attached separately on the request body; we don't
+      // double-include it in `history`.
+      const historyForRequest = conv.history;
+      const turnIndex = conv.turnCount + 1;
+      set({ open: true, streaming: true, streamingKey: key, abort: controller });
+      patch(key, () => ({
+        prompt,
+        draft: "",
+        errors: [],
+        turnCount: turnIndex,
+        // Prior proposals stay so the user can still accept/reject
+        // them after asking a follow-up. Fresh ones land alongside.
       }));
-      return;
-    }
 
-    let assistantText = "";
-    let sawDone = false;
-    try {
-      for await (const ev of stream.events as AsyncIterable<AgentEvent>) {
-        if (controller.signal.aborted) break;
-        switch (ev.kind) {
-          case "token":
-            assistantText += ev.text;
-            set((s) => ({ draft: s.draft + ev.text }));
-            break;
-          case "proposal":
-            set((s) => ({
-              proposals: [
-                ...s.proposals,
-                {
-                  id: nextProposalId(),
-                  proposal: ev.proposal,
-                  status: "pending",
-                  turnIndex,
-                },
-              ],
-            }));
-            break;
-          case "error":
-            set((s) => ({ errors: [...s.errors, ev.message] }));
-            break;
-          case "done":
-            sawDone = true;
-            break;
+      let stream;
+      try {
+        stream = streamAgentPropose(
+          {
+            topic_id: topicId,
+            focused_node_id: focusedNodeId,
+            prompt,
+            history: historyForRequest,
+          },
+          controller.signal,
+        );
+      } catch (e) {
+        patch(key, (c) => ({ errors: [...c.errors, errorMessage(e)] }));
+        set({ streaming: false, streamingKey: null, abort: null });
+        return;
+      }
+
+      let assistantText = "";
+      let sawDone = false;
+      try {
+        for await (const ev of stream.events as AsyncIterable<AgentEvent>) {
+          if (controller.signal.aborted) break;
+          switch (ev.kind) {
+            case "token":
+              assistantText += ev.text;
+              patch(key, (c) => ({ draft: c.draft + ev.text }));
+              break;
+            case "proposal":
+              patch(key, (c) => ({
+                proposals: [
+                  ...c.proposals,
+                  {
+                    id: nextProposalId(),
+                    proposal: ev.proposal,
+                    status: "pending",
+                    turnIndex,
+                    topicId,
+                  },
+                ],
+              }));
+              break;
+            case "error":
+              patch(key, (c) => ({ errors: [...c.errors, ev.message] }));
+              break;
+            case "done":
+              sawDone = true;
+              break;
+          }
         }
+      } catch (e) {
+        if (!controller.signal.aborted) {
+          patch(key, (c) => ({ errors: [...c.errors, errorMessage(e)] }));
+        }
+      } finally {
+        // Only commit the turn to history when we got at least the
+        // server's `done` and the request wasn't aborted. A canceled
+        // or crashed stream shouldn't be replayed verbatim next turn.
+        if (sawDone && !controller.signal.aborted && assistantText.length > 0) {
+          patch(key, (c) => ({
+            history: [
+              ...c.history,
+              { role: "user", text: prompt },
+              { role: "assistant", text: assistantText },
+            ],
+            // The turn now lives in history — clear the in-flight
+            // fields so the overlay doesn't render it twice.
+            draft: "",
+            prompt: "",
+          }));
+        }
+        set({ streaming: false, streamingKey: null, abort: null });
       }
-    } catch (e) {
-      if (!controller.signal.aborted) {
-        set((s) => ({ errors: [...s.errors, errorMessage(e)] }));
-      }
-    } finally {
-      // Only commit the turn to history when we got at least the
-      // server's `done` and the request wasn't aborted. A canceled or
-      // crashed stream shouldn't be replayed verbatim next turn.
-      if (sawDone && !controller.signal.aborted && assistantText.length > 0) {
-        set((s) => ({
-          history: [
-            ...s.history,
-            { role: "user", text: prompt },
-            { role: "assistant", text: assistantText },
-          ],
-          // The turn now lives in history — clear the in-flight fields
-          // so the overlay doesn't render the same turn twice (once as
-          // a committed TurnPair, once as the "active turn" block).
-          draft: "",
-          prompt: "",
-        }));
-      }
-      set({ streaming: false, abort: null });
-    }
-  },
+    },
 
-  cancel: () => {
-    get().abort?.abort();
-    set({ streaming: false, abort: null });
-  },
+    cancel: () => {
+      get().abort?.abort();
+      set({ streaming: false, streamingKey: null, abort: null });
+    },
 
-  // Hiding deliberately does NOT abort: a stream started before the
-  // panel was hidden keeps running and commits its turn silently — the
-  // bar's Cancel button (driven by `streaming`) remains the abort path.
-  close: () => set({ open: false }),
+    // Hiding deliberately does NOT abort: a stream started before the
+    // panel was hidden keeps running and commits its turn silently —
+    // the bar's Cancel button (driven by `streaming`) remains the
+    // abort path.
+    close: () => set({ open: false }),
 
-  show: () =>
-    set((s) =>
-      s.streaming ||
-      s.history.length > 0 ||
-      s.proposals.length > 0 ||
-      s.errors.length > 0
-        ? { open: true }
-        : s,
-    ),
+    show: (key) =>
+      set((s) => {
+        if (!key) return s;
+        const c = s.conversations[key];
+        const hasContent =
+          !!c &&
+          (c.history.length > 0 ||
+            c.proposals.length > 0 ||
+            c.errors.length > 0 ||
+            c.prompt !== "" ||
+            (s.streaming && s.streamingKey === key));
+        return hasContent ? { open: true } : s;
+      }),
 
-  setProposalStatus: (id, status, error) =>
-    set((s) => ({
-      proposals: s.proposals.map((p) =>
-        p.id === id ? { ...p, status, error } : p,
-      ),
-    })),
+    clear: (key) => {
+      if (get().streamingKey === key) get().cancel();
+      set((s) => {
+        const { [key]: _gone, ...rest } = s.conversations;
+        return { conversations: rest, open: false };
+      });
+    },
 
-  mergeResolvedTable: (updates) =>
-    set((s) => ({ resolvedTable: { ...s.resolvedTable, ...updates } })),
+    setProposalStatus: (key, id, status, error) =>
+      patch(key, (c) => ({
+        proposals: c.proposals.map((p) => (p.id === id ? { ...p, status, error } : p)),
+      })),
 
-  reset: () => {
-    get().abort?.abort();
-    set({ ...initial });
-  },
-}));
+    mergeResolvedTable: (key, updates) =>
+      patch(key, (c) => ({ resolvedTable: { ...c.resolvedTable, ...updates } })),
+  };
+});
 
 function errorMessage(e: unknown): string {
   if (e instanceof Error) return e.message;

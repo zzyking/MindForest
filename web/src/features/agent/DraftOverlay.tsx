@@ -9,11 +9,16 @@
  * a session. We don't auto-close on Done so the user has time to
  * decide on each proposal.
  *
+ * The panel always shows the conversation the bar is talking to
+ * (useConversationKey): the open topic's, or the global one. Switching
+ * topic or scope swaps the content in place.
+ *
  * Accept order matters when proposals reference each other through
  * `client_id` placeholders, so the overlay accepts in array order and
- * threads the resolution table forward. Accepts target the session's
- * topic (`sessionTopicId`), not the current route — the user may have
- * navigated elsewhere since the proposals were generated.
+ * threads the resolution table forward. Accepts target the topic each
+ * proposal was generated against (`entry.topicId`), not the current
+ * route — the user may have navigated elsewhere since, and the global
+ * conversation mixes proposals from several topics by design.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -21,25 +26,29 @@ import { useEffect, useRef, useState } from "react";
 import { useMainPaneShiftClass } from "@/app/mainPaneShift";
 import { cn } from "@/lib/cn";
 import { useWorkspaceUI } from "@/stores/workspaceUI";
-import type { AgentProposal } from "@/lib/types";
-import { useAgentSession, type ProposalEntry } from "./agentStore";
+import type { AgentProposal, AgentTurn } from "@/lib/types";
+import { GLOBAL_KEY, useAgentSession, type ProposalEntry } from "./agentStore";
+import { useConversationKey } from "./conversationKey";
 import { applyProposal, type ResolveTable } from "./applyProposal";
+
+// Stable fallbacks for "no conversation yet" so hook deps don't churn.
+const NO_PROPOSALS: ProposalEntry[] = [];
+const NO_ERRORS: string[] = [];
+const NO_HISTORY: AgentTurn[] = [];
+const NO_TABLE: ResolveTable = {};
 
 export function DraftOverlay() {
   const open = useAgentSession((s) => s.open);
   const streaming = useAgentSession((s) => s.streaming);
-  const draft = useAgentSession((s) => s.draft);
-  const proposals = useAgentSession((s) => s.proposals);
-  const errors = useAgentSession((s) => s.errors);
-  const prompt = useAgentSession((s) => s.prompt);
-  const history = useAgentSession((s) => s.history);
-  const turnCount = useAgentSession((s) => s.turnCount);
+  const streamingKey = useAgentSession((s) => s.streamingKey);
   const close = useAgentSession((s) => s.close);
-  const reset = useAgentSession((s) => s.reset);
+  const clear = useAgentSession((s) => s.clear);
   const setProposalStatus = useAgentSession((s) => s.setProposalStatus);
-  const resolvedTable = useAgentSession((s) => s.resolvedTable);
   const mergeResolvedTable = useAgentSession((s) => s.mergeResolvedTable);
-  const sessionTopicId = useAgentSession((s) => s.sessionTopicId);
+  // The conversation the bar is currently talking to — the panel
+  // mirrors it 1:1.
+  const { key } = useConversationKey();
+  const conversation = useAgentSession((s) => (key ? s.conversations[key] : undefined));
   // The panel is part of the agent surface: it only shows while the
   // prompt bar shows, so collapsing the bar (or the whole dock) can't
   // leave a conversation floating with no input under it.
@@ -47,7 +56,19 @@ export function DraftOverlay() {
   const agentBarOpen = useWorkspaceUI((s) => s.agentBarOpen);
   const [bulkBusy, setBulkBusy] = useState(false);
   const shift = useMainPaneShiftClass();
-  const visible = open && dockExpanded && agentBarOpen;
+  const visible = open && dockExpanded && agentBarOpen && !!key && !!conversation;
+
+  const draft = conversation?.draft ?? "";
+  const prompt = conversation?.prompt ?? "";
+  const history = conversation?.history ?? NO_HISTORY;
+  const proposals = conversation?.proposals ?? NO_PROPOSALS;
+  const errors = conversation?.errors ?? NO_ERRORS;
+  const turnCount = conversation?.turnCount ?? 0;
+  const resolvedTable = conversation?.resolvedTable ?? NO_TABLE;
+  /** Is the in-flight stream writing into THIS conversation? A stream
+   *  for another topic keeps running invisibly and must not animate
+   *  this panel. */
+  const thisStreaming = streaming && streamingKey === key;
 
   // ESC hides the panel (parallel to the ✕ button); the session
   // survives — see agentStore.
@@ -68,29 +89,28 @@ export function DraftOverlay() {
   useEffect(() => {
     const el = scrollRef.current;
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
-  }, [draft, history, proposals, errors, streaming]);
+  }, [draft, history, proposals, errors, thisStreaming]);
 
-  if (!visible) return null;
+  if (!visible || !key || !conversation) return null;
 
   const acceptOne = async (entry: ProposalEntry, table: ResolveTable): Promise<ResolveTable> => {
-    if (entry.status !== "pending" || !sessionTopicId) return table;
+    if (entry.status !== "pending") return table;
     // Merge the store's accumulated table with the local threading table so
     // individual-card accepts can resolve client_ids created earlier in the
     // same session, not just within a single acceptAll run.
     const base = { ...resolvedTable, ...table };
     try {
-      const next = await applyProposal(entry.proposal, sessionTopicId, base);
-      setProposalStatus(entry.id, "accepted");
-      mergeResolvedTable(next);
+      const next = await applyProposal(entry.proposal, entry.topicId, base);
+      setProposalStatus(key, entry.id, "accepted");
+      mergeResolvedTable(key, next);
       return { ...table, ...next };
     } catch (e) {
-      setProposalStatus(entry.id, "failed", errorMessage(e));
+      setProposalStatus(key, entry.id, "failed", errorMessage(e));
       return table;
     }
   };
 
   const acceptAll = async () => {
-    if (!sessionTopicId) return;
     setBulkBusy(true);
     let table: ResolveTable = {};
     for (const entry of proposals) {
@@ -101,7 +121,7 @@ export function DraftOverlay() {
 
   const rejectAll = () => {
     proposals.forEach((p) => {
-      if (p.status === "pending") setProposalStatus(p.id, "rejected");
+      if (p.status === "pending") setProposalStatus(key, p.id, "rejected");
     });
   };
 
@@ -133,7 +153,9 @@ export function DraftOverlay() {
       >
         <header className="border-forest-100 flex items-center justify-between border-b px-4 py-3">
           <div>
-            <div className="text-forest-500 text-[10px] uppercase tracking-wider">Agent draft</div>
+            <div className="text-forest-500 text-[10px] uppercase tracking-wider">
+              {key === GLOBAL_KEY ? "Agent draft · Global" : "Agent draft"}
+            </div>
             {/* In-flight prompt, else the last committed one (prompt is
                 cleared when a turn lands in history). */}
             <div className="text-forest-900 line-clamp-1 text-sm">
@@ -141,11 +163,11 @@ export function DraftOverlay() {
             </div>
           </div>
           <div className="flex items-center gap-1">
-            {/* Clear ends the session (aborts + wipes history); ✕ only
-                hides the panel and the conversation continues. */}
+            {/* Clear ends THIS conversation (aborts + wipes history);
+                ✕ only hides the panel and the conversation continues. */}
             <button
               type="button"
-              onClick={reset}
+              onClick={() => clear(key)}
               className="text-forest-500 hover:text-forest-800 rounded-full px-2 py-0.5 text-xs"
               aria-label="Clear conversation"
             >
@@ -187,7 +209,7 @@ export function DraftOverlay() {
                   assistantText={pair.assistant}
                   proposals={proposals.filter((p) => p.turnIndex === idx + 1)}
                   onAccept={acceptOne}
-                  onReject={(id) => setProposalStatus(id, "rejected")}
+                  onReject={(id) => setProposalStatus(key, id, "rejected")}
                 />
               ))}
             </div>
@@ -199,11 +221,11 @@ export function DraftOverlay() {
               screen readers announce streamed tokens and the proposal list
               as it materialises. aria-busy flips off when streaming ends
               so the reader knows the response is final. */}
-          {(streaming || draft || prompt) && (
+          {(thisStreaming || draft || prompt) && (
             <div
               aria-live="polite"
               aria-atomic="false"
-              aria-busy={streaming}
+              aria-busy={thisStreaming}
               className="border-forest-100 flex flex-col gap-2 border-t pt-3"
             >
               {history.length > 0 && (
@@ -217,12 +239,12 @@ export function DraftOverlay() {
                   {prompt}
                 </div>
               )}
-              <DraftText text={draft} streaming={streaming} />
+              <DraftText text={draft} streaming={thisStreaming} />
               {proposals.filter((p) => p.turnIndex === turnCount).length > 0 && (
                 <ProposalList
                   proposals={proposals.filter((p) => p.turnIndex === turnCount)}
                   onAccept={acceptOne}
-                  onReject={(id) => setProposalStatus(id, "rejected")}
+                  onReject={(id) => setProposalStatus(key, id, "rejected")}
                 />
               )}
             </div>
@@ -251,7 +273,7 @@ export function DraftOverlay() {
           <button
             type="button"
             onClick={acceptAll}
-            disabled={bulkBusy || streaming || proposals.every((p) => p.status !== "pending") || !sessionTopicId}
+            disabled={bulkBusy || thisStreaming || proposals.every((p) => p.status !== "pending")}
             className="text-sand-100 bg-forest-700 hover:bg-forest-800 disabled:opacity-40 rounded-full px-3 py-1 text-xs"
           >
             {bulkBusy ? "Applying…" : "Accept all"}

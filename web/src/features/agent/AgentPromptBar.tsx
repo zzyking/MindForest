@@ -15,12 +15,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Sparkles } from "lucide-react";
-import { useParams, useRouterState } from "@tanstack/react-router";
 
 import { useMainPaneShiftClass } from "@/app/mainPaneShift";
 import { cn } from "@/lib/cn";
 import { useWorkspaceUI } from "@/stores/workspaceUI";
 import { useAgentSession } from "./agentStore";
+import { useConversationKey } from "./conversationKey";
 
 export function AgentPromptBar() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -36,9 +36,11 @@ export function AgentPromptBar() {
   const visible = dockExpanded && agentBarOpen;
 
   // Pull the current topicId / nodeId out of the route so the user
-  // doesn't have to retype them. The bar is mounted at the shell so
-  // it's outside any specific route — read directly from the matches.
-  const { topicId, focusedNodeId } = useCurrentRouteContext();
+  // doesn't have to retype them, plus the conversation key the bar is
+  // currently talking to (topic-scoped or global).
+  const { key, topicId, focusedNodeId } = useConversationKey();
+  const scope = useAgentSession((s) => s.scope);
+  const setScope = useAgentSession((s) => s.setScope);
 
   // Slash-to-open, Cmd+I as backup. Skip `/` when an input already owns
   // focus so editor typing isn't hijacked.
@@ -84,7 +86,9 @@ export function AgentPromptBar() {
     if (!agentBarOpen) return;
     prevFocusRef.current = document.activeElement as HTMLElement | null;
     inputRef.current?.focus();
-    useAgentSession.getState().show();
+    useAgentSession.getState().show(key);
+    // `key` deliberately not a dep: recall happens when the surface
+    // opens; navigating afterwards swaps the panel by itself.
   }, [agentBarOpen]);
 
   const close = () => {
@@ -142,10 +146,33 @@ export function AgentPromptBar() {
             "flex w-[min(620px,calc(100vw-2rem))] items-center gap-3 rounded-full border px-4 py-2 backdrop-blur-md",
           )}
         >
-          <span className="text-forest-500 flex items-center gap-1.5 text-[10px] uppercase tracking-[0.12em]">
+          {/* Scope toggle: which conversation the bar talks to. Topic
+              conversations swap with the open topic; Global is one
+              conversation that follows the user across topics. */}
+          <button
+            type="button"
+            onClick={() => setScope(scope === "topic" ? "global" : "topic")}
+            title={
+              scope === "topic"
+                ? "Conversation scope: this topic — click for global"
+                : "Conversation scope: global — click for per-topic"
+            }
+            aria-label={
+              scope === "topic"
+                ? "Agent scope: topic. Switch to global"
+                : "Agent scope: global. Switch to topic"
+            }
+            className={cn(
+              "flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] uppercase tracking-[0.12em]",
+              "transition-colors duration-200 ease-out",
+              scope === "global"
+                ? "bg-forest-800 text-sand-100"
+                : "text-forest-500 hover:bg-forest-100 hover:text-forest-800",
+            )}
+          >
             <Sparkles size={12} strokeWidth={2} aria-hidden />
-            Agent
-          </span>
+            {scope === "topic" ? "Topic" : "Global"}
+          </button>
           <input
             ref={inputRef}
             type="text"
@@ -163,9 +190,11 @@ export function AgentPromptBar() {
               }
             }}
             placeholder={
-              topicId
-                ? "Ask the agent to refine, expand, or restructure…"
-                : "Open a topic to use the agent"
+              !topicId
+                ? "Open a topic to use the agent"
+                : scope === "global"
+                  ? "Ask the agent — this conversation follows you across topics…"
+                  : "Ask the agent to refine, expand, or restructure…"
             }
             disabled={streaming || !topicId}
             aria-label="Agent prompt"
@@ -201,43 +230,6 @@ export function AgentPromptBar() {
   );
 }
 
-/**
- * Pull `topicId` / `nodeId` out of the active route match, regardless
- * of which deep route is currently mounted. The match params shape is
- * `{ topicId?: string, nodeId?: string }` — both are optional because
- * the index route has neither.
- */
-function useCurrentRouteContext(): {
-  topicId: string | null;
-  focusedNodeId: string | null;
-} {
-  const matches = useRouterState({ select: (s) => s.matches });
-  // Fallback params — must be read *before* the early return below so
-  // both hooks run unconditionally on every render. Returning early
-  // past a hook call changes the hook order between "/" and
-  // "/$topicId/…" renders, which React punishes by remounting the
-  // tree from scratch via the nearest error boundary (wiping sidebar
-  // expansion state and flashing the whole shell).
-  const fallback = useParamsCompat();
-  // Prefer the deepest match's params — that's the one with topicId / nodeId.
-  for (let i = matches.length - 1; i >= 0; i -= 1) {
-    const match = matches[i];
-    if (!match) continue;
-    const params = match.params as { topicId?: string; nodeId?: string };
-    if (params?.topicId) {
-      return { topicId: params.topicId, focusedNodeId: params.nodeId ?? null };
-    }
-  }
-  return {
-    topicId: fallback.topicId ?? null,
-    focusedNodeId: fallback.nodeId ?? null,
-  };
-}
-
-// Wrapping useParams so the typing matches both index + nested routes.
-function useParamsCompat() {
-  return useParams({ strict: false }) as {
-    topicId?: string;
-    nodeId?: string;
-  };
-}
+// Route-context helpers moved to ./conversationKey.ts — shared with
+// DraftOverlay so submit target and displayed conversation can't
+// disagree.
