@@ -184,7 +184,11 @@ export function Sidebar() {
       </section>
 
       {focusedDetail && (
-        <section className="min-h-0 flex-1 overflow-y-auto">
+        // `scrollbar-gutter: stable` so the rows don't narrow-shift
+        // when the tree grows past the viewport and the (classic)
+        // scrollbar appears. Single-edge: content is left-aligned, a
+        // left gutter would just waste column width.
+        <section className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
           <h3 className="text-forest-500 mb-2 text-[10px] font-medium uppercase tracking-wide">
             Nodes
           </h3>

@@ -136,7 +136,15 @@ export function WorkspaceShell({ children }: Props) {
           // TitleBarStyle::Overlay window has no system titlebar). The
           // inner scaffold's `py-6` (24px) compounds to 32px above
           // first content, matching the sidebar's `pt-8`.
-          className="relative min-w-0 overflow-y-auto pt-2 [contain:layout_paint]"
+          // `scrollbar-gutter: stable both-edges` reserves the
+          // scrollbar track whether or not content overflows, so the
+          // centered editor column doesn't shift sideways when a long
+          // node brings the scrollbar in. Only takes effect with
+          // classic (space-taking) scrollbars — system "always show" /
+          // mouse plugged in; overlay scrollbars are unaffected.
+          // `both-edges` keeps the column optically centered instead
+          // of biased half a track to the left.
+          className="relative min-w-0 overflow-y-auto pt-2 [contain:layout_paint] [scrollbar-gutter:stable_both-edges]"
         >
           <ModelDownloadCard />
           {children}
