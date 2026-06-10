@@ -24,6 +24,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import EdgeCurveProgram from "@sigma/edge-curve";
+import { cn } from "@/lib/cn";
 import {
   forceCenter,
   forceCollide,
@@ -140,16 +141,31 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
   const fetchTopic = useForestData((s) => s.fetchTopic);
   const forestCameraIntent = useWorkspaceUI((s) => s.forestCameraIntent);
   const consumeForestCameraIntent = useWorkspaceUI((s) => s.consumeForestCameraIntent);
+  const sidebarOpen = useWorkspaceUI((s) => s.sidebarOpen);
   const focus = useFocusNode();
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sigmaRef = useRef<Sigma | null>(null);
   const hoverProgressRef = useRef(0);
   const hoverAnimFrameRef = useRef<number | null>(null);
+  // The graph point we *want* to keep at viewport center across resizes
+  // (sidebar toggle, window resize). Updated whenever the user/system
+  // makes a deliberate camera move: initial fit, focus-on-node, click,
+  // forestCameraIntent. NOT updated on every render — so an interim
+  // sidebar resize doesn't read whatever happens to be at the screen
+  // center during the transition.
+  const cameraAnchorRef = useRef<{ x: number; y: number } | null>(null);
 
   // Hover state — both the node id and its neighbour set, computed
   // once per hover change so the reducer can do a single Set lookup.
   const [hoverNode, setHoverNode] = useState<NodeId | null>(null);
+  // Sigma init takes a real bite of main-thread time (d3-force 300 ticks
+  // + canvas allocation). Outer NodePage wrapper animation finishes
+  // before sigma even paints, so the entrance is invisible. We gate
+  // ForestView's own opacity+scale transition on `sigmaReady`, flipped
+  // to true one frame after sigma is constructed — guaranteeing the
+  // "settle in" lands on actual rendered content.
+  const [sigmaReady, setSigmaReady] = useState(false);
   const neighborsRef = useRef<Set<NodeId>>(new Set());
   
   // Keep track of the active set during fade-out so they remain opaque
@@ -412,6 +428,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 
     s.refresh();
     animateCameraToPoint(s, target, { duration: 400 });
+    cameraAnchorRef.current = target;
     s.refresh();
     consumeForestCameraIntent(focusedNodeId, focusedTopicId);
   }, [
@@ -424,6 +441,10 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
   ]);
 
   useEffect(() => {
+    // Reset visibility on every graph rebuild so the next reveal
+    // triggers a fresh transition (false → true) rather than being
+    // batched away.
+    setSigmaReady(false);
     if (!containerRef.current || !graph) return;
     if (sigmaRef.current) {
       sigmaRef.current.kill();
@@ -592,9 +613,10 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       const topicId = graph.getNodeAttribute(node, "topicId") as TopicId;
       const x = graph.getNodeAttribute(node, "x") as number;
       const y = graph.getNodeAttribute(node, "y") as number;
-      
+
       void focus(node as NodeId, topicId);
       animateCameraToPoint(s, { x, y }, { duration: 400 });
+      cameraAnchorRef.current = { x, y };
     });
     s.on("enterNode", ({ node }) => setHover(node as NodeId));
     s.on("leaveNode", () => setHover(null));
@@ -603,7 +625,15 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 
     sigmaRef.current = s;
     fitCameraToGraph(s, graph);
-    
+    // Default anchor = the graph point that the fit just centred —
+    // i.e. the current viewport centre in graph coords.
+    {
+      const { width, height } = s.getDimensions();
+      if (width > 0 && height > 0) {
+        cameraAnchorRef.current = s.viewportToGraph({ x: width / 2, y: height / 2 });
+      }
+    }
+
     if (focusedNodeIdRef.current && graph.hasNode(focusedNodeIdRef.current)) {
       const target =
         resolveCameraTarget({
@@ -628,11 +658,19 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
         };
       }
       setCameraToPoint(s, target);
+      cameraAnchorRef.current = target;
     }
 
     projectOverlays();
 
+    // Reveal one frame after sigma is constructed so the entrance
+    // transition starts the moment the first real frame paints, not
+    // before. Without this the outer NodePage wrapper finishes
+    // animating while the canvas is still blank.
+    const revealRafId = requestAnimationFrame(() => setSigmaReady(true));
+
     return () => {
+      cancelAnimationFrame(revealRafId);
       if (hoverAnimFrameRef.current !== null) {
         cancelAnimationFrame(hoverAnimFrameRef.current);
         hoverAnimFrameRef.current = null;
@@ -641,6 +679,39 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       sigmaRef.current = null;
     };
   }, [graph, focus, anchors, neighbors]);
+
+  // Keep `cameraAnchorRef` at viewport center while the sidebar's grid
+  // track animates over ~350ms. The anchor is whatever the user last
+  // expressed intent about (initial fit, focused node, click, route
+  // intent) — it is NOT "whatever's at the centre right now"
+  // mid-transition, which the previous implementation got wrong and
+  // produced a focused-node drift exactly equal to the sidebar width.
+  //
+  // Per frame we force `sigma.resize(true)` before `setCameraToPoint` —
+  // sigma's internal ResizeObserver batches its dimension updates and
+  // can lag the actual DOM size during a layout-property transition.
+  // `setCameraToPoint` reads `sigma.getDimensions()` to compute the
+  // framedGraph offset, so stale dimensions = off-center anchor.
+  useEffect(() => {
+    const anchor = cameraAnchorRef.current;
+    if (!anchor) return;
+    if (!sigmaRef.current) return;
+
+    const startTime = performance.now();
+    const duration = 380;
+    let rafId = 0;
+    const tick = () => {
+      const live = sigmaRef.current;
+      if (!live) return;
+      live.resize(true);
+      setCameraToPoint(live, anchor);
+      if (performance.now() - startTime < duration) {
+        rafId = requestAnimationFrame(tick);
+      }
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [sidebarOpen]);
 
   useEffect(() => {
     if (!sigmaRef.current) return;
@@ -711,7 +782,14 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 
   return (
     <div
-      className="bg-forest-50 relative h-full w-full overflow-hidden"
+      className={cn(
+        "bg-forest-50 relative h-full w-full overflow-hidden",
+        // Matches tree-card-in's curve + the NodePage wrapper; combined
+        // with sigmaReady gating below, the visible "settle in" starts
+        // exactly when sigma's first canvas frame paints.
+        "transition-[opacity,transform] duration-[320ms] ease-[cubic-bezier(0.2,0.8,0.2,1)]",
+        sigmaReady ? "opacity-100 scale-100" : "opacity-0 scale-[0.97]",
+      )}
       role="region"
       aria-label="Forest map of the workspace"
     >

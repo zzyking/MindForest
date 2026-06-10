@@ -21,6 +21,7 @@
  */
 
 import { useEffect } from "react";
+import { Pencil } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
@@ -28,6 +29,7 @@ import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/cn";
 import { useFocusNode } from "@/app/navigation";
 import { useForestData } from "@/stores/forestData";
+import { useWorkspaceUI } from "@/stores/workspaceUI";
 import type { NodeId, NodeSummary, NodeType, TopicId } from "@/lib/types";
 
 interface Props {
@@ -226,12 +228,28 @@ interface FocusCardProps {
 
 function FocusCard({ summary, content, contentLoading }: FocusCardProps) {
   const preview = content ? truncatePreview(content, PREVIEW_CHARS) : null;
+  const setViewMode = useWorkspaceUI((s) => s.setViewMode);
   return (
     <section
       className={cn(
         "border-forest-200 bg-sand-100/80 shadow-glass relative rounded-2xl border p-6 backdrop-blur-md",
       )}
     >
+      <button
+        type="button"
+        onClick={() => setViewMode("editor")}
+        className={cn(
+          "absolute right-4 top-4 inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs transition-colors",
+          "border-forest-200 bg-sand-100 text-forest-600",
+          "hover:border-forest-400 hover:bg-sand-200/40 hover:text-forest-800",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
+        )}
+        title="Edit this node"
+        aria-label="Edit this node"
+      >
+        <Pencil size={12} strokeWidth={2} aria-hidden />
+        <span>Edit</span>
+      </button>
       <div className="mb-3 flex items-center gap-2">
         <TypeChip type={summary.type} />
         <span className="text-forest-400 text-[10px] uppercase tracking-[0.08em] tabular-nums">

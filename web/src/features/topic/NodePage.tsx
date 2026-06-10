@@ -7,9 +7,13 @@
  *   tree    → sigma canvas, single-topic deep dive
  *   forest  → sigma canvas, whole-workspace many-trees overview
  *
- * View mode lives in workspaceUI (per-tab UI state). We swap whole panes
- * rather than cross-fading because each pane prefetches/computes its own
- * data; cross-fade buys little visually and forces both to stay mounted.
+ * View mode lives in workspaceUI (per-tab UI state). The outer wrapper
+ * is keyed on `viewMode` so React fully unmounts the previous pane and
+ * mounts the next one — each pane keeps doing its own data fetch on
+ * mount, and the new pane settles in via `view-pane-in`. TreeView
+ * still runs its internal stagger inside that wrapper; the outer keyframe
+ * uses opacity + scale only (no translateY) so it can't push h-full
+ * content past main's overflow-y-auto mid-animation.
  */
 
 import { useParams } from "@tanstack/react-router";
@@ -29,11 +33,21 @@ export function NodePage() {
   };
   const viewMode = useWorkspaceUI((s) => s.viewMode);
 
+  let pane: React.ReactNode;
   if (viewMode === "tree") {
-    return <TreeView topicId={topicId} focusedNodeId={nodeId} />;
+    pane = <TreeView topicId={topicId} focusedNodeId={nodeId} />;
+  } else if (viewMode === "forest") {
+    pane = <ForestView focusedTopicId={topicId} focusedNodeId={nodeId} />;
+  } else {
+    pane = <NodeEditor key={`${topicId}/${nodeId}`} nodeId={nodeId} />;
   }
-  if (viewMode === "forest") {
-    return <ForestView focusedTopicId={topicId} focusedNodeId={nodeId} />;
-  }
-  return <NodeEditor key={`${topicId}/${nodeId}`} nodeId={nodeId} />;
+
+  return (
+    <div
+      key={viewMode}
+      className="h-full animate-[view-pane-in_320ms_cubic-bezier(0.2,0.8,0.2,1)_both]"
+    >
+      {pane}
+    </div>
+  );
 }
