@@ -98,11 +98,13 @@ export function WorkspaceShell({ children }: Props) {
         className={cn(
           "grid flex-1 overflow-hidden",
           // 350ms (vs the typical 300ms for a UI tween) gives the eye
-          // a beat to follow the sidebar's 18rem-to-0 collapse without
+          // a beat to follow the sidebar's collapse to 0 without
           // feeling rushed. Dock + AgentPromptBar use the same duration
-          // so the three transitions finish in lockstep.
+          // so the three transitions finish in lockstep. Width comes
+          // from --spacing-sidebar (tokens.css), shared with Sidebar
+          // and the dock/prompt-bar half-width shift.
           "transition-[grid-template-columns] duration-[350ms] ease-out",
-          sidebarOpen ? "grid-cols-[18rem_1fr]" : "grid-cols-[0_1fr]",
+          sidebarOpen ? "grid-cols-[var(--spacing-sidebar)_1fr]" : "grid-cols-[0_1fr]",
         )}
       >
         <aside

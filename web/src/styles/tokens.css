@@ -78,6 +78,14 @@
   --font-serif: "Crimson Pro", ui-serif, Georgia, "Times New Roman", serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
 
+  /* Workspace layout metrics. The sidebar column width is the single
+     source for three coupled values: the Sidebar's own width, the
+     WorkspaceShell grid track it collapses in, and the half-width
+     shift the Dock + AgentPromptBar apply to stay centered over the
+     main area (derived via calc(var(--spacing-sidebar)/2) at the use
+     sites). Change it here and all three move together. */
+  --spacing-sidebar: 18rem;
+
   /* Glass + soft shadows for the dock + sidebar + draft overlay. */
   --shadow-glass: 0 8px 32px rgba(24, 40, 34, 0.08);
   --shadow-soft: 0 20px 40px -10px rgba(24, 40, 34, 0.15);

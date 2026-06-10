@@ -80,7 +80,10 @@ export function AgentPromptBar() {
   // that the dock-stagger delay never bleeds onto the sidebar-tracking
   // transform — otherwise the bar lags 75ms behind the dock when
   // toggling the sidebar, which reads as a stutter.
-  const horizontalShift = sidebarOpen && isLg ? "translate-x-36" : "translate-x-0";
+  const horizontalShift =
+    sidebarOpen && isLg
+      ? "translate-x-[calc(var(--spacing-sidebar)/2)]"
+      : "translate-x-0";
   const verticalShift = dockExpanded
     ? "translate-y-0 opacity-100 delay-75"
     : "translate-y-4 opacity-0 pointer-events-none";

@@ -42,9 +42,13 @@ export function Dock() {
           // 350ms matches the sidebar grid track transition in
           // WorkspaceShell so the three sidebar-tracking animations
           // (sidebar collapse, dock shift, agent bar shift) finish in
-          // lockstep. translate-x is a compositor-only op.
+          // lockstep. translate-x is a compositor-only op; the shift
+          // is half the sidebar width, derived from --spacing-sidebar
+          // so a width change can't desync it.
           "transition-transform duration-[350ms] ease-out",
-          sidebarOpen && isLg ? "translate-x-36" : "translate-x-0",
+          sidebarOpen && isLg
+            ? "translate-x-[calc(var(--spacing-sidebar)/2)]"
+            : "translate-x-0",
         )}
       >
         <div

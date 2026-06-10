@@ -92,7 +92,7 @@ export function Sidebar() {
     // extend to ~y=22) and stays within 8px of the main pane's
     // scaffold `py-6`, keeping the two sides visually aligned along
     // the same top horizon.
-    <div className="flex h-full w-72 flex-col gap-4 px-4 pb-5 pt-8">
+    <div className="flex h-full w-[var(--spacing-sidebar)] flex-col gap-4 px-4 pb-5 pt-8">
       <header className="flex items-baseline justify-between gap-3">
         <h2 className="text-forest-900 font-serif text-2xl font-medium tracking-tight leading-none">
           MindForest
