@@ -583,6 +583,37 @@ export function writeSimPositionsToGraph(layout: ForestLayout): void {
   );
 }
 
+/**
+ * Run the simulation to rest from its current (seed) positions, capture
+ * the settled positions, then restore the nodes to exactly where they
+ * started. Used on a COLD mount to learn the resting *scale* of the
+ * constellation without disturbing it: the camera frames these settled
+ * positions so the cold view opens at the same size it will rest at —
+ * matching a warm switch-back, which fits already-settled positions —
+ * while the live bloom still animates outward from the compact seed.
+ *
+ * Mirrors buildForestGraph's cold settle (alpha 0.6, tick to cool); the
+ * loop stops at convergence, capped so corrupt data can't spin forever.
+ */
+export function presettleForFit(layout: ForestLayout): Map<NodeId, { x: number; y: number }> {
+  const { sim, simNodes } = layout;
+  const seed = simNodes.map((n) => ({ n, x: n.x ?? 0, y: n.y ?? 0 }));
+  sim.alpha(0.6);
+  for (let i = 0; i < 400 && sim.alpha() > sim.alphaMin(); i++) sim.tick();
+  const rest = new Map<NodeId, { x: number; y: number }>();
+  for (const n of simNodes) rest.set(n.id, { x: n.x ?? 0, y: n.y ?? 0 });
+  // Snap every node back to its seed with zero velocity so the upcoming
+  // reheat blooms from a crisp rest, not from leftover settle momentum.
+  for (const s of seed) {
+    s.n.x = s.x;
+    s.n.y = s.y;
+    s.n.vx = 0;
+    s.n.vy = 0;
+  }
+  sim.alpha(0); // reheat() raises-never-lowers, so leave it cold
+  return rest;
+}
+
 /** Live per-topic anchor points for the floating labels: centroid X,
  *  cluster top + headroom. O(nodes); cheap enough to run per frame
  *  while the simulation is hot. */

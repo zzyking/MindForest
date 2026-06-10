@@ -49,6 +49,7 @@ import {
   computeTopicAnchorPoints,
   createForestLayout,
   forestLayoutKey,
+  presettleForFit,
   syncForestStructure,
   type ForestLayout,
   type TopicAnchorInfo,
@@ -112,6 +113,11 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 
   // The live layout — graph + simulation, one per mount.
   const layoutRef = useRef<ForestLayout | null>(null);
+  // Cold-mount only: settled positions captured by presettleForFit, so
+  // the sigma effect can frame + freeze bbox against the resting scale
+  // (matching a warm switch-back) while nodes still bloom from the seed.
+  // Consumed once, then nulled.
+  const coldRestPositionsRef = useRef<Map<NodeId, GraphPoint> | null>(null);
   // Flipped once the layout has real structure; gates sigma creation.
   const [graphReady, setGraphReady] = useState(false);
   // React-rendered derivatives of the layout, replaced on each sync.
@@ -195,11 +201,22 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     setNeighbors(layout.neighbors);
     setGraphReady(true);
     if (isCreation) {
-      // Warm mounts (view switch back) resume nearly settled — a low
-      // simmer finishes whatever relaxing was cut off at unmount
-      // without visibly rearranging anything. Cold mounts get the
-      // full unfold (0.6 won the crossing-harness sweep).
-      reheat(res.warmFraction >= 0.95 ? 0.1 : 0.6);
+      if (res.warmFraction >= 0.95) {
+        // Warm mount (view switch back): positions resume nearly settled
+        // — a low simmer finishes whatever relaxing was cut off at
+        // unmount without visibly rearranging anything. The fit runs
+        // against these already-settled positions.
+        reheat(0.1);
+      } else {
+        // Cold mount: pre-relax once to learn the resting scale and
+        // stash those positions for the sigma effect's fit, so the cold
+        // view frames the SETTLED forest at the same size a warm
+        // switch-back would (the user's preferred size) instead of the
+        // tighter seed. Nodes then bloom from the compact seed into that
+        // pre-sized frame (0.6 won the crossing-harness sweep).
+        coldRestPositionsRef.current = presettleForFit(layout);
+        reheat(0.6);
+      }
     } else if (res.added > 0 || res.removed > 0 || res.edgesChanged) {
       // Fold the newcomers in without blasting the settled majority.
       reheat(0.3);
@@ -425,13 +442,35 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       }
     };
 
+    // Cold mount: temporarily move nodes to their pre-computed resting
+    // positions so the frozen bbox + initial fit are sized for the
+    // SETTLED forest (matching a warm switch-back — the size the user
+    // prefers). Nodes snap back to the seed right after, and the live
+    // bloom animates outward into this pre-sized frame. Synchronous, so
+    // the relaxed positions never paint. Warm mounts skip this — their
+    // current positions already are the settled ones.
+    const coldRest = coldRestPositionsRef.current;
+    coldRestPositionsRef.current = null;
+    let seedSnapshot: Map<NodeId, GraphPoint> | null = null;
+    if (coldRest) {
+      seedSnapshot = new Map();
+      graph.forEachNode((id, attrs) => {
+        seedSnapshot!.set(id as NodeId, { x: attrs.x as number, y: attrs.y as number });
+        const r = coldRest.get(id as NodeId);
+        if (r) {
+          graph.setNodeAttribute(id, "x", r.x);
+          graph.setNodeAttribute(id, "y", r.y);
+        }
+      });
+    }
+
     s.refresh();
 
-    // Freeze coordinate normalization NOW, against the creation-time
-    // bbox. Sigma otherwise renormalizes against the live bbox on
-    // every refresh — any later bbox growth (a new topic placed beyond
-    // the current extent, an agent batch widening a cluster, a node
-    // dragged outwards) would rescale the whole view as a visible
+    // Freeze coordinate normalization NOW, against the (settled, for a
+    // cold mount) bbox. Sigma otherwise renormalizes against the live
+    // bbox on every refresh — any later bbox growth (a new topic placed
+    // beyond the current extent, an agent batch widening a cluster, a
+    // node dragged outwards) would rescale the whole view as a visible
     // jump. Frozen bbox is only a coordinate-space reference; nodes
     // outside it render fine.
     s.setCustomBBox(s.getBBox());
@@ -459,7 +498,9 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     // node when there is one. fitCameraToGraph measures half-extents
     // from the centre point, so "my node is centred" and "everything
     // is visible" hold simultaneously — no post-fit re-centring that
-    // would push other clusters off-screen.
+    // would push other clusters off-screen. On a cold mount the graph
+    // currently holds the settled positions (swapped in above), so the
+    // focus centre and extents are the resting ones.
     const focusId = focusedNodeIdRef.current;
     const mountTarget =
       focusId && graph.hasNode(focusId)
@@ -483,6 +524,17 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       if (width > 0 && height > 0) {
         cameraAnchorRef.current = s.viewportToGraph({ x: width / 2, y: height / 2 });
       }
+    }
+
+    // Snap nodes back to the compact seed; the camera frame + frozen
+    // bbox are now sized for where they'll come to rest, and the live
+    // simulation blooms outward into it.
+    if (seedSnapshot) {
+      for (const [id, p] of seedSnapshot) {
+        graph.setNodeAttribute(id, "x", p.x);
+        graph.setNodeAttribute(id, "y", p.y);
+      }
+      s.refresh();
     }
 
     projectOverlays();

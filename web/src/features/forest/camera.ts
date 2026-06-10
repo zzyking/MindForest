@@ -114,11 +114,12 @@ export function getForestCameraMode({
  * edge — "my node is centred" and "everything is visible" hold at the
  * same time, so the initial framing never needs a corrective jump.
  *
- * Padding 1.6 rather than a snug 1.25 for two live-layout reasons: the
- * fit runs at mount against the *seed* positions and the relax expands
- * the constellation outward from there, and the floating dock + agent
- * bar overlay the bottom ~15% of the viewport — a tight fit reads as
- * "the tree doesn't fit on screen".
+ * Padding 1.6 rather than a snug 1.25 because the floating dock + agent
+ * bar overlay the bottom ~15% of the viewport and a snug fit reads as
+ * "the tree doesn't fit on screen". The mount fit runs against the
+ * SETTLED positions (warm mounts resume them; cold mounts presettle to
+ * learn them), so it no longer has to pre-compensate for the relax
+ * expanding a seed-sized fit outward.
  */
 export function fitCameraToGraph(
   s: Sigma,
