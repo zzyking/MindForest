@@ -63,6 +63,7 @@ import {
   type GraphPoint,
 } from "./camera";
 import { makeDrawNodeLabel } from "./drawLabel";
+import { wireNodeDrag } from "./nodeDrag";
 import { palette, withAlpha } from "./palette";
 import { useCameraAnchor } from "./useCameraAnchor";
 import { useHoverDim } from "./useHoverDim";
@@ -107,6 +108,11 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
   const [neighbors, setNeighbors] = useState<Map<NodeId, Set<NodeId>>>(() => new Map());
 
   const { reheat, ensureRunning } = useSimLoop(layoutRef, sigmaRef);
+
+  // Cursor feedback while dragging a node — React owns the cursor
+  // style, so this must be state (a raw style mutation would be
+  // clobbered by any re-render mid-drag).
+  const [draggingNode, setDraggingNode] = useState(false);
 
   // Sigma init takes a real bite of main-thread time. The outer
   // NodePage wrapper animation finishes before sigma even paints, so
@@ -375,7 +381,11 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 
     s.refresh();
 
+    const drag = wireNodeDrag(s, layout, ensureRunning, setDraggingNode);
+
     s.on("clickNode", ({ node }) => {
+      // A completed drag emits clickNode on release — don't navigate.
+      if (drag.wasDragged()) return;
       const topicId = graph.getNodeAttribute(node, "topicId") as TopicId;
       const x = graph.getNodeAttribute(node, "x") as number;
       const y = graph.getNodeAttribute(node, "y") as number;
@@ -433,6 +443,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 
     return () => {
       cancelAnimationFrame(revealRafId);
+      drag.dispose();
       // Cross-mount continuity: persist where every node ended up.
       lastLayoutPositions.clear();
       for (const n of layout.simNodes) {
@@ -486,7 +497,10 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
         className="absolute inset-0"
         role="application"
         aria-label={srSummary || "Forest canvas"}
-        style={{ cursor: hoverNode ? "pointer" : "grab", backgroundColor: "transparent" }}
+        style={{
+          cursor: draggingNode ? "grabbing" : hoverNode ? "pointer" : "grab",
+          backgroundColor: "transparent",
+        }}
       />
       <div className="sr-only">
         <p>{srSummary}</p>
