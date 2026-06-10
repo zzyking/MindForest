@@ -3,35 +3,39 @@
 //! Wires the markdown-backed `ForestRepository` (storage-fs), the
 //! SQLite-backed `Indexer` (index-sqlite), and the `Embedder` (`embed`)
 //! into a single `ForestService` that the HTTP layer (apps/api) talks
-//! to. Owns four concerns that span more than one backend:
+//! to.
 //!
-//! - **Transactional write boundary**: every node mutation does the file
-//!   write first (authoritative), then the index update. Index failures
-//!   are surfaced to the caller; the file is still committed and the
-//!   index will catch up via `rebuild_index` or watcher events.
-//! - **Watcher loop**: consumes `WatchEvent`s from storage-fs and applies
-//!   them to the index, keeping search results fresh against external
-//!   edits (the user opens a `.md` in VS Code, hits save).
-//! - **Embed worker**: drains pending `embed_jobs`, runs them through the
-//!   `Embedder` in batches, and writes vectors back into `nodes_vec`.
-//!   Wakes on a `Notify` after every node mutation; idle ticks at 60s.
-//! - **Search composition**: hybrid (FTS + vec) via reciprocal rank
-//!   fusion. When the embedder is unavailable we silently degrade to
-//!   FTS-only — the rest of the system doesn't have to care.
+//! This file keeps the spine: `bootstrap()` wiring, the `ForestService`
+//! struct, CRUD with its **transactional write boundary** (every node
+//! mutation does the file write first — authoritative — then the index
+//! update; index failures surface to the caller, the file is still
+//! committed and the index catches up via `rebuild_index` or watcher
+//! events). The cross-backend concerns each live in their own module:
+//!
+//! - [`config`] — `agent.json` persistence + keychain hydration
+//! - [`search`] — hybrid FTS + vec search, RRF fusion
+//! - [`workers`] — watcher loop + embed worker background tasks
+//! - [`model`] — embedding-model presence checks + download stream
+//! - [`agent_ops`] — proposal dispatch + runtime agent-config swaps
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use chrono::Utc;
-use futures::Stream;
-use tokio::sync::{mpsc, Notify, RwLock};
+use tokio::sync::{Notify, RwLock};
 
 use domain::{
   Embedder, ForestError, ForestRepository, ForestResult, IndexStatus, Indexer, NewNode, NewTopic,
-  Node, NodeId, NodePatch, SearchHit, Topic, TopicId, TopicSummary,
+  Node, NodeId, NodePatch, Topic, TopicId, TopicSummary,
 };
+
+mod agent_ops;
+mod config;
+mod model;
+mod search;
+mod workers;
+
+pub use model::{ModelStatusResponse, EMBEDDING_MODEL_FILES, EMBEDDING_MODEL_REPO};
 
 pub use agent::{
   merge_config_update, secret_accounts, AgentAnthropicConfig, AgentAnthropicConfigUpdate,
@@ -45,24 +49,6 @@ pub use embed::{EmbedMode, StubEmbedder, UnavailableEmbedder};
 pub use index_sqlite::{content_hash_for, SqliteIndex, EMBED_DIM};
 pub use storage_fs::{node_id_from_path, FsRepository, WatchEvent, WatcherHandle};
 
-/// The model the sidecar's MLX path expects. Hardcoded to keep the API
-/// surface narrow — the frontend never picks a model. If we ever need
-/// alternates we'll add a registry here.
-pub const EMBEDDING_MODEL_REPO: &str = "mlx-community/embeddinggemma-300m-4bit";
-
-/// Files we treat as "required" for the local model directory to be
-/// considered ready. EmbeddingGemma 300M 4-bit is small enough to fit
-/// in a single safetensors shard, so no `model-00001-of-N.safetensors`
-/// pattern needed. If the upstream switches to sharding, the download
-/// path still pulls everything; this list just gates the `present` flag.
-pub const EMBEDDING_MODEL_FILES: &[&str] = &[
-  "config.json",
-  "model.safetensors",
-  "tokenizer.json",
-  "tokenizer_config.json",
-  "special_tokens_map.json",
-];
-
 /// Wired-up service plus the watcher handle required to keep the index
 /// reactive to external edits. Callers must spawn the watcher loop
 /// (`service.clone().spawn_watcher(watcher.events)`) and the embed
@@ -72,158 +58,6 @@ pub const EMBEDDING_MODEL_FILES: &[&str] = &[
 pub struct Bootstrap {
   pub service: Arc<ForestService>,
   pub watcher: WatcherHandle,
-}
-
-/// HTTP-shaped model status reply — wraps `ModelStatus` with the local
-/// embed-mode label so the frontend can decide whether to surface the
-/// download UI at all.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ModelStatusResponse {
-  pub repo_id: String,
-  pub dir: PathBuf,
-  pub present: bool,
-  pub files: Vec<FileStatus>,
-  /// `"off"` / `"stub"` / `"sidecar"` — the user-visible name of the
-  /// embedder backend currently in play.
-  pub embed_mode: String,
-}
-
-fn embed_mode_label(mode: &EmbedMode) -> String {
-  match mode {
-    EmbedMode::Off => "off".into(),
-    EmbedMode::Stub => "stub".into(),
-    EmbedMode::Sidecar { .. } => "sidecar".into(),
-  }
-}
-
-/// Read `agent.json` from disk and hydrate API keys from the SecretStore.
-///
-/// Behavior:
-/// 1. Read the JSON file (missing/malformed → defaults, fail soft —
-///    don't brick the app over a broken settings file).
-/// 2. If the JSON contains legacy plaintext `api_key` fields (pre-keychain
-///    installs), migrate them into the SecretStore.
-/// 3. For each provider with no key already in memory, pull from the
-///    SecretStore.
-/// 4. If anything was migrated, rewrite the file atomically so the
-///    plaintext is gone on the next boot — old keys never linger on
-///    disk after they've been moved to the keychain.
-async fn load_and_hydrate_agent_config(
-  path: &std::path::Path,
-  secret_store: &Arc<dyn SecretStore>,
-) -> AgentConfig {
-  let bytes = match tokio::fs::read(path).await {
-    Ok(b) => b,
-    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-      // No file yet — still hydrate from keychain so a user who set
-      // keys on a prior install gets them back even after `agent.json`
-      // is deleted.
-      let mut cfg = AgentConfig::default();
-      hydrate_secrets(&mut cfg, secret_store);
-      return cfg;
-    }
-    Err(e) => {
-      tracing::warn!("agent config read failed at {path:?}: {e}; using defaults");
-      return AgentConfig::default();
-    }
-  };
-  let mut cfg = match serde_json::from_slice::<AgentConfig>(&bytes) {
-    Ok(c) => c,
-    Err(e) => {
-      tracing::warn!("agent config parse failed at {path:?}: {e}; using defaults");
-      AgentConfig::default()
-    }
-  };
-
-  // Step 2 — migrate any legacy plaintext keys.
-  let mut migrated = false;
-  if let Some(k) = cfg.openai.api_key.as_deref() {
-    if !k.is_empty() {
-      if let Err(e) = secret_store.set(secret_accounts::OPENAI, k) {
-        tracing::warn!("migrate openai api_key into keychain failed: {e}");
-      } else {
-        migrated = true;
-      }
-    }
-  }
-  if let Some(k) = cfg.anthropic.api_key.as_deref() {
-    if !k.is_empty() {
-      if let Err(e) = secret_store.set(secret_accounts::ANTHROPIC, k) {
-        tracing::warn!("migrate anthropic api_key into keychain failed: {e}");
-      } else {
-        migrated = true;
-      }
-    }
-  }
-
-  // Step 3 — for providers without an in-memory key, read from keychain.
-  hydrate_secrets(&mut cfg, secret_store);
-
-  // Step 4 — rewrite the file so plaintext keys are wiped.
-  if migrated {
-    tracing::info!(
-      "migrated legacy plaintext agent api_key(s) from {path:?} into the OS keychain ({}). \
-       The file has been rewritten without secrets.",
-      SECRET_SERVICE
-    );
-    if let Err(e) = write_agent_config_file(path, &cfg).await {
-      tracing::warn!("failed to rewrite agent.json after migration: {e}");
-    }
-  }
-
-  cfg
-}
-
-/// Pull `api_key`s from the SecretStore into the in-memory config for
-/// any provider that doesn't already have one. Errors are logged and
-/// swallowed — a keychain access failure shouldn't take the agent path
-/// down; the user will see an empty `api_key` in the settings UI and
-/// can re-enter.
-fn hydrate_secrets(cfg: &mut AgentConfig, secret_store: &Arc<dyn SecretStore>) {
-  if cfg.openai.api_key.as_deref().unwrap_or("").is_empty() {
-    match secret_store.get(secret_accounts::OPENAI) {
-      Ok(Some(k)) => cfg.openai.api_key = Some(k),
-      Ok(None) => {}
-      Err(e) => tracing::warn!("read openai api_key from keychain failed: {e}"),
-    }
-  }
-  if cfg.anthropic.api_key.as_deref().unwrap_or("").is_empty() {
-    match secret_store.get(secret_accounts::ANTHROPIC) {
-      Ok(Some(k)) => cfg.anthropic.api_key = Some(k),
-      Ok(None) => {}
-      Err(e) => tracing::warn!("read anthropic api_key from keychain failed: {e}"),
-    }
-  }
-}
-
-/// Atomic-ish write of `agent.json`. Shared between the initial migration
-/// path and the runtime `set_agent_config` path. Writes to a sibling
-/// `.tmp` then renames, so a crash mid-write can't leave a truncated
-/// file. Sets 0600 on unix.
-async fn write_agent_config_file(
-  path: &std::path::Path,
-  config: &AgentConfig,
-) -> Result<(), String> {
-  let bytes =
-    serde_json::to_vec_pretty(config).map_err(|e| format!("serialize agent config: {e}"))?;
-  if let Some(parent) = path.parent() {
-    tokio::fs::create_dir_all(parent)
-      .await
-      .map_err(|e| format!("create {parent:?}: {e}"))?;
-  }
-  let tmp = path.with_extension("json.tmp");
-  tokio::fs::write(&tmp, &bytes)
-    .await
-    .map_err(|e| format!("write {tmp:?}: {e}"))?;
-  #[cfg(unix)]
-  {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await;
-  }
-  tokio::fs::rename(&tmp, path)
-    .await
-    .map_err(|e| format!("rename {tmp:?}→{path:?}: {e}"))?;
-  Ok(())
 }
 
 /// Open the vault, prepare the derived SQLite index, build an embedder
@@ -268,7 +102,7 @@ pub async fn bootstrap(
   // `load_and_hydrate_agent_config`.
   let secret_store: Arc<dyn SecretStore> = Arc::new(KeyringStore::new(SECRET_SERVICE));
   let agent_config_path = data_dir.join("agent.json");
-  let agent_config = load_and_hydrate_agent_config(&agent_config_path, &secret_store).await;
+  let agent_config = config::load_and_hydrate_agent_config(&agent_config_path, &secret_store).await;
   let proposer = agent::build_proposer_from_config(&agent_config);
   let service = Arc::new(ForestService::new(
     repo.clone(),
@@ -336,7 +170,7 @@ impl ForestService {
       index,
       embedder,
       embed_notify: Arc::new(Notify::new()),
-      embed_mode_label: embed_mode_label(&embed_mode),
+      embed_mode_label: model::embed_mode_label(&embed_mode),
       downloader,
       proposer: Arc::new(RwLock::new(proposer)),
       agent_config: Arc::new(RwLock::new(agent_config)),
@@ -474,177 +308,13 @@ impl ForestService {
     Ok(())
   }
 
-  // ─── Search ───────────────────────────────────────────────────────
-
-  /// Hybrid search. Always runs FTS; runs vec in parallel iff the
-  /// embedder is available. Results are fused via Reciprocal Rank Fusion
-  /// (k_rrf=60) — robust without per-feature score normalization, and
-  /// well-studied as a hybrid baseline.
-  pub async fn search(
-    &self,
-    query: &str,
-    topic: Option<&TopicId>,
-    k: usize,
-  ) -> ForestResult<Vec<SearchHit>> {
-    if !self.embedder.available() {
-      return self.index.search_fts(query, topic, k).await;
-    }
-    // Over-fetch on each side so the fusion has room to elevate
-    // candidates that show up near-but-not-top in either ranking.
-    let candidate_k = (k * 2).max(10);
-    let q_str = query.to_string();
-    let topic_owned = topic.cloned();
-
-    // Borrow-friendly closures so both branches can reference self.
-    let fts_fut = async {
-      self
-        .index
-        .search_fts(&q_str, topic_owned.as_ref(), candidate_k)
-        .await
-    };
-    let vec_fut = async {
-      // Embed the query text. If embedding fails (e.g. sidecar dies
-      // mid-request), we fall through to FTS-only by yielding an empty
-      // Vec — see how `match` handles it below.
-      let mut embed_out = self.embedder.embed(std::slice::from_ref(&q_str)).await?;
-      let q_vec = embed_out
-        .pop()
-        .ok_or_else(|| ForestError::Embed("empty embed result for query".into()))?;
-      self
-        .index
-        .search_vec(&q_vec, topic_owned.as_ref(), candidate_k)
-        .await
-    };
-
-    let (fts_res, vec_res) = tokio::join!(fts_fut, vec_fut);
-    let fts_hits = fts_res?;
-    let vec_hits = vec_res.unwrap_or_else(|e| {
-      tracing::debug!("search: vec arm failed, FTS-only: {e}");
-      Vec::new()
-    });
-
-    Ok(fuse_rrf(fts_hits, vec_hits, k))
-  }
+  // ─── Index ────────────────────────────────────────────────────────
 
   pub async fn index_status(&self) -> ForestResult<IndexStatus> {
     let mut status = self.index.status().await?;
     status.embed_available = self.embedder.available();
     Ok(status)
   }
-
-  // ─── Model download ──────────────────────────────────────────────
-
-  /// Local snapshot of the EmbeddingGemma weights — does the model
-  /// directory contain every file we expect to hand to the sidecar?
-  /// Augmented with the embedder mode so the frontend can decide
-  /// whether the download UI is even relevant.
-  pub async fn model_status(&self) -> ForestResult<ModelStatusResponse> {
-    let local = self
-      .downloader
-      .local_status(EMBEDDING_MODEL_REPO, EMBEDDING_MODEL_FILES)
-      .await?;
-    Ok(ModelStatusResponse {
-      repo_id: local.repo_id,
-      dir: local.dir,
-      present: local.present,
-      files: local.files,
-      embed_mode: self.embed_mode_label.clone(),
-    })
-  }
-
-  /// Stream the EmbeddingGemma download. Each event is emitted exactly
-  /// once and the stream ends after `Done` (or `Error`). Caller is the
-  /// HTTP handler that turns events into SSE frames.
-  pub fn download_model(&self) -> impl Stream<Item = DownloadEvent> + Send + 'static {
-    self.downloader.download(EMBEDDING_MODEL_REPO.to_string())
-  }
-
-  // ─── Agent ───────────────────────────────────────────────────────
-
-  /// Build the agent context (full topic + node list) and dispatch.
-  /// The returned stream is alive for the duration of one HTTP SSE
-  /// response; the route handler maps each `AgentEvent` to a frame.
-  pub async fn propose(
-    &self,
-    topic_id: &TopicId,
-    focused_node_id: Option<NodeId>,
-    prompt: String,
-    history: Vec<agent::AgentTurn>,
-  ) -> ForestResult<AgentStream> {
-    let topic = self.repo.get_topic(topic_id).await?;
-    let nodes = self.repo.list_nodes_in_topic(topic_id).await?;
-    let req = AgentRequest {
-      topic,
-      nodes,
-      focused_node_id,
-      prompt,
-      history,
-    };
-    let proposer = self.proposer.read().await.clone();
-    proposer.propose(req).await
-  }
-
-  /// Backend label, e.g. `"stub"`, `"gpt-4o-mini (api.openai.com)"`,
-  /// `"claude-sonnet-4-6 (anthropic)"`. Surfaced via the agent status
-  /// endpoint so the UI can render a "powered by …" hint.
-  pub async fn agent_backend(&self) -> String {
-    self.proposer.read().await.backend().to_string()
-  }
-
-  /// Snapshot of the persisted agent configuration, with API keys
-  /// included verbatim. The HTTP route exposes this on loopback only;
-  /// callers outside the service should not relay it elsewhere.
-  pub async fn agent_config(&self) -> AgentConfig {
-    self.agent_config.read().await.clone()
-  }
-
-  /// Persist a new `AgentConfig` and rebuild the proposer. Returns the
-  /// new backend label so the caller (HTTP route) can echo it back to
-  /// the UI without a second round-trip.
-  ///
-  /// API keys are written through to the `SecretStore` (OS keychain).
-  /// The serialized `agent.json` does not contain plaintext keys —
-  /// `AgentOpenAIConfig::api_key` and friends are `skip_serializing`.
-  /// An empty/None key clears the keychain entry, matching the user's
-  /// intent ("revoke this provider's key").
-  pub async fn set_agent_config(&self, config: AgentConfig) -> ForestResult<String> {
-    // Secrets first. Doing this before the file write means a keychain
-    // failure surfaces as a hard error rather than a half-applied state
-    // where the file says one provider but the keychain says another.
-    self.write_secret(secret_accounts::OPENAI, config.openai.api_key.as_deref())?;
-    self.write_secret(
-      secret_accounts::ANTHROPIC,
-      config.anthropic.api_key.as_deref(),
-    )?;
-    if let Some(path) = self.agent_config_path.as_ref() {
-      write_agent_config_file(path, &config)
-        .await
-        .map_err(ForestError::Storage)?;
-    }
-    let new_proposer = agent::build_proposer_from_config(&config);
-    let backend = new_proposer.backend().to_string();
-    *self.proposer.write().await = new_proposer;
-    *self.agent_config.write().await = config;
-    Ok(backend)
-  }
-
-  /// `Some("non-empty")` writes the secret; `None` or `Some("")` deletes
-  /// it. Errors map onto `ForestError::Storage` so the route handler
-  /// returns a clean 500 with the underlying reason.
-  fn write_secret(&self, account: &str, value: Option<&str>) -> ForestResult<()> {
-    match value {
-      Some(v) if !v.is_empty() => self
-        .secret_store
-        .set(account, v)
-        .map_err(|e| ForestError::Storage(format!("keychain set {account}: {e}"))),
-      _ => self
-        .secret_store
-        .delete(account)
-        .map_err(|e| ForestError::Storage(format!("keychain delete {account}: {e}"))),
-    }
-  }
-
-  // ─── Index ────────────────────────────────────────────────────────
 
   pub async fn rebuild_index(&self) -> ForestResult<()> {
     self.index.rebuild_from(self.repo.as_ref()).await?;
@@ -653,183 +323,6 @@ impl ForestService {
     self.embed_notify.notify_one();
     Ok(())
   }
-
-  // ─── Watcher integration ──────────────────────────────────────────
-
-  /// Spawn a background task that consumes filesystem events and keeps
-  /// the index in sync. Returns a `JoinHandle`; the task ends when the
-  /// stream closes (e.g., the `WatcherHandle` is dropped).
-  pub fn spawn_watcher(
-    self: Arc<Self>,
-    mut events: mpsc::UnboundedReceiver<WatchEvent>,
-  ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-      while let Some(ev) = events.recv().await {
-        if let Err(e) = self.handle_watch_event(ev).await {
-          tracing::warn!("watcher event handler error: {e}");
-        }
-      }
-    })
-  }
-
-  async fn handle_watch_event(&self, ev: WatchEvent) -> ForestResult<()> {
-    match ev {
-      WatchEvent::Changed(path) => {
-        let Some(id) = node_id_from_path(&path) else {
-          return Ok(());
-        };
-        match self.repo.read_node(&id).await {
-          Ok(node) => {
-            self.index.upsert(&node).await?;
-            self.embed_notify.notify_one();
-          }
-          Err(ForestError::NodeNotFound(_)) => {
-            self.index.delete(&id).await?;
-          }
-          Err(e) => return Err(e),
-        }
-      }
-      WatchEvent::Removed(path) => {
-        if let Some(id) = node_id_from_path(&path) {
-          self.index.delete(&id).await?;
-        }
-      }
-    }
-    Ok(())
-  }
-
-  // ─── Embed worker ─────────────────────────────────────────────────
-
-  /// Spawn the embed worker. Idempotent in spirit but not enforced —
-  /// callers spawn exactly once at boot. The worker runs forever; it
-  /// only stops if the runtime is shut down.
-  pub fn spawn_embed_worker(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-      // First pass on start so any leftover pending rows from a prior
-      // session are drained without waiting for a notify.
-      if let Err(e) = self.run_embed_batch().await {
-        tracing::debug!("embed worker initial batch: {e}");
-      }
-      loop {
-        tokio::select! {
-          _ = self.embed_notify.notified() => {}
-          _ = tokio::time::sleep(Duration::from_secs(60)) => {}
-        }
-        if !self.embedder.available() {
-          continue;
-        }
-        if let Err(e) = self.run_embed_batch().await {
-          tracing::warn!("embed worker batch: {e}");
-        }
-      }
-    })
-  }
-
-  async fn run_embed_batch(&self) -> ForestResult<()> {
-    if !self.embedder.available() {
-      return Ok(());
-    }
-    // Fetch a batch. The plan calls for 16 — small enough to keep
-    // sidecar batches snappy, large enough to amortize JSON overhead.
-    let jobs = self.index.pending_embed_jobs(16).await?;
-    if jobs.is_empty() {
-      return Ok(());
-    }
-
-    // Read each node, dropping any whose content_hash has drifted (a
-    // newer upsert is already pending and will land us back here with
-    // the right hash) or that have been deleted in flight.
-    let mut texts = Vec::with_capacity(jobs.len());
-    let mut ids = Vec::with_capacity(jobs.len());
-    let mut hashes = Vec::with_capacity(jobs.len());
-    for job in jobs {
-      match self.repo.read_node(&job.id).await {
-        Ok(n) => {
-          let current = content_hash_for(&n.title, &n.content);
-          if current != job.content_hash {
-            tracing::debug!("embed worker: skipping {}, hash drift", n.id);
-            continue;
-          }
-          // Embed both title and body — the title carries a lot of
-          // semantic weight per token, especially for short notes.
-          texts.push(format!("{}\n\n{}", n.title, n.content));
-          ids.push(n.id);
-          hashes.push(current);
-        }
-        Err(ForestError::NodeNotFound(_)) => {
-          tracing::debug!("embed worker: node {} gone, skipping", job.id);
-        }
-        Err(e) => {
-          tracing::warn!("embed worker: read_node({}) error: {e}", job.id);
-        }
-      }
-    }
-    if texts.is_empty() {
-      return Ok(());
-    }
-
-    let vectors = self.embedder.embed(&texts).await?;
-    if vectors.len() != texts.len() {
-      return Err(ForestError::Embed(format!(
-        "embedder returned {} vectors for {} texts",
-        vectors.len(),
-        texts.len()
-      )));
-    }
-
-    for ((id, hash), vec) in ids.iter().zip(hashes.iter()).zip(vectors.iter()) {
-      if let Err(e) = self.index.upsert_embedding(id, hash, vec).await {
-        tracing::warn!("embed worker: upsert_embedding({}) error: {e}", id);
-        let _ = self.index.mark_embed_error(id, &e.to_string()).await;
-      }
-    }
-    Ok(())
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Reciprocal Rank Fusion
-// ─────────────────────────────────────────────────────────────────────
-
-/// Standard RRF: each ranking contributes `1 / (k_rrf + rank)` per id;
-/// final score is the sum across rankings. The constant 60 is the value
-/// recommended by Cormack et al. and commonly used elsewhere; it's
-/// robust enough that we don't expose it as a knob.
-fn fuse_rrf(
-  fts: Vec<SearchHit>,
-  vec: Vec<SearchHit>,
-  k: usize,
-) -> Vec<SearchHit> {
-  const K_RRF: f32 = 60.0;
-  let mut scores: HashMap<NodeId, f32> = HashMap::new();
-  let mut details: HashMap<NodeId, SearchHit> = HashMap::new();
-
-  let push = |hits: Vec<SearchHit>,
-              scores: &mut HashMap<NodeId, f32>,
-              details: &mut HashMap<NodeId, SearchHit>| {
-    for (rank, hit) in hits.into_iter().enumerate() {
-      *scores.entry(hit.id).or_insert(0.0) += 1.0 / (K_RRF + rank as f32 + 1.0);
-      // Prefer the FTS detail (it has the highlighted snippet); the vec
-      // arm fills in `snippet=""`, so an existing entry never gets
-      // downgraded by being overwritten with vec data.
-      details.entry(hit.id).or_insert(hit);
-    }
-  };
-  push(fts, &mut scores, &mut details);
-  push(vec, &mut scores, &mut details);
-
-  let mut entries: Vec<(NodeId, f32)> = scores.into_iter().collect();
-  entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-  entries
-    .into_iter()
-    .take(k)
-    .filter_map(|(id, score)| {
-      details.remove(&id).map(|mut h| {
-        h.score = score;
-        h
-      })
-    })
-    .collect()
 }
 
 #[cfg(test)]
@@ -1359,48 +852,6 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn legacy_plaintext_api_key_migrates_into_keychain() {
-    let tmp = TempDir::new().unwrap();
-    let path = tmp.path().join("agent.json");
-    // Pre-keychain build: api_key sits in the JSON in plaintext.
-    let legacy = serde_json::json!({
-      "provider": "openai",
-      "openai": { "base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini", "api_key": "sk-legacy-abcd1234" },
-      "anthropic": { "model": "claude-sonnet-4-6", "api_key": null }
-    });
-    tokio::fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap())
-      .await
-      .unwrap();
-
-    let store: Arc<dyn SecretStore> = Arc::new(InMemoryStore::new());
-    let cfg = super::load_and_hydrate_agent_config(&path, &store).await;
-
-    // In-memory state still carries the key (so the proposer can build).
-    assert_eq!(cfg.openai.api_key.as_deref(), Some("sk-legacy-abcd1234"));
-    // SecretStore got it.
-    assert_eq!(
-      store.get(secret_accounts::OPENAI).unwrap().as_deref(),
-      Some("sk-legacy-abcd1234"),
-    );
-    // File was rewritten without the plaintext field.
-    let rewritten: serde_json::Value =
-      serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
-    assert!(rewritten.get("openai").unwrap().get("api_key").is_none());
-  }
-
-  #[tokio::test]
-  async fn missing_agent_json_hydrates_from_keychain() {
-    let tmp = TempDir::new().unwrap();
-    let path = tmp.path().join("agent.json"); // not created
-    let store: Arc<dyn SecretStore> = Arc::new(InMemoryStore::new());
-    store
-      .set(secret_accounts::ANTHROPIC, "sk-ant-from-store")
-      .unwrap();
-    let cfg = super::load_and_hydrate_agent_config(&path, &store).await;
-    assert_eq!(cfg.anthropic.api_key.as_deref(), Some("sk-ant-from-store"));
-  }
-
-  #[tokio::test]
   async fn set_agent_config_writes_secret_then_file() {
     let (tmp, svc) = fixture_with_persistence().await;
     let mut cfg = AgentConfig::default();
@@ -1464,5 +915,49 @@ mod tests {
     assert_eq!(hits[0].id, n.id);
     let status = svc.index_status().await.unwrap();
     assert!(!status.embed_available);
+  }
+
+  #[tokio::test]
+  async fn search_degrades_to_fts_when_vec_arm_breaks() {
+    // An embedder that claims availability but emits vectors of the
+    // wrong dimension — the index-side search_vec call fails (the vec
+    // table is declared at EMBED_DIM). The search must still answer
+    // from FTS instead of erroring out; the failure is logged at
+    // error level (see search.rs module docs).
+    let tmp = TempDir::new().unwrap();
+    let repo = FsRepository::open(tmp.path()).await.unwrap();
+    let index = SqliteIndex::open_in_memory().await.unwrap();
+    let downloader = ModelDownloader::new(tmp.path().join("models"));
+    let secret_store: Arc<dyn SecretStore> = Arc::new(InMemoryStore::new());
+    let svc = Arc::new(ForestService::new(
+      Arc::new(repo),
+      Arc::new(index),
+      Arc::new(StubEmbedder::new(EMBED_DIM + 3)),
+      EmbedMode::Stub,
+      downloader,
+      Arc::new(StubProposer::new()),
+      AgentConfig::default(),
+      None,
+      secret_store,
+    ));
+    let topic = svc
+      .create_topic(NewTopic { title: "BadDim".into(), slug: None })
+      .await
+      .unwrap();
+    let n = svc
+      .create_node(NewNode {
+        topic: topic.id.clone(),
+        parent: Some(topic.root_node_id),
+        title: "Node".into(),
+        content: "degradeword999".into(),
+        node_type: NodeType::Concept,
+      })
+      .await
+      .unwrap();
+    let hits = svc.search("degradeword999", None, 10).await.unwrap();
+    assert!(
+      hits.iter().any(|h| h.id == n.id),
+      "FTS hit must survive a broken vec arm"
+    );
   }
 }
