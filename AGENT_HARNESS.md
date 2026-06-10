@@ -1,6 +1,6 @@
 # Agent Harness Design
 
-> Status: design proposal, not yet implemented. Captures the shape of how the in-app agent should plug into the vault — what context goes in, what operations come out, how those operations land. Refer back when implementing phases H1..H4 below.
+> Status: **H1 implemented** (`app-core/src/context.rs`, 2026-06-11); H2–H4 remain design. Captures the shape of how the in-app agent should plug into the vault — what context goes in, what operations come out, how those operations land. Refer back when implementing phases H1..H4 below.
 
 ## 1. Why
 
