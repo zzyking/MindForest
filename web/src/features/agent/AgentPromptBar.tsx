@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { Sparkles } from "lucide-react";
+import { Globe, Sparkles } from "lucide-react";
 
 import { useMainPaneShiftClass } from "@/app/mainPaneShift";
 import { cn } from "@/lib/cn";
@@ -147,12 +147,12 @@ export function AgentPromptBar() {
           )}
         >
           {/* Scope switch: which conversation the bar talks to. One
-              compact chip — the text is the CURRENT scope; the filled
-              vs quiet treatment (Global = solid) is what signals a
-              two-state toggle, with hover + tooltip as the action
-              cues. Topic conversations swap with the open topic;
-              Global is one conversation that follows the user across
-              topics. */}
+              compact chip where BOTH states wear a fill — light tint
+              for Topic, solid for Global — so it reads as a two-state
+              toggle rather than a static label, and the icon morphs
+              with it (✨ agent mark ↔ globe). Topic conversations
+              swap with the open topic; Global is one conversation
+              that follows the user across topics. */}
           <button
             type="button"
             onClick={() => {
@@ -168,13 +168,31 @@ export function AgentPromptBar() {
             }
             className={cn(
               "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.12em]",
-              "transition-colors duration-200 ease-out",
+              "shadow-soft transition-colors duration-200 ease-out",
               scope === "global"
-                ? "bg-forest-800 text-sand-100"
-                : "text-forest-500 hover:bg-forest-100 hover:text-forest-800",
+                ? "bg-forest-800 text-sand-100 hover:bg-forest-700"
+                : "bg-forest-100 text-forest-700 hover:bg-forest-200",
             )}
           >
-            <Sparkles size={12} strokeWidth={2} aria-hidden />
+            {/* key remounts the icon so the swap gets a small
+                scale-in entrance instead of an abrupt cut. */}
+            {scope === "global" ? (
+              <Globe
+                key="global"
+                size={12}
+                strokeWidth={2}
+                aria-hidden
+                className="animate-[scale-in_200ms_cubic-bezier(0.2,0.8,0.2,1)_both]"
+              />
+            ) : (
+              <Sparkles
+                key="topic"
+                size={12}
+                strokeWidth={2}
+                aria-hidden
+                className="animate-[scale-in_200ms_cubic-bezier(0.2,0.8,0.2,1)_both]"
+              />
+            )}
             {/* Reserve the wider label's width so toggling doesn't
                 nudge the input edge. */}
             <span className="min-w-[2.75rem] text-center">
