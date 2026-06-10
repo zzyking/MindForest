@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeftRight, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 
 import { useMainPaneShiftClass } from "@/app/mainPaneShift";
 import { cn } from "@/lib/cn";
@@ -147,13 +147,12 @@ export function AgentPromptBar() {
           )}
         >
           {/* Scope switch: which conversation the bar talks to. One
-              compact chip — the text is the CURRENT scope, the ⇄ icon
-              is the action cue that disambiguates it from a static
-              label (the bare cycler read as "state or action?").
-              Global additionally fills the chip: the exceptional mode
-              should announce itself at a glance. Topic conversations
-              swap with the open topic; Global is one conversation
-              that follows the user across topics. */}
+              compact chip — the text is the CURRENT scope; the filled
+              vs quiet treatment (Global = solid) is what signals a
+              two-state toggle, with hover + tooltip as the action
+              cues. Topic conversations swap with the open topic;
+              Global is one conversation that follows the user across
+              topics. */}
           <button
             type="button"
             onClick={() => {
@@ -181,12 +180,6 @@ export function AgentPromptBar() {
             <span className="min-w-[2.75rem] text-center">
               {scope === "topic" ? "Topic" : "Global"}
             </span>
-            <ArrowLeftRight
-              size={11}
-              strokeWidth={2}
-              aria-hidden
-              className={scope === "global" ? "text-sand-100/70" : "text-forest-400"}
-            />
           </button>
           <input
             ref={inputRef}
