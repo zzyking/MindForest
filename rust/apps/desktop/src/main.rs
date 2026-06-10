@@ -94,23 +94,26 @@ fn main() {
         WebviewUrl::App("index.html".into())
       };
 
-      // WKWebView background — keep it matched to `--color-forest-50` in
-      // `web/src/styles/tokens.css` so any 1-frame WKWebView lag during
-      // a resize doesn't expose a contrasting color underneath. Keep
-      // both this value and the NSWindow fix below in lockstep with
-      // tokens.css.
-      // `TitleBarStyle::Overlay` removes the system titlebar entirely;
-      // traffic lights float at top-left and the WKWebView content
-      // extends to the very top of the window. `hidden_title(true)`
-      // suppresses the window title text that would otherwise sit
-      // alongside the lights.
+      // `background_color` lands on both NSWindow.backgroundColor and
+      // the WKWebView background. During a live resize the WKWebView
+      // compositor lags the window frame by a frame or two; the strip it
+      // exposes shows the window background — system default is near
+      // black in dark appearance. Matching it to `--color-forest-50`
+      // (tokens.css) makes the lag invisible. This is also what the
+      // left-edge body-pinning in `web/src/main.tsx` relies on: the
+      // pinned body reveals this color on the left during the drag.
+      // Keep in lockstep with tokens.css.
       //
-      // We deliberately leave NSWindow.backgroundColor at its system
-      // default — see `feedback_wkwebview_rendering.md` memory note.
-      // The drag affordance is restored by a `data-tauri-drag-region`
-      // strip at the top of `WorkspaceShell` (requires the
-      // `core:window:allow-start-dragging` permission in
-      // `capabilities/default.json`).
+      // Caveat from `feedback_wkwebview_rendering.md`: setting
+      // NSWindow.backgroundColor flattens the vibrancy material of a
+      // *standard* titlebar. This window uses `TitleBarStyle::Overlay`
+      // (no titlebar material at all — content extends to the top, the
+      // traffic lights float over it), so the caveat doesn't apply.
+      // `hidden_title(true)` suppresses the window title text that
+      // would otherwise sit alongside the lights. The drag affordance
+      // is restored by a `data-tauri-drag-region` strip at the top of
+      // `WorkspaceShell` (requires `core:window:allow-start-dragging`
+      // in `capabilities/default.json`).
       WebviewWindowBuilder::new(app, "main", url)
         .title("MindForest")
         .inner_size(1280.0, 800.0)
@@ -118,6 +121,8 @@ fn main() {
         .resizable(true)
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .hidden_title(true)
+        // forest-50 #f5f7f5
+        .background_color(tauri::window::Color(0xf5, 0xf7, 0xf5, 0xff))
         .initialization_script(&init_script)
         .build()?;
 

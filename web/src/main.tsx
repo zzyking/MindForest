@@ -18,9 +18,11 @@ import "@/styles/globals.css";
 //     We detect this and pin <body> to viewport-right with a fixed
 //     width snapshot — the inner layout (sidebar grid, main pane,
 //     CodeMirror) sees no width change at all, so no reflow happens.
-//     The NSWindow's left side reveals its own backgroundColor
-//     (forest-50, set in rust/apps/desktop/src/main.rs) during the
-//     drag, then on release we unpin and a single reflow catches up.
+//     The window's left side reveals the window backgroundColor during
+//     the drag — set to forest-50 via `background_color()` in
+//     rust/apps/desktop/src/main.rs (keep both in lockstep with
+//     tokens.css) — then on release we unpin and a single reflow
+//     catches up.
 //
 // Right-edge drags don't move `screenX`, so they skip the pinning and
 // keep the current "content reflows with lag" behaviour the user
