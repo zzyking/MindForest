@@ -208,6 +208,28 @@ html[data-resizing] .bg-noise::before {
   }
 }
 
+/* AgentPromptBar scope chip, Topic state — the shadow breathes on a
+   slow cycle so the chip reads as "alive / switchable" at rest.
+   Base value mirrors --shadow-soft (tokens.css); the 50% frame deepens
+   it slightly and adds a close-fitting halo. Deliberately a ~3s
+   breath, not a blink: the chip should register in peripheral vision
+   without competing with the user's prose. Under
+   prefers-reduced-motion the global animation collapse freezes this
+   and the static `shadow-soft` class underneath shows through. */
+@keyframes chip-breathe {
+  0%,
+  100% {
+    box-shadow:
+      0 20px 40px -10px rgba(24, 40, 34, 0.15),
+      0 0 0 0 rgba(24, 40, 34, 0);
+  }
+  50% {
+    box-shadow:
+      0 20px 40px -10px rgba(24, 40, 34, 0.24),
+      0 0 10px 1px rgba(24, 40, 34, 0.12);
+  }
+}
+
 /* Modal-style dialogs scale + fade in instead of popping. */
 @keyframes scale-in {
   from {

@@ -171,7 +171,10 @@ export function AgentPromptBar() {
               "shadow-soft transition-colors duration-200 ease-out",
               scope === "global"
                 ? "bg-forest-800 text-sand-100 hover:bg-forest-700"
-                : "bg-forest-100 text-forest-700 hover:bg-forest-200",
+                : // chip-breathe overrides the static shadow while
+                  // animating; shadow-soft stays as the reduced-motion
+                  // fallback (globals.css collapses animations).
+                  "bg-forest-100 text-forest-700 hover:bg-forest-200 animate-[chip-breathe_3s_ease-in-out_infinite]",
             )}
           >
             {/* key remounts the icon so the swap gets a small
