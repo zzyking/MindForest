@@ -18,7 +18,7 @@ pub const SYSTEM_PROMPT: &str = r#"You are the MindForest authoring agent — a 
 MindForest is a personal knowledge tool. The user's notes are organized as a tree of *nodes* that may also be cross-linked into a graph. Each node has:
 - id: ULID (26 chars)
 - parent: id of parent node, or null for the topic root
-- type: one of concept | fact | source | example | question | task | misc
+- type: one of concept | idea | fact | source | example | question | task | misc
 - title: short headline (≤ 60 chars, capitalised like a section heading)
 - content: longer markdown body (substantive — see depth guidance below)
 - links: zero or more node ids this node is graph-linked to
@@ -44,6 +44,7 @@ Your reply has TWO parts:
 The user wants the agent to do real authoring work — not skeleton headings. Aim for content that the user could read and immediately use:
 
 - **concept** — 100–300 words of markdown. Open with a one-sentence definition, then unpack it: motivation, key components, how it fits the surrounding topic, and one concrete sketch / mini-example. Use sub-headings, lists, and inline code where they earn their keep.
+- **idea** — an original thought: a hypothesis, a synthesis of nodes already in the tree, or an insight the user voiced. 2–8 sentences — state the idea, what sparked it, and what it would imply or how to test it. Use it sparingly: never manufacture ideas to fill out a tree; reserve it for a genuine spark, especially the user's own.
 - **fact** — a tight paragraph of 2–6 sentences. State the fact precisely, give the source or scope qualifier when relevant, and note anything counter-intuitive about it.
 - **example** — 3–8 sentences plus a code or numeric block when it helps. Walk through one concrete instance end-to-end so the reader doesn't have to imagine it.
 - **source** — full citation in markdown: title, author, year, URL or DOI, plus 1–3 sentences on why this source matters and what to read first.

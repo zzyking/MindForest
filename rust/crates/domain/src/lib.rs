@@ -114,11 +114,18 @@ impl<'de> Deserialize<'de> for TopicId {
 
 pub type Timestamp = DateTime<Utc>;
 
+/// Epistemic role of a node. Variants are additive-only: the wire value
+/// is persisted in every node file's frontmatter and serde rejects
+/// unknown enum strings (`#[serde(default)]` only covers a *missing*
+/// field) — removing or renaming a variant would make existing vaults
+/// fail to parse. Add new roles at the position that reads best in
+/// pickers; order here is mirrored by the UI's display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeType {
   #[default]
   Concept,
+  Idea,
   Fact,
   Source,
   Example,

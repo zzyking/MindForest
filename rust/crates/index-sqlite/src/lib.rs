@@ -566,6 +566,7 @@ fn row_to_tuple(
 fn node_type_to_str(t: NodeType) -> &'static str {
   match t {
     NodeType::Concept => "concept",
+    NodeType::Idea => "idea",
     NodeType::Fact => "fact",
     NodeType::Source => "source",
     NodeType::Example => "example",

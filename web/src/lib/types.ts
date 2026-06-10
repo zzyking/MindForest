@@ -14,6 +14,7 @@ export type TopicId = string; // slug
 
 export type NodeType =
   | "concept"
+  | "idea"
   | "fact"
   | "source"
   | "example"

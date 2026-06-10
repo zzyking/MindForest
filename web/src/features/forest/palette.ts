@@ -63,6 +63,7 @@ export function palette(): Palette {
     borderRgb: hexToRgb(border),
     types: {
       concept: v("--color-type-concept", "#7b9082"),
+      idea: v("--color-type-idea", "#a98aa0"),
       fact: v("--color-type-fact", "#a8b3a0"),
       source: v("--color-type-source", "#c1ad7c"),
       example: v("--color-type-example", "#d4a574"),

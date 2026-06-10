@@ -15,6 +15,7 @@ import type { NodeType } from "@/lib/types";
 /** Display order for pickers — matches the enum order in domain. */
 export const NODE_TYPES: NodeType[] = [
   "concept",
+  "idea",
   "fact",
   "source",
   "example",
@@ -25,6 +26,7 @@ export const NODE_TYPES: NodeType[] = [
 
 export const TYPE_LABEL: Record<NodeType, string> = {
   concept: "concept",
+  idea: "idea",
   fact: "fact",
   source: "source",
   example: "example",
@@ -35,6 +37,9 @@ export const TYPE_LABEL: Record<NodeType, string> = {
 
 export const TYPE_TONE: Record<NodeType, string> = {
   concept: "bg-forest-100 text-forest-700",
+  // type-idea/-deep come from tokens.css (@theme emits the utilities);
+  // the mauve family is reserved for this one type.
+  idea: "bg-type-idea/20 text-type-idea-deep",
   fact: "bg-sand-200 text-forest-700",
   source: "bg-rust-100 text-rust-700",
   example: "bg-rust-50 text-rust-700",
@@ -44,7 +49,8 @@ export const TYPE_TONE: Record<NodeType, string> = {
 };
 
 export const TYPE_DESCRIPTION: Record<NodeType, string> = {
-  concept: "An idea or building block, explained",
+  concept: "A building block of the topic, explained",
+  idea: "An original thought or insight of your own",
   fact: "A precise, checkable statement",
   source: "A citation or reference",
   example: "One concrete instance, walked through",

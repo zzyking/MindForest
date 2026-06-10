@@ -44,6 +44,12 @@
      semantic Tailwind utilities (bg-forest-100 etc.) instead, so the
      two views can evolve independently if needed. */
   --color-type-concept: #7b9082;
+  /* idea — heather mauve: the only hue family not already claimed, so
+     "own thoughts" pop on the canvas without colliding with the accent
+     (which marks the *focused* node ring, not a type). The -deep shade
+     is the chip text colour (AA on the /20 tint over sand). */
+  --color-type-idea: #a98aa0;
+  --color-type-idea-deep: #7a5c72;
   --color-type-fact: #a8b3a0;
   --color-type-source: #c1ad7c;
   --color-type-example: #d4a574;
