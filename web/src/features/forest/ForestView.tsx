@@ -59,7 +59,6 @@ import {
   getForestCameraMode,
   getGraphNodePosition,
   resolveCameraTarget,
-  setCameraToPoint,
   type GraphPoint,
 } from "./camera";
 import { makeDrawNodeLabel } from "./drawLabel";
@@ -100,6 +99,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
   const topics = useForestData((s) => s.topics);
   const topicDetails = useForestData((s) => s.topicDetails);
   const detailLoading = useForestData((s) => s.loading.topicDetail);
+  const detailErrors = useForestData((s) => s.errors.topicDetail);
   const fetchTopics = useForestData((s) => s.fetchTopics);
   const fetchTopic = useForestData((s) => s.fetchTopic);
   const forestCameraIntent = useWorkspaceUI((s) => s.forestCameraIntent);
@@ -169,6 +169,19 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
   useEffect(() => {
     let layout = layoutRef.current;
     const isCreation = !layout;
+    if (isCreation) {
+      // Hold the FIRST build until every known topic has resolved
+      // (detail or error). Building from a partial snapshot fits the
+      // camera to one topic, and when the rest hydrate ~150ms later
+      // the graph bbox multiplies — sigma renormalizes coordinates
+      // against it and the view visibly jumps out and off-centre.
+      // Errored topics count as resolved so one bad fetch can't hold
+      // the view hostage; they're absent from the graph either way.
+      const ids = Object.keys(topics) as TopicId[];
+      const allResolved =
+        ids.length > 0 && ids.every((id) => topicDetails[id] || detailErrors[id]);
+      if (!allResolved) return;
+    }
     if (!layout) layout = createForestLayout();
     const res = syncForestStructure(
       layout,
@@ -192,9 +205,12 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       reheat(0.3);
     }
     // The closure's snapshots are exactly the ones that produced
-    // settledKey — see the settle effect above.
+    // settledKey — see the settle effect above. detailErrors is a real
+    // dependency for the creation gate: a failed fetch doesn't change
+    // the layout key (the topic stays "pending"), so the gate must
+    // re-evaluate when an error lands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settledKey]);
+  }, [settledKey, detailErrors]);
 
   // Title / type edits don't change the layout key; sync them into the
   // live graph in place so labels and colors stay fresh without a
@@ -411,6 +427,15 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 
     s.refresh();
 
+    // Freeze coordinate normalization NOW, against the creation-time
+    // bbox. Sigma otherwise renormalizes against the live bbox on
+    // every refresh — any later bbox growth (a new topic placed beyond
+    // the current extent, an agent batch widening a cluster, a node
+    // dragged outwards) would rescale the whole view as a visible
+    // jump. Frozen bbox is only a coordinate-space reference; nodes
+    // outside it render fine.
+    s.setCustomBBox(s.getBBox());
+
     const drag = wireNodeDrag(s, layout, ensureRunning, setDraggingNode);
 
     s.on("clickNode", ({ node }) => {
@@ -430,31 +455,33 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     s.on("afterRender", projectOverlays);
 
     sigmaRef.current = s;
-    fitCameraToGraph(s, graph);
-    // Default anchor = the graph point that the fit just centred —
-    // i.e. the current viewport centre in graph coords.
-    {
+    // Initial framing: fit the whole forest, centred on the focused
+    // node when there is one. fitCameraToGraph measures half-extents
+    // from the centre point, so "my node is centred" and "everything
+    // is visible" hold simultaneously — no post-fit re-centring that
+    // would push other clusters off-screen.
+    const focusId = focusedNodeIdRef.current;
+    const mountTarget =
+      focusId && graph.hasNode(focusId)
+        ? (resolveCameraTarget({
+            focusedNodeId: focusId,
+            focusedTopicId: focusedTopicIdRef.current,
+            graph,
+            // Mount can happen before the route focus changes;
+            // preserve the current node then — route-driven topic
+            // changes are handled by the focus effect above.
+            cameraMode: "node",
+            topicDetails: useForestData.getState().topicDetails,
+          }) ?? getGraphNodePosition(graph, focusId))
+        : null;
+    fitCameraToGraph(s, graph, mountTarget ? { center: mountTarget } : undefined);
+    if (mountTarget) {
+      cameraAnchorRef.current = mountTarget;
+    } else {
+      // Anchor = the graph point the fit just centred.
       const { width, height } = s.getDimensions();
       if (width > 0 && height > 0) {
         cameraAnchorRef.current = s.viewportToGraph({ x: width / 2, y: height / 2 });
-      }
-    }
-
-    if (focusedNodeIdRef.current && graph.hasNode(focusedNodeIdRef.current)) {
-      const target =
-        resolveCameraTarget({
-          focusedNodeId: focusedNodeIdRef.current,
-          focusedTopicId: focusedTopicIdRef.current,
-          graph,
-          // Mount can happen before the route focus changes; preserve
-          // the current node then — route-driven topic changes are
-          // handled by the focus effect above.
-          cameraMode: "node",
-          topicDetails: useForestData.getState().topicDetails,
-        }) ?? getGraphNodePosition(graph, focusedNodeIdRef.current);
-      if (target) {
-        setCameraToPoint(s, target);
-        cameraAnchorRef.current = target;
       }
     }
 

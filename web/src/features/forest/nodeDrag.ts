@@ -7,10 +7,10 @@
  * forces drag the neighbourhood along — the Obsidian rubber-band feel.
  * Release clears the pin and lets alpha decay back to sleep.
  *
- * Sigma normalizes graph coords against the live bounding box on every
- * refresh; freezing it via setCustomBBox on the first interaction
- * (sigma's documented drag recipe) stops the whole constellation from
- * rescaling when a node is dragged past the current extent.
+ * Coordinate-normalization note: ForestView freezes sigma's customBBox
+ * at creation, so dragging a node past the original extent can't
+ * rescale the whole constellation (sigma would otherwise renormalize
+ * against the live bbox every refresh).
  */
 
 import type Sigma from "sigma";
@@ -46,11 +46,6 @@ export function wireNodeDrag(
   let downX = 0;
   let downY = 0;
   const captor = s.getMouseCaptor();
-
-  const onMouseDownBody = () => {
-    // Freeze coordinate normalization before the first possible drag.
-    if (!s.getCustomBBox()) s.setCustomBBox(s.getBBox());
-  };
 
   const onDownNode = ({ node, event }: { node: string; event: { x: number; y: number } }) => {
     const sn = layout.nodeById.get(node as NodeId);
@@ -93,7 +88,6 @@ export function wireNodeDrag(
   };
 
   s.on("downNode", onDownNode);
-  captor.on("mousedown", onMouseDownBody);
   captor.on("mousemovebody", onMoveBody);
   captor.on("mouseup", onMouseUp);
 
@@ -101,7 +95,6 @@ export function wireNodeDrag(
     wasDragged: () => moved,
     dispose: () => {
       s.off("downNode", onDownNode);
-      captor.off("mousedown", onMouseDownBody);
       captor.off("mousemovebody", onMoveBody);
       captor.off("mouseup", onMouseUp);
     },

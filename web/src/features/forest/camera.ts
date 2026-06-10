@@ -108,14 +108,23 @@ export function getForestCameraMode({
 }
 
 /**
- * Frame the camera to the graph bounds with generous padding. 1.6
- * rather than a snug 1.25 for two live-layout reasons: the fit runs at
- * mount against the *seed* positions and the relax expands the
- * constellation outward from there, and the floating dock + agent bar
- * overlay the bottom ~15% of the viewport — a tight fit reads as "the
- * tree doesn't fit on screen".
+ * Frame the camera so the whole graph is visible, optionally centred
+ * on a specific graph point (the focused node). With a centre given,
+ * the half-extents are measured from that point to the farthest bbox
+ * edge — "my node is centred" and "everything is visible" hold at the
+ * same time, so the initial framing never needs a corrective jump.
+ *
+ * Padding 1.6 rather than a snug 1.25 for two live-layout reasons: the
+ * fit runs at mount against the *seed* positions and the relax expands
+ * the constellation outward from there, and the floating dock + agent
+ * bar overlay the bottom ~15% of the viewport — a tight fit reads as
+ * "the tree doesn't fit on screen".
  */
-export function fitCameraToGraph(s: Sigma, graph: Graph) {
+export function fitCameraToGraph(
+  s: Sigma,
+  graph: Graph,
+  opts?: { center?: GraphPoint },
+) {
   if (graph.order === 0) return;
   let minX = Infinity;
   let maxX = -Infinity;
@@ -129,10 +138,10 @@ export function fitCameraToGraph(s: Sigma, graph: Graph) {
     if (y < minY) minY = y;
     if (y > maxY) maxY = y;
   });
-  const cx = (minX + maxX) / 2;
-  const cy = (minY + maxY) / 2;
-  const halfW = Math.max(1, (maxX - minX) / 2);
-  const halfH = Math.max(1, (maxY - minY) / 2);
+  const cx = opts?.center?.x ?? (minX + maxX) / 2;
+  const cy = opts?.center?.y ?? (minY + maxY) / 2;
+  const halfW = Math.max(1, maxX - cx, cx - minX);
+  const halfH = Math.max(1, maxY - cy, cy - minY);
   const container = s.getContainer();
   const vw = container.clientWidth || 1;
   const vh = container.clientHeight || 1;
