@@ -1,19 +1,23 @@
 /**
  * Floating bottom dock. Holds workspace-wide affordances: sidebar
- * toggle, view-mode segmented switch (editor / tree / forest), and the
- * search palette opener. Sticks to bottom-center so it's reachable from
- * any pointer position without being modal.
+ * toggle, view-mode segmented switch (editor / tree / forest), search
+ * palette opener, and the agent-bar trigger. Sticks to bottom-center so
+ * it's reachable from any pointer position without being modal.
  *
  * The view-mode toggle only flips the workspace's pane; the route stays
  * the same. Picking a node from tree/forest navigates back to editor by
  * default — see `useFocusNode` callers in TreeView / ForestView.
+ *
+ * The agent bar rests collapsed: at rest the dock is the only chrome
+ * row, and the Sparkles trigger (or `/` / ⌘I) expands the bar above it
+ * (`agentBarOpen` in workspaceUI).
  *
  * Collapse behaviour: both this dock and the AgentPromptBar slide out
  * via `dockExpanded` in workspaceUI. A small reveal pill at the
  * bottom-right lets the user bring them back.
  */
 
-import { ChevronDown, ChevronUp, PanelLeft, PanelLeftClose, Pencil, Search, Settings, Shrub, Trees } from "lucide-react";
+import { ChevronDown, ChevronUp, PanelLeft, PanelLeftClose, Pencil, Search, Settings, Shrub, Sparkles, Trees } from "lucide-react";
 
 import { cn } from "@/lib/cn";
 import { useMediaQuery } from "@/lib/useMediaQuery";
@@ -28,6 +32,8 @@ export function Dock() {
   const setViewMode = useWorkspaceUI((s) => s.setViewMode);
   const dockExpanded = useWorkspaceUI((s) => s.dockExpanded);
   const toggleDock = useWorkspaceUI((s) => s.toggleDock);
+  const agentBarOpen = useWorkspaceUI((s) => s.agentBarOpen);
+  const toggleAgentBar = useWorkspaceUI((s) => s.toggleAgentBar);
   const isLg = useMediaQuery("(min-width: 1024px)");
 
   const CurrentViewIcon = VIEW_MODES.find((m) => m.id === viewMode)?.Icon ?? Pencil;
@@ -55,6 +61,9 @@ export function Dock() {
         )}
       >
         <div
+          // inert: pointer-events-none alone leaves the hidden buttons
+          // keyboard-tabbable; inert removes them from tab order + AT.
+          inert={!dockExpanded}
           className={cn(
             "shadow-glass border-forest-200 bg-sand-100/80 pointer-events-auto",
             "flex items-center gap-1 rounded-full border px-2 py-1.5 backdrop-blur-md",
@@ -76,10 +85,13 @@ export function Dock() {
           <DockSeparator />
           <ViewToggle value={viewMode} onChange={setViewMode} />
           <DockSeparator />
-          <DockButton label="Search (⌘K)" onClick={() => setSearchPalette(true)} shortcut="⌘K">
+          <DockButton label="Search" onClick={() => setSearchPalette(true)} shortcut="⌘K">
             <Search size={16} strokeWidth={2} />
           </DockButton>
-          <DockButton label="Agent settings (⌘,)" onClick={() => setAgentSettings(true)} shortcut="⌘,">
+          <DockButton label="Agent" active={agentBarOpen} onClick={toggleAgentBar} shortcut="/">
+            <Sparkles size={16} strokeWidth={2} />
+          </DockButton>
+          <DockButton label="Agent settings" onClick={() => setAgentSettings(true)} shortcut="⌘,">
             <Settings size={16} strokeWidth={2} />
           </DockButton>
           <DockSeparator />
@@ -95,6 +107,7 @@ export function Dock() {
         onClick={toggleDock}
         title="Expand dock"
         aria-label="Expand dock"
+        inert={dockExpanded}
         className={cn(
           "shadow-glass border-forest-200 bg-sand-100/80 pointer-events-auto",
           "absolute right-4 bottom-0 flex items-center gap-1.5 rounded-full border px-3 py-2 backdrop-blur-md",
@@ -161,14 +174,17 @@ const VIEW_MODES: { id: ViewMode; label: string; Icon: typeof Pencil }[] = [
 ];
 
 function ViewToggle({ value, onChange }: ViewToggleProps) {
+  // Deliberately NOT role="tablist": there's no addressable tabpanel
+  // (the whole main pane swaps) and we don't implement the roving-
+  // tabindex arrow-key contract the tabs pattern requires. A group of
+  // toggle buttons with aria-pressed describes exactly what this is.
   return (
-    <div role="tablist" aria-label="View mode" className="flex items-center gap-0.5">
+    <div role="group" aria-label="View mode" className="flex items-center gap-0.5">
       {VIEW_MODES.map((m) => (
         <button
           key={m.id}
           type="button"
-          role="tab"
-          aria-selected={value === m.id}
+          aria-pressed={value === m.id}
           title={m.label}
           onClick={() => onChange(m.id)}
           className={cn(

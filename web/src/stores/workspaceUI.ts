@@ -34,6 +34,9 @@ interface WorkspaceUIState {
   searchPaletteOpen: boolean;
   agentSettingsOpen: boolean;
   dockExpanded: boolean;
+  /** Agent prompt bar expanded above the dock. Rest state is a dock
+   *  trigger; `/` / ⌘I / the dock button open it on demand. */
+  agentBarOpen: boolean;
   viewMode: ViewMode;
   forestCameraIntent: ForestCameraIntent | null;
   /** Number of focus-pushes behind the current cursor (≥ 0). */
@@ -47,6 +50,8 @@ interface WorkspaceUIState {
   setAgentSettings: (open: boolean) => void;
   toggleDock: () => void;
   expandDock: () => void;
+  toggleAgentBar: () => void;
+  setAgentBar: (open: boolean) => void;
   setViewMode: (mode: ViewMode) => void;
   setForestCameraIntent: (intent: ForestCameraIntent | null) => void;
   consumeForestCameraIntent: (targetNodeId: NodeId, topicId: TopicId) => void;
@@ -63,6 +68,7 @@ export const useWorkspaceUI = create<WorkspaceUIState>((set) => ({
   searchPaletteOpen: false,
   agentSettingsOpen: false,
   dockExpanded: true,
+  agentBarOpen: false,
   viewMode: "editor",
   forestCameraIntent: null,
   navBack: 0,
@@ -74,6 +80,8 @@ export const useWorkspaceUI = create<WorkspaceUIState>((set) => ({
   setAgentSettings: (open) => set({ agentSettingsOpen: open }),
   toggleDock: () => set((s) => ({ dockExpanded: !s.dockExpanded })),
   expandDock: () => set({ dockExpanded: true }),
+  toggleAgentBar: () => set((s) => ({ agentBarOpen: !s.agentBarOpen })),
+  setAgentBar: (open) => set({ agentBarOpen: open }),
   setViewMode: (mode) => set({ viewMode: mode }),
   setForestCameraIntent: (intent) => set({ forestCameraIntent: intent }),
   consumeForestCameraIntent: (targetNodeId, topicId) =>

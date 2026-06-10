@@ -114,9 +114,11 @@ export function getForestCameraMode({
  * edge — "my node is centred" and "everything is visible" hold at the
  * same time, so the initial framing never needs a corrective jump.
  *
- * Padding 1.6 rather than a snug 1.25 because the floating dock + agent
- * bar overlay the bottom ~15% of the viewport and a snug fit reads as
- * "the tree doesn't fit on screen". The mount fit runs against the
+ * Padding 1.45 rather than a snug 1.25 because the floating dock
+ * overlays the bottom of the viewport and a snug fit reads as "the
+ * tree doesn't fit on screen". (It was 1.6 when the agent bar was a
+ * second always-on chrome row; the bar now expands on demand, so the
+ * standing overlay is just the dock.) The mount fit runs against the
  * SETTLED positions (warm mounts resume them; cold mounts presettle to
  * learn them), so it no longer has to pre-compensate for the relax
  * expanding a seed-sized fit outward.
@@ -146,7 +148,7 @@ export function fitCameraToGraph(
   const container = s.getContainer();
   const vw = container.clientWidth || 1;
   const vh = container.clientHeight || 1;
-  const padding = 1.6;
+  const padding = 1.45;
   const probeA = s.viewportToGraph({ x: 0, y: 0 });
   const probeB = s.viewportToGraph({ x: vw, y: 0 });
   const graphUnitsPerViewportWidth = Math.abs(probeB.x - probeA.x);

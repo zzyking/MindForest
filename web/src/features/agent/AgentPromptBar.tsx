@@ -1,11 +1,16 @@
 /**
- * Floating bottom-center prompt bar. Press `/` (or `Cmd+I`) anywhere in
- * the workspace to focus it; submit kicks off an agent stream and pops
- * the `DraftOverlay` automatically (the overlay is bound to the same
- * agent session store so we don't pass anything explicitly).
+ * Floating prompt bar that expands above the Dock on demand. At rest it
+ * collapses to nothing — the dock's Sparkles trigger, `/`, or ⌘I opens
+ * it (`agentBarOpen` in workspaceUI) and focuses the input; Esc
+ * collapses it and hands focus back to wherever it came from. Submit
+ * kicks off an agent stream and pops the `DraftOverlay` automatically
+ * (the overlay is bound to the same agent session store so we don't
+ * pass anything explicitly).
  *
- * The bar sits above the Dock, not inside it — Dock is intentionally
- * narrow + chip-shaped and an input would distort its rhythm.
+ * The expanded bar sits above the Dock, not inside it — Dock is
+ * intentionally narrow + chip-shaped and an input would distort its
+ * rhythm. The bar stays mounted while hidden so a half-typed prompt
+ * survives a collapse/expand round-trip.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -24,19 +29,23 @@ export function AgentPromptBar() {
   const startStream = useAgentSession((s) => s.startStream);
   const cancel = useAgentSession((s) => s.cancel);
   // The bar centres over the main pane, not the full window — so it
-  // shifts right when the sidebar opens. The padding-only animation
+  // shifts right when the sidebar opens. The transform-only animation
   // composites cleanly without re-rendering the input.
   const sidebarOpen = useWorkspaceUI((s) => s.sidebarOpen);
   const isLg = useMediaQuery("(min-width: 1024px)");
   const dockExpanded = useWorkspaceUI((s) => s.dockExpanded);
-  const expandDock = useWorkspaceUI((s) => s.expandDock);
+  const agentBarOpen = useWorkspaceUI((s) => s.agentBarOpen);
+  const setAgentBar = useWorkspaceUI((s) => s.setAgentBar);
+  // Visible only when the chrome row itself is out AND the bar was
+  // explicitly opened — at rest the dock is the only chrome row.
+  const visible = dockExpanded && agentBarOpen;
 
   // Pull the current topicId / nodeId out of the route so the user
   // doesn't have to retype them. The bar is mounted at the shell so
   // it's outside any specific route — read directly from the matches.
   const { topicId, focusedNodeId } = useCurrentRouteContext();
 
-  // Slash-to-focus, Cmd+I as backup. Skip when an input already owns
+  // Slash-to-open, Cmd+I as backup. Skip `/` when an input already owns
   // focus so editor typing isn't hijacked.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -46,21 +55,44 @@ export function AgentPromptBar() {
         target?.tagName === "INPUT" ||
         target?.tagName === "TEXTAREA" ||
         target?.isContentEditable;
-      if (cmd && (e.key === "i" || e.key === "I")) {
-        e.preventDefault();
-        inputRef.current?.focus();
-        return;
-      }
-      if (!cmd && e.key === "/" && !inEditable) {
-        e.preventDefault();
-        // Auto-expand the dock so the bar is visible before focusing.
-        if (!dockExpanded) expandDock();
-        inputRef.current?.focus();
+      const wantsBar =
+        (cmd && (e.key === "i" || e.key === "I")) ||
+        (!cmd && e.key === "/" && !inEditable);
+      if (!wantsBar) return;
+      e.preventDefault();
+      // Read fresh state — this handler registers once and closure
+      // values from the render would go stale.
+      const ui = useWorkspaceUI.getState();
+      if (!ui.dockExpanded) ui.expandDock();
+      if (!ui.agentBarOpen) {
+        // Focus happens in the open effect below, after the commit
+        // that lifts `inert` off the bar.
+        ui.setAgentBar(true);
+      } else {
+        // Already open (possibly just un-hidden by expandDock above) —
+        // wait for the commit, then focus directly.
+        requestAnimationFrame(() => inputRef.current?.focus());
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  // Whatever opened the bar (dock trigger, `/`, ⌘I), focus the input
+  // and remember where focus came from so Esc can hand it back. Runs
+  // after the commit, so `inert` has already been lifted.
+  const prevFocusRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!agentBarOpen) return;
+    prevFocusRef.current = document.activeElement as HTMLElement | null;
+    inputRef.current?.focus();
+  }, [agentBarOpen]);
+
+  const close = () => {
+    const prev = prevFocusRef.current;
+    if (prev?.isConnected) prev.focus();
+    setAgentBar(false);
+  };
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -75,22 +107,25 @@ export function AgentPromptBar() {
   // over the main pane. Pure transform composites cleanly on top of
   // the sidebar's grid-track transition (see WorkspaceShell).
   //
-  // Vertical shift handles dock collapse/expand and is staggered 75ms
-  // behind the dock. Two concerns split onto separate elements so
-  // that the dock-stagger delay never bleeds onto the sidebar-tracking
-  // transform — otherwise the bar lags 75ms behind the dock when
-  // toggling the sidebar, which reads as a stutter.
+  // Vertical shift handles open/close. (The old 75ms dock-stagger is
+  // gone: the bar now mostly opens alone, where a delay reads as input
+  // latency rather than choreography.) Two concerns stay split onto
+  // separate elements so the open/close tween never bleeds onto the
+  // sidebar-tracking transform mid-flight.
   const horizontalShift =
     sidebarOpen && isLg
       ? "translate-x-[calc(var(--spacing-sidebar)/2)]"
       : "translate-x-0";
-  const verticalShift = dockExpanded
-    ? "translate-y-0 opacity-100 delay-75"
+  const verticalShift = visible
+    ? "translate-y-0 opacity-100"
     : "translate-y-4 opacity-0 pointer-events-none";
 
   return (
     <form
       onSubmit={onSubmit}
+      // inert: pointer-events-none alone would leave the hidden input
+      // keyboard-tabbable; inert removes it from tab order + AT.
+      inert={!visible}
       className={cn(
         "pointer-events-none absolute inset-x-0 bottom-20 flex justify-center will-change-transform",
         // 350ms matches the sidebar grid + dock transitions so the
@@ -123,6 +158,12 @@ export function AgentPromptBar() {
             type="text"
             value={text}
             onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                close();
+              }
+            }}
             placeholder={
               topicId
                 ? "Ask the agent to refine, expand, or restructure…"
