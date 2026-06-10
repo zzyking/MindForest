@@ -192,15 +192,18 @@ html[data-resizing] .bg-noise::before {
   }
 }
 
-/* DraftOverlay slides in from the right when a new agent session
-   opens. Pairs with `animate-[slide-in-right_…]` on the panel. */
-@keyframes slide-in-right {
+/* DraftOverlay rises from the prompt bar when a new agent session
+   opens. Pairs with `animate-[draft-rise_…]` on the panel — kept on
+   the inner panel element so the fill-mode:both transform can't
+   permanently override the outer wrapper's sidebar-tracking
+   translate-x (both write `transform`). */
+@keyframes draft-rise {
   from {
-    transform: translateX(20px);
+    transform: translateY(8px);
     opacity: 0;
   }
   to {
-    transform: translateX(0);
+    transform: translateY(0);
     opacity: 1;
   }
 }

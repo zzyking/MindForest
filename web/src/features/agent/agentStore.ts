@@ -190,6 +190,11 @@ export const useAgentSession = create<AgentSessionState>((set, get) => ({
             { role: "user", text: prompt },
             { role: "assistant", text: assistantText },
           ],
+          // The turn now lives in history — clear the in-flight fields
+          // so the overlay doesn't render the same turn twice (once as
+          // a committed TurnPair, once as the "active turn" block).
+          draft: "",
+          prompt: "",
         }));
       }
       set({ streaming: false, abort: null });

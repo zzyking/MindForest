@@ -149,8 +149,11 @@ export function WorkspaceShell({ children }: Props) {
           <ModelDownloadCard />
           {children}
         </main>
-        <DraftOverlay />
       </div>
+      {/* Bottom chrome — all three centre on the main-pane axis via
+          useMainPaneShiftClass and stack bottom-up: dock, prompt bar,
+          draft panel. */}
+      <DraftOverlay />
       <AgentPromptBar />
       <Dock />
       <SearchPalette />

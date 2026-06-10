@@ -19,8 +19,8 @@
 
 import { ChevronDown, ChevronUp, PanelLeft, PanelLeftClose, Pencil, Search, Settings, Shrub, Sparkles, Trees } from "lucide-react";
 
+import { useMainPaneShiftClass } from "@/app/mainPaneShift";
 import { cn } from "@/lib/cn";
-import { useMediaQuery } from "@/lib/useMediaQuery";
 import { useWorkspaceUI, type ViewMode } from "@/stores/workspaceUI";
 
 export function Dock() {
@@ -34,7 +34,7 @@ export function Dock() {
   const toggleDock = useWorkspaceUI((s) => s.toggleDock);
   const agentBarOpen = useWorkspaceUI((s) => s.agentBarOpen);
   const toggleAgentBar = useWorkspaceUI((s) => s.toggleAgentBar);
-  const isLg = useMediaQuery("(min-width: 1024px)");
+  const shift = useMainPaneShiftClass();
 
   const CurrentViewIcon = VIEW_MODES.find((m) => m.id === viewMode)?.Icon ?? Pencil;
 
@@ -46,18 +46,14 @@ export function Dock() {
         className={cn(
           "flex justify-center will-change-transform",
           // 350ms matches the sidebar grid track transition in
-          // WorkspaceShell so the three sidebar-tracking animations
-          // (sidebar collapse, dock shift, agent bar shift) finish in
-          // lockstep. translate-x is a compositor-only op; the shift
-          // is half the sidebar width, derived from --spacing-sidebar
-          // so a width change can't desync it. `resize-keep-transform`
-          // exempts this tween from the data-resizing freeze so
-          // crossing the lg breakpoint mid window-drag still animates
-          // (globals.css).
+          // WorkspaceShell so the sidebar-tracking animations (sidebar
+          // collapse + dock / agent bar / draft panel shift) finish in
+          // lockstep; the shift itself is shared via
+          // app/mainPaneShift.ts. `resize-keep-transform` exempts this
+          // tween from the data-resizing freeze so crossing the lg
+          // breakpoint mid window-drag still animates (globals.css).
           "transition-transform duration-[350ms] ease-out resize-keep-transform",
-          sidebarOpen && isLg
-            ? "translate-x-[calc(var(--spacing-sidebar)/2)]"
-            : "translate-x-0",
+          shift,
         )}
       >
         <div

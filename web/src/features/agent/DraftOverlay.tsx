@@ -1,7 +1,9 @@
 /**
- * Side-panel overlay that surfaces the live agent reply: streaming
- * prose at the top, a list of structured proposals below with
- * accept / reject affordances. Closes when the user dismisses
+ * Conversation panel that rises from the AgentPromptBar: streaming
+ * prose and prior turns at the top, structured proposals below with
+ * accept / reject affordances. Same width and same main-pane axis as
+ * the bar, so prompt + reply read as one surface (the input is the
+ * bottom edge of the conversation). Closes when the user dismisses
  * explicitly — we don't auto-close on Done so the user has time to
  * decide on each proposal.
  *
@@ -13,6 +15,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "@tanstack/react-router";
 
+import { useMainPaneShiftClass } from "@/app/mainPaneShift";
 import { cn } from "@/lib/cn";
 import type { AgentProposal } from "@/lib/types";
 import { useAgentSession, type ProposalEntry } from "./agentStore";
@@ -33,6 +36,7 @@ export function DraftOverlay() {
   const mergeResolvedTable = useAgentSession((s) => s.mergeResolvedTable);
   const params = useParams({ strict: false }) as { topicId?: string };
   const [bulkBusy, setBulkBusy] = useState(false);
+  const shift = useMainPaneShiftClass();
 
   // ESC closes the overlay (parallel to the X button + backdrop click).
   useEffect(() => {
@@ -80,115 +84,149 @@ export function DraftOverlay() {
   };
 
   return (
-    // Not role="dialog": this is a non-modal companion panel. The user
-    // keeps editing the main pane while it's open, so trapping focus
-    // here would actively hurt the flow. aria-label is enough to land
-    // landmark-navigation users on it.
-    <aside
-      aria-label="Agent draft"
+    // Two-element split, same trick as the bar: the outer wrapper owns
+    // the sidebar-tracking translate-x, the inner panel owns the
+    // entrance keyframe — both write `transform`, and a fill-mode:both
+    // animation on one element would permanently override the other.
+    // bottom-36 clears the prompt bar (form bottom-20 + ~52px pill)
+    // with the same ~14px breath the bar keeps above the dock.
+    <div
       className={cn(
-        "absolute right-4 top-4 bottom-24 w-[min(440px,calc(100vw-2rem))]",
-        "shadow-glass border-forest-200 bg-sand-50/95 z-40 flex flex-col rounded-2xl border backdrop-blur-md",
-        "animate-[slide-in-right_260ms_cubic-bezier(0.2,0.8,0.2,1)_both]",
+        "pointer-events-none absolute inset-x-0 bottom-36 z-40 flex justify-center",
+        "transition-transform duration-[350ms] ease-out resize-keep-transform will-change-transform",
+        shift,
       )}
     >
-      <header className="border-forest-100 flex items-center justify-between border-b px-4 py-3">
-        <div>
-          <div className="text-forest-500 text-[10px] uppercase tracking-wider">Agent draft</div>
-          <div className="text-forest-900 line-clamp-1 text-sm">{prompt || "—"}</div>
-        </div>
-        <button
-          type="button"
-          onClick={close}
-          className="text-forest-500 hover:text-forest-800 rounded-full px-2 py-0.5 text-xs"
-          aria-label="Close draft"
-        >
-          ✕
-        </button>
-      </header>
-
-      <section className="flex-1 overflow-y-auto px-4 py-3">
-        {/* Confirmed prior turns. Each (user, assistant) pair becomes
-            two stacked bubbles so the user can scroll the conversation. */}
-        {history.length > 0 && (
-          <div className="mb-4 flex flex-col gap-3">
-            {pairTurns(history).map((pair, idx) => (
-              <TurnPair
-                key={idx}
-                turnIndex={idx + 1}
-                userText={pair.user}
-                assistantText={pair.assistant}
-                proposals={proposals.filter((p) => p.turnIndex === idx + 1)}
-                onAccept={acceptOne}
-                onReject={(id) => setProposalStatus(id, "rejected")}
-              />
-            ))}
-          </div>
+      {/* Not role="dialog": this is a non-modal companion panel. The
+          user keeps editing the main pane while it's open, so trapping
+          focus here would actively hurt the flow. aria-label is enough
+          to land landmark-navigation users on it. */}
+      <aside
+        aria-label="Agent draft"
+        className={cn(
+          "pointer-events-auto flex max-h-[min(60vh,40rem)] w-[min(620px,calc(100vw-2rem))] flex-col",
+          "shadow-glass border-forest-200 bg-sand-50/95 rounded-2xl border backdrop-blur-md",
+          "animate-[draft-rise_260ms_cubic-bezier(0.2,0.8,0.2,1)_both]",
         )}
-        {/* Active (in-flight or just-finished) turn. aria-live lets
-            screen readers announce streamed tokens and the proposal list
-            as it materialises. aria-busy flips off when streaming ends
-            so the reader knows the response is final. */}
-        {(streaming || draft || proposals.some((p) => p.turnIndex === turnCount)) && (
-          <div
-            aria-live="polite"
-            aria-atomic="false"
-            aria-busy={streaming}
-            className="border-forest-100 flex flex-col gap-2 border-t pt-3"
+      >
+        <header className="border-forest-100 flex items-center justify-between border-b px-4 py-3">
+          <div>
+            <div className="text-forest-500 text-[10px] uppercase tracking-wider">Agent draft</div>
+            {/* In-flight prompt, else the last committed one (prompt is
+                cleared when a turn lands in history). */}
+            <div className="text-forest-900 line-clamp-1 text-sm">
+              {prompt || lastUserPrompt(history) || "—"}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={close}
+            className="text-forest-500 hover:text-forest-800 rounded-full px-2 py-0.5 text-xs"
+            aria-label="Close draft"
           >
-            {history.length > 0 && (
-              <div className="text-forest-400 text-[10px] uppercase tracking-wider">
-                Turn {turnCount}
-              </div>
-            )}
-            {prompt && (
-              <div className="text-forest-700 text-xs">
-                <span className="text-forest-500 mr-1 font-medium">You:</span>
-                {prompt}
-              </div>
-            )}
-            <DraftText text={draft} streaming={streaming} />
-            {proposals.filter((p) => p.turnIndex === turnCount).length > 0 && (
-              <ProposalList
-                proposals={proposals.filter((p) => p.turnIndex === turnCount)}
-                onAccept={acceptOne}
-                onReject={(id) => setProposalStatus(id, "rejected")}
-              />
-            )}
-          </div>
-        )}
-        {errors.length > 0 && (
-          <div
-            role="alert"
-            className="mt-3 rounded-md border border-rust-300 bg-rust-50 px-3 py-2 text-xs text-rust-800"
-          >
-            {errors.map((m, i) => (
-              <div key={i}>{m}</div>
-            ))}
-          </div>
-        )}
-      </section>
+            ✕
+          </button>
+        </header>
 
-      <footer className="border-forest-100 flex items-center justify-end gap-2 border-t px-4 py-2">
-        <button
-          type="button"
-          onClick={rejectAll}
-          disabled={bulkBusy || proposals.every((p) => p.status !== "pending")}
-          className="text-forest-700 hover:bg-forest-100 disabled:opacity-40 rounded-full px-3 py-1 text-xs"
-        >
-          Reject all
-        </button>
-        <button
-          type="button"
-          onClick={acceptAll}
-          disabled={bulkBusy || streaming || proposals.every((p) => p.status !== "pending") || !params.topicId}
-          className="text-sand-100 bg-forest-700 hover:bg-forest-800 disabled:opacity-40 rounded-full px-3 py-1 text-xs"
-        >
-          {bulkBusy ? "Applying…" : "Accept all"}
-        </button>
-      </footer>
-    </aside>
+        {/* min-h-0: inside the max-h flex column the scroll area must
+            be allowed to shrink below its content, or long sessions
+            push the footer past the panel edge instead of scrolling. */}
+        <section className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+          {/* Confirmed prior turns. Each (user, assistant) pair becomes
+              two stacked bubbles so the user can scroll the conversation. */}
+          {history.length > 0 && (
+            <div className="mb-4 flex flex-col gap-3">
+              {pairTurns(history).map((pair, idx) => (
+                <TurnPair
+                  key={idx}
+                  turnIndex={idx + 1}
+                  userText={pair.user}
+                  assistantText={pair.assistant}
+                  proposals={proposals.filter((p) => p.turnIndex === idx + 1)}
+                  onAccept={acceptOne}
+                  onReject={(id) => setProposalStatus(id, "rejected")}
+                />
+              ))}
+            </div>
+          )}
+          {/* Active (in-flight or failed-uncommitted) turn. A finished
+              turn moves to history and clears prompt/draft, so `prompt`
+              doubles as the "an uncommitted turn exists" flag — without
+              it the committed turn would render twice. aria-live lets
+              screen readers announce streamed tokens and the proposal list
+              as it materialises. aria-busy flips off when streaming ends
+              so the reader knows the response is final. */}
+          {(streaming || draft || prompt) && (
+            <div
+              aria-live="polite"
+              aria-atomic="false"
+              aria-busy={streaming}
+              className="border-forest-100 flex flex-col gap-2 border-t pt-3"
+            >
+              {history.length > 0 && (
+                <div className="text-forest-400 text-[10px] uppercase tracking-wider">
+                  Turn {turnCount}
+                </div>
+              )}
+              {prompt && (
+                <div className="text-forest-700 text-xs">
+                  <span className="text-forest-500 mr-1 font-medium">You:</span>
+                  {prompt}
+                </div>
+              )}
+              <DraftText text={draft} streaming={streaming} />
+              {proposals.filter((p) => p.turnIndex === turnCount).length > 0 && (
+                <ProposalList
+                  proposals={proposals.filter((p) => p.turnIndex === turnCount)}
+                  onAccept={acceptOne}
+                  onReject={(id) => setProposalStatus(id, "rejected")}
+                />
+              )}
+            </div>
+          )}
+          {errors.length > 0 && (
+            <div
+              role="alert"
+              className="mt-3 rounded-md border border-rust-300 bg-rust-50 px-3 py-2 text-xs text-rust-800"
+            >
+              {errors.map((m, i) => (
+                <div key={i}>{m}</div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <footer className="border-forest-100 flex items-center justify-end gap-2 border-t px-4 py-2">
+          <button
+            type="button"
+            onClick={rejectAll}
+            disabled={bulkBusy || proposals.every((p) => p.status !== "pending")}
+            className="text-forest-700 hover:bg-forest-100 disabled:opacity-40 rounded-full px-3 py-1 text-xs"
+          >
+            Reject all
+          </button>
+          <button
+            type="button"
+            onClick={acceptAll}
+            disabled={bulkBusy || streaming || proposals.every((p) => p.status !== "pending") || !params.topicId}
+            className="text-sand-100 bg-forest-700 hover:bg-forest-800 disabled:opacity-40 rounded-full px-3 py-1 text-xs"
+          >
+            {bulkBusy ? "Applying…" : "Accept all"}
+          </button>
+        </footer>
+      </aside>
+    </div>
   );
+}
+
+function lastUserPrompt(
+  history: { role: "user" | "assistant"; text: string }[],
+): string | null {
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const t = history[i];
+    if (t?.role === "user") return t.text;
+  }
+  return null;
 }
 
 /**

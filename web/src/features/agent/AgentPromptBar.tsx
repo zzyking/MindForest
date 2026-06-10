@@ -17,8 +17,8 @@ import { useEffect, useRef, useState } from "react";
 import { Sparkles } from "lucide-react";
 import { useParams, useRouterState } from "@tanstack/react-router";
 
+import { useMainPaneShiftClass } from "@/app/mainPaneShift";
 import { cn } from "@/lib/cn";
-import { useMediaQuery } from "@/lib/useMediaQuery";
 import { useWorkspaceUI } from "@/stores/workspaceUI";
 import { useAgentSession } from "./agentStore";
 
@@ -28,11 +28,6 @@ export function AgentPromptBar() {
   const streaming = useAgentSession((s) => s.streaming);
   const startStream = useAgentSession((s) => s.startStream);
   const cancel = useAgentSession((s) => s.cancel);
-  // The bar centres over the main pane, not the full window — so it
-  // shifts right when the sidebar opens. The transform-only animation
-  // composites cleanly without re-rendering the input.
-  const sidebarOpen = useWorkspaceUI((s) => s.sidebarOpen);
-  const isLg = useMediaQuery("(min-width: 1024px)");
   const dockExpanded = useWorkspaceUI((s) => s.dockExpanded);
   const agentBarOpen = useWorkspaceUI((s) => s.agentBarOpen);
   const setAgentBar = useWorkspaceUI((s) => s.setAgentBar);
@@ -102,20 +97,14 @@ export function AgentPromptBar() {
     await startStream({ topicId, focusedNodeId, prompt });
   };
 
-  // Horizontal shift tracks the dock: when the sidebar is open at lg+
-  // we translate-x by half the sidebar width so the bar stays centred
-  // over the main pane. Pure transform composites cleanly on top of
-  // the sidebar's grid-track transition (see WorkspaceShell).
-  //
-  // Vertical shift handles open/close. (The old 75ms dock-stagger is
-  // gone: the bar now mostly opens alone, where a delay reads as input
-  // latency rather than choreography.) Two concerns stay split onto
-  // separate elements so the open/close tween never bleeds onto the
-  // sidebar-tracking transform mid-flight.
-  const horizontalShift =
-    sidebarOpen && isLg
-      ? "translate-x-[calc(var(--spacing-sidebar)/2)]"
-      : "translate-x-0";
+  // Horizontal shift tracks the main-pane axis (shared with Dock and
+  // DraftOverlay — see app/mainPaneShift.ts). Vertical shift handles
+  // open/close. (The old 75ms dock-stagger is gone: the bar now mostly
+  // opens alone, where a delay reads as input latency rather than
+  // choreography.) Two concerns stay split onto separate elements so
+  // the open/close tween never bleeds onto the sidebar-tracking
+  // transform mid-flight.
+  const horizontalShift = useMainPaneShiftClass();
   const verticalShift = visible
     ? "translate-y-0 opacity-100"
     : "translate-y-4 opacity-0 pointer-events-none";
@@ -160,6 +149,11 @@ export function AgentPromptBar() {
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Escape") {
+                // Layered dismiss: while the draft panel is open this
+                // Esc belongs to it (its window-level handler closes
+                // it as the event bubbles past us); the next Esc
+                // collapses the bar.
+                if (useAgentSession.getState().open) return;
                 e.preventDefault();
                 close();
               }
