@@ -296,6 +296,7 @@ function NodeRow({
   toggle,
 }: NodeRowProps) {
   const focus = useFocusNode();
+  const prefetchNode = useForestData((s) => s.prefetchNode);
   const children = childrenByParent.get(node.id) ?? [];
   const isOpen = expanded.has(node.id);
   const isFocused = node.id === focusedNodeId;
@@ -359,6 +360,11 @@ function NodeRow({
                 toggle(node.id);
               }
             }}
+            // Warm the node cache during hover so the editor pane has
+            // data by the time the click lands — kills the
+            // loading-state flash for first visits.
+            onPointerEnter={() => prefetchNode(node.id)}
+            onFocus={() => prefetchNode(node.id)}
             className="min-w-0 flex-1 truncate py-1 text-left"
             title={node.title}
           >

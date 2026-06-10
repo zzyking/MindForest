@@ -39,7 +39,7 @@ export function NodePage() {
   } else if (viewMode === "forest") {
     pane = <ForestView focusedTopicId={topicId} focusedNodeId={nodeId} />;
   } else {
-    pane = <NodeEditor key={`${topicId}/${nodeId}`} nodeId={nodeId} />;
+    pane = <NodeEditor key={`${topicId}/${nodeId}`} nodeId={nodeId} topicId={topicId} />;
   }
 
   return (

@@ -31,7 +31,7 @@ import { cn } from "@/lib/cn";
 import { useFocusNode, useNav } from "@/app/navigation";
 import { useForestData } from "@/stores/forestData";
 import { ApiError } from "@/lib/api";
-import type { NodeId, NodePatch } from "@/lib/types";
+import type { NodeId, NodePatch, TopicId } from "@/lib/types";
 
 import { Breadcrumb } from "./Breadcrumb";
 import { CodeMirrorView } from "./CodeMirrorView";
@@ -44,6 +44,7 @@ import { useDebouncedSave } from "./useDebouncedSave";
 
 interface Props {
   nodeId: NodeId;
+  topicId: TopicId;
 }
 
 /**
@@ -53,9 +54,10 @@ interface Props {
  */
 type Mode = "write" | "read";
 
-export function NodeEditor({ nodeId }: Props) {
+export function NodeEditor({ nodeId, topicId }: Props) {
   const node = useForestData((s) => s.nodes[nodeId]);
   const loading = useForestData((s) => s.loading.node[nodeId] ?? false);
+  const fetchError = useForestData((s) => s.errors.node[nodeId] ?? null);
   const fetchNode = useForestData((s) => s.fetchNode);
   const patchNode = useForestData((s) => s.patchNode);
   const createNode = useForestData((s) => s.createNode);
@@ -205,17 +207,49 @@ export function NodeEditor({ nodeId }: Props) {
     });
   }
 
-  if (loading && !node) {
-    return (
-      <EditorScaffold>
-        <EmptyState>Loading the page…</EmptyState>
-      </EditorScaffold>
-    );
-  }
   if (!node) {
+    if (fetchError && !loading) {
+      return (
+        <EditorScaffold>
+          <EmptyState>Couldn’t load this page — {fetchError}</EmptyState>
+        </EditorScaffold>
+      );
+    }
+    // Pending fetch. Paint the chrome immediately from the sidebar's
+    // NodeSummary (toolbar, breadcrumb, title) so navigation reads as
+    // "the body fills in" instead of a full-pane loading flash — the
+    // editor's web-rendered remount becomes invisible. Deep links that
+    // arrive before the topic detail fall back to an empty title for
+    // the few frames the fetch needs.
+    const summary = topicDetails[topicId]?.nodes.find((n) => n.id === nodeId);
     return (
       <EditorScaffold>
-        <EmptyState>No node selected. Pick one from the sidebar.</EmptyState>
+        <Toolbar
+          mode={mode}
+          onModeChange={setMode}
+          canBack={canGoBack}
+          canForward={canGoForward}
+          onBack={onBack}
+          onForward={onForward}
+          onAddChild={onAddChild}
+          onDelete={onDelete}
+          canDelete={false}
+          deleteArmed={false}
+        />
+        <Breadcrumb nodeId={nodeId} topicId={topicId} />
+        <TitleInput
+          value={summary?.title ?? ""}
+          onChange={() => {}}
+          disabled
+          placeholder="Untitled"
+          ariaLabel="Node title"
+        />
+        {/* Same-height placeholders for the metadata strip and editor
+            body so the real content swaps in without layout shift. */}
+        <div aria-hidden className="text-[10px]">
+          &nbsp;
+        </div>
+        <div aria-hidden className="min-h-[24vh]" />
       </EditorScaffold>
     );
   }

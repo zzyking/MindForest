@@ -64,6 +64,10 @@ interface ForestDataState {
   fetchTopics: () => Promise<void>;
   fetchTopic: (id: TopicId) => Promise<TopicDetail>;
   fetchNode: (id: NodeId) => Promise<Node>;
+  /** Advisory warm-up (e.g. sidebar hover). No-op when the node is
+   *  already cached or in flight; failures are swallowed — the real
+   *  fetch on focus will surface them. */
+  prefetchNode: (id: NodeId) => void;
   createTopic: (title: string) => Promise<Topic>;
   createNode: (input: NewNode) => Promise<Node>;
   patchNode: (id: NodeId, patch: NodePatch) => Promise<Node>;
@@ -143,6 +147,12 @@ export const useForestData = create<ForestDataState>((set, get) => ({
       }));
       throw e;
     }
+  },
+
+  prefetchNode: (id) => {
+    const s = get();
+    if (s.nodes[id] || s.loading.node[id]) return;
+    void s.fetchNode(id).catch(() => {});
   },
 
   createTopic: async (title) => {
