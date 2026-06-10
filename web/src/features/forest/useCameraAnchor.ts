@@ -40,11 +40,22 @@ export function useCameraAnchor(
     const tick = () => {
       const live = sigmaRef.current;
       if (!live) return;
+      const scheduleNext = () => {
+        if (performance.now() - startTime < duration) {
+          rafId = requestAnimationFrame(tick);
+        }
+      };
+      // Yield while a camera tween is in flight — two writers per
+      // frame (this loop + Camera.animate) fight over setState and the
+      // result reads as stutter. The tween's destination is whatever
+      // the anchor was just set to, so skipping frames here is safe.
+      if (live.getCamera().isAnimated()) {
+        scheduleNext();
+        return;
+      }
       live.resize(true);
       setCameraToPoint(live, anchor);
-      if (performance.now() - startTime < duration) {
-        rafId = requestAnimationFrame(tick);
-      }
+      scheduleNext();
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);

@@ -70,9 +70,48 @@ function mulberry32(seed: number) {
   };
 }
 
+/**
+ * Layout-relevant signature of the store snapshots. Two snapshots with
+ * the same key produce the same graph *structure* (node set, tree
+ * edges, link edges) — node titles and types deliberately excluded
+ * because they only affect labels/colors, which ForestView syncs into
+ * the live graph in place. Topic titles are included (they feed the
+ * floating anchors, and renames are rare enough that a rebuild is
+ * fine).
+ *
+ * Used to gate `buildForestGraph` so that per-keystroke summary syncs
+ * and hydration-order identity churn don't trigger relayouts.
+ */
+export function forestLayoutKey(
+  topics: Record<TopicId, TopicSummary>,
+  topicDetails: Record<TopicId, TopicDetail>,
+): string {
+  const parts: string[] = [];
+  for (const id of (Object.keys(topics) as TopicId[]).sort()) {
+    const d = topicDetails[id];
+    if (!d) {
+      parts.push(`${id}:pending`);
+      continue;
+    }
+    parts.push(`${id}:${d.title}`);
+    // Sort defensively — the wire order is stable today, but the key
+    // must not depend on it.
+    const nodes = [...d.nodes].sort((a, b) => a.id.localeCompare(b.id));
+    for (const n of nodes) {
+      parts.push(`${n.id}<${n.parent ?? ""}[${[...n.links].sort().join(",")}]`);
+    }
+  }
+  return parts.join("|");
+}
+
 export function buildForestGraph(
   topics: Record<TopicId, TopicSummary>,
   topicDetails: Record<TopicId, TopicDetail>,
+  /** Positions from the previous layout. When most nodes are covered,
+   *  the simulation warm-starts from them (fewer ticks, lower alpha) so
+   *  consecutive layouts stay visually continuous instead of finding a
+   *  fresh equilibrium that shuffles the whole constellation. */
+  prevPositions?: ReadonlyMap<NodeId, { x: number; y: number }>,
 ): ForestGraphData {
   const buildStart = performance.now();
   const ready: TopicDetail[] = (Object.keys(topics) as TopicId[])
@@ -118,6 +157,7 @@ export function buildForestGraph(
   const SEED_RADIUS = 80;
   const ORBIT_R = 20;
   const rand = mulberry32(0xc0ffee);
+  let warmCount = 0;
   for (let i = 0; i < ready.length; i++) {
     const detail = ready[i]!;
     const theta = N === 1 ? 0 : (2 * Math.PI * i) / N - Math.PI / 2;
@@ -126,14 +166,16 @@ export function buildForestGraph(
     for (const summary of detail.nodes) {
       const ang = rand() * Math.PI * 2;
       const r = Math.sqrt(rand()) * SEED_RADIUS;
+      const prev = prevPositions?.get(summary.id);
+      if (prev) warmCount += 1;
       const node: SimNode = {
         id: summary.id,
         topicId: detail.id,
         type: summary.type,
         title: summary.title || "Untitled",
         degree: 0,
-        x: cx + Math.cos(ang) * r,
-        y: cy + Math.sin(ang) * r,
+        x: prev ? prev.x : cx + Math.cos(ang) * r,
+        y: prev ? prev.y : cy + Math.sin(ang) * r,
       };
       simNodes.push(node);
       nodeById.set(summary.id, node);
@@ -180,6 +222,13 @@ export function buildForestGraph(
   //   charge -120 (a touch stronger than Quartz's -100·0.5; we have
   //   tighter clusters because trees are densely connected),
   //   centerForce 0.3, linkDistance 36 — plus collide for spacing.
+  // Warm start: when ≥70% of nodes carry positions from the previous
+  // layout, the equilibrium is already mostly found — the simulation
+  // only needs to fold the newcomers in. Lower alpha keeps the settled
+  // majority from being blasted apart again, and a third of the ticks
+  // suffices. This is what keeps rebuilds (node added/deleted) from
+  // shuffling the whole constellation.
+  const warm = simNodes.length > 0 && warmCount / simNodes.length >= 0.7;
   if (simNodes.length > 1) {
     const sim = forceSimulation<SimNode>(simNodes)
       .force("charge", forceManyBody().strength(-120))
@@ -195,9 +244,10 @@ export function buildForestGraph(
       )
       .force("collide", forceCollide<SimNode>((n) => nodeRadius(n) * 1.6).iterations(3))
       .stop();
+    if (warm) sim.alpha(0.3);
     // Run synchronously for a fixed number of ticks. 300 is enough
-    // for the layout to visually settle on graphs up to ~500 nodes.
-    const ticks = 300;
+    // for a cold layout to visually settle on graphs up to ~500 nodes.
+    const ticks = warm ? 100 : 300;
     for (let i = 0; i < ticks; i++) sim.tick();
   }
 
@@ -269,7 +319,7 @@ export function buildForestGraph(
 
   const buildMs = (performance.now() - buildStart).toFixed(1);
   console.info(
-    `[forest] graph built in ${buildMs}ms · ${ready.length} topics · ${g.order} nodes · ${g.size} edges`,
+    `[forest] graph built in ${buildMs}ms (${warm ? "warm" : "cold"}) · ${ready.length} topics · ${g.order} nodes · ${g.size} edges`,
   );
   return { graph: g, anchors: anchorList, neighbors: adjacency, hasNoData: false };
 }

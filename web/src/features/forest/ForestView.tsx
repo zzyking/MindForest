@@ -27,8 +27,11 @@
  *   useHoverDim.ts    hover fade progress + neighbour dim set
  *   useCameraAnchor.ts  keep focus centered through sidebar resize
  *
- * Lifecycle: rebuild graph + re-run simulation when topicDetails or
- * focus changes; sigma instance is single-use, killed and recreated.
+ * Lifecycle: graph rebuilds are gated on `forestLayoutKey` (structure
+ * only — node set, tree edges, links) with a 150ms settle window, so
+ * hydration bursts and title edits don't tear sigma down. Rebuilds
+ * warm-start d3-force from `lastLayoutPositions` and carry the zoom
+ * ratio over; the sigma instance is still single-use per rebuild.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -41,7 +44,7 @@ import { useForestData } from "@/stores/forestData";
 import { useWorkspaceUI } from "@/stores/workspaceUI";
 import type { NodeId, TopicId } from "@/lib/types";
 
-import { buildForestGraph } from "./graphBuild";
+import { buildForestGraph, forestLayoutKey } from "./graphBuild";
 import {
   animateCameraToPoint,
   fitCameraToGraph,
@@ -49,6 +52,7 @@ import {
   getGraphNodePosition,
   resolveCameraTarget,
   setCameraToPoint,
+  type GraphPoint,
 } from "./camera";
 import { makeDrawNodeLabel } from "./drawLabel";
 import { palette, withAlpha } from "./palette";
@@ -64,6 +68,13 @@ interface Props {
 const DIM_ALPHA = 0.3;
 const HOVER_SCALE = 0.16;
 
+// Layout-continuity cache: node positions from the last completed
+// layout, fed back into buildForestGraph as warm-start seeds. Module
+// level on purpose so it survives view switches (tree → forest → tree
+// keeps the constellation in place). Purely derived data — stale or
+// missing entries only mean a colder start, never wrong rendering.
+const lastLayoutPositions = new Map<NodeId, GraphPoint>();
+
 export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
   const topics = useForestData((s) => s.topics);
   const topicDetails = useForestData((s) => s.topicDetails);
@@ -77,6 +88,10 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sigmaRef = useRef<Sigma | null>(null);
+  // Zoom carried across rebuilds *within* this mount — a structural
+  // rebuild (node added/deleted) shouldn't reset how far the user has
+  // zoomed. Across mounts (view switches) the ref resets and we re-fit.
+  const prevRatioRef = useRef<number | null>(null);
 
   // Sigma init takes a real bite of main-thread time (d3-force 300 ticks
   // + canvas allocation). Outer NodePage wrapper animation finishes
@@ -98,12 +113,68 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     }
   }, [topics, topicDetails, detailLoading, fetchTopic]);
 
-  // Build + lay out the graph. Treat as expensive — memoized on the
-  // store snapshots; everything downstream re-wires when these change.
+  // Build + lay out the graph. Gated on the *structural* layout key,
+  // not store object identity — hydration churn and per-keystroke
+  // summary syncs share the same key, so they never trigger a relayout
+  // or sigma teardown. A 150ms settle window coalesces hydration
+  // bursts (N topic details resolving → one rebuild instead of N).
+  // The window only applies once a graph exists; the first real build
+  // settles immediately so initial paint isn't delayed.
+  const layoutKey = forestLayoutKey(topics, topicDetails);
+  const [settledKey, setSettledKey] = useState(layoutKey);
+
   const { graph, anchors, neighbors, hasNoData } = useMemo(
-    () => buildForestGraph(topics, topicDetails),
-    [topics, topicDetails],
+    () => buildForestGraph(topics, topicDetails, lastLayoutPositions),
+    // Deliberately narrowed: settledKey is a pure function of
+    // (topics, topicDetails) — when it changes, this render's snapshots
+    // are exactly the ones that produced it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [settledKey],
   );
+
+  useEffect(() => {
+    if (layoutKey === settledKey) return;
+    if (!graph) {
+      setSettledKey(layoutKey);
+      return;
+    }
+    const t = window.setTimeout(() => setSettledKey(layoutKey), 150);
+    return () => window.clearTimeout(t);
+  }, [layoutKey, settledKey, graph]);
+
+  // Capture settled positions for the next warm start. Replace
+  // wholesale so deleted nodes drop out of the cache.
+  useEffect(() => {
+    if (!graph) return;
+    lastLayoutPositions.clear();
+    graph.forEachNode((id, attrs) =>
+      lastLayoutPositions.set(id as NodeId, { x: attrs.x as number, y: attrs.y as number }),
+    );
+  }, [graph]);
+
+  // Title / type edits don't change the layout key; sync them into the
+  // live graph in place so labels and colors stay fresh without a
+  // relayout.
+  useEffect(() => {
+    if (!graph) return;
+    let dirty = false;
+    for (const detail of Object.values(topicDetails)) {
+      for (const n of detail.nodes) {
+        if (!graph.hasNode(n.id)) continue;
+        const label = n.title || "Untitled";
+        if (graph.getNodeAttribute(n.id, "label") !== label) {
+          graph.setNodeAttribute(n.id, "label", label);
+          dirty = true;
+        }
+        const color = palette().types[n.type];
+        if (graph.getNodeAttribute(n.id, "color") !== color) {
+          graph.setNodeAttribute(n.id, "color", color);
+          dirty = true;
+        }
+      }
+    }
+    if (dirty) sigmaRef.current?.refresh();
+  }, [graph, topicDetails]);
 
   const cameraAnchorRef = useCameraAnchor(sigmaRef, sidebarOpen);
   const {
@@ -143,10 +214,22 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     });
     if (!target) return;
 
+    // Repaint first so the focused node's ink color updates even when
+    // the camera doesn't move.
     s.refresh();
-    animateCameraToPoint(s, target, { duration: 400 });
+    // Skip the tween when the camera is already anchored on this exact
+    // target — clickNode animates immediately and the URL change lands
+    // here right after; a second animate to the same point restarts the
+    // easing mid-flight, which reads as a hitch.
+    const anchor = cameraAnchorRef.current;
+    const alreadyAnchored =
+      anchor !== null &&
+      Math.abs(anchor.x - target.x) < 1e-9 &&
+      Math.abs(anchor.y - target.y) < 1e-9;
+    if (!alreadyAnchored) {
+      animateCameraToPoint(s, target, { duration: 400 });
+    }
     cameraAnchorRef.current = target;
-    s.refresh();
     consumeForestCameraIntent(focusedNodeId, focusedTopicId);
   }, [
     cameraAnchorRef,
@@ -165,6 +248,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     setSigmaReady(false);
     if (!containerRef.current || !graph) return;
     if (sigmaRef.current) {
+      prevRatioRef.current = sigmaRef.current.getCamera().ratio;
       sigmaRef.current.kill();
       sigmaRef.current = null;
     }
@@ -268,7 +352,15 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     s.on("afterRender", projectOverlays);
 
     sigmaRef.current = s;
-    fitCameraToGraph(s, graph);
+    if (prevRatioRef.current !== null) {
+      // Rebuild within this mount: restore the user's zoom instead of
+      // re-fitting. Warm-started layouts keep coordinates roughly
+      // stable, so with the ratio preserved and the camera re-centred
+      // on the focus below, a rebuild reads as "nothing moved".
+      s.getCamera().setState({ ratio: prevRatioRef.current });
+    } else {
+      fitCameraToGraph(s, graph);
+    }
     // Default anchor = the graph point that the fit just centred —
     // i.e. the current viewport centre in graph coords.
     {
@@ -293,6 +385,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       if (!target) {
         projectOverlays();
         return () => {
+          prevRatioRef.current = s.getCamera().ratio;
           s.kill();
           sigmaRef.current = null;
         };
@@ -311,6 +404,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 
     return () => {
       cancelAnimationFrame(revealRafId);
+      prevRatioRef.current = s.getCamera().ratio;
       s.kill();
       sigmaRef.current = null;
     };
