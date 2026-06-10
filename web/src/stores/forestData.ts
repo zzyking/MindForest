@@ -20,11 +20,27 @@ import type {
   Node,
   NodeId,
   NodePatch,
+  NodeSummary,
   Topic,
   TopicDetail,
   TopicId,
   TopicSummary,
 } from "@/lib/types";
+
+/** Project a full `Node` onto the `NodeSummary` shape stored in
+ *  `TopicDetail.nodes`. Single source for the projection — every
+ *  mutation that syncs a topic detail goes through here, so adding a
+ *  summary field is a one-place change. */
+function toNodeSummary(node: Node): NodeSummary {
+  return {
+    id: node.id,
+    parent: node.parent,
+    type: node.type,
+    title: node.title,
+    links: node.links,
+    updated_at: node.updated_at,
+  };
+}
 
 interface ForestDataState {
   // server mirror
@@ -143,14 +159,7 @@ export const useForestData = create<ForestDataState>((set, get) => ({
       // Refresh the topic summary's count if we have it cached.
       const detail = s.topicDetails[node.topic];
       if (detail) {
-        detail.nodes.push({
-          id: node.id,
-          parent: node.parent,
-          type: node.type,
-          title: node.title,
-          links: node.links,
-          updated_at: node.updated_at,
-        });
+        detail.nodes.push(toNodeSummary(node));
       }
       const summary = s.topics[node.topic];
       if (summary) summary.node_count += 1;
@@ -177,15 +186,13 @@ export const useForestData = create<ForestDataState>((set, get) => ({
       set(produce((s: ForestDataState) => {
         s.nodes[id] = updated;
         // Sync the topic detail summary too, so a topic listing reflects
-        // the new title without a separate fetch.
+        // the change without a separate fetch. Whole-record replace —
+        // field-by-field patching here once silently skipped `parent`.
         const detail = s.topicDetails[updated.topic];
         if (detail) {
-          const summary = detail.nodes.find((n) => n.id === id);
-          if (summary) {
-            summary.title = updated.title;
-            summary.links = updated.links;
-            summary.type = updated.type;
-            summary.updated_at = updated.updated_at;
+          const idx = detail.nodes.findIndex((n) => n.id === id);
+          if (idx !== -1) {
+            detail.nodes[idx] = toNodeSummary(updated);
           }
         }
       }));
@@ -221,14 +228,7 @@ export const useForestData = create<ForestDataState>((set, get) => ({
           s.nodes[id] = prev;
           const detail = s.topicDetails[prev.topic];
           if (detail && !detail.nodes.some((n) => n.id === id)) {
-            detail.nodes.push({
-              id: prev.id,
-              parent: prev.parent,
-              type: prev.type,
-              title: prev.title,
-              links: prev.links,
-              updated_at: prev.updated_at,
-            });
+            detail.nodes.push(toNodeSummary(prev));
           }
         }));
       }
