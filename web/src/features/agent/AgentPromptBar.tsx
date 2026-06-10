@@ -14,26 +14,13 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { Sparkles } from "lucide-react";
+import { ArrowLeftRight, Sparkles } from "lucide-react";
 
 import { useMainPaneShiftClass } from "@/app/mainPaneShift";
 import { cn } from "@/lib/cn";
 import { useWorkspaceUI } from "@/stores/workspaceUI";
-import { useAgentSession, type AgentScope } from "./agentStore";
+import { useAgentSession } from "./agentStore";
 import { useConversationKey } from "./conversationKey";
-
-const SCOPES: { id: AgentScope; label: string; hint: string }[] = [
-  {
-    id: "topic",
-    label: "Topic",
-    hint: "Per-topic conversation — swaps with the open topic",
-  },
-  {
-    id: "global",
-    label: "Global",
-    hint: "Global conversation — follows you across topics",
-  },
-];
 
 export function AgentPromptBar() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -159,39 +146,48 @@ export function AgentPromptBar() {
             "flex w-[min(620px,calc(100vw-2rem))] items-center gap-3 rounded-full border px-4 py-2 backdrop-blur-md",
           )}
         >
-          {/* Scope switch: which conversation the bar talks to. Both
-              options stay visible (a two-state cycler reads as
-              ambiguous — is the label the current state or the
-              action?); same segmented-control language as the dock's
-              view toggle. Topic conversations swap with the open
-              topic; Global is one conversation that follows the user
-              across topics. */}
-          <div className="flex items-center gap-1.5">
-            <Sparkles size={12} strokeWidth={2} className="text-forest-500" aria-hidden />
-            <div role="group" aria-label="Conversation scope" className="flex items-center gap-0.5">
-              {SCOPES.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  aria-pressed={scope === s.id}
-                  title={s.hint}
-                  onClick={() => {
-                    setScope(s.id);
-                    inputRef.current?.focus();
-                  }}
-                  className={cn(
-                    "rounded-full px-2 py-1 text-[10px] uppercase tracking-[0.12em]",
-                    "transition-colors duration-200 ease-out",
-                    scope === s.id
-                      ? "bg-forest-800 text-sand-100"
-                      : "text-forest-500 hover:bg-forest-100 hover:text-forest-800",
-                  )}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-          </div>
+          {/* Scope switch: which conversation the bar talks to. One
+              compact chip — the text is the CURRENT scope, the ⇄ icon
+              is the action cue that disambiguates it from a static
+              label (the bare cycler read as "state or action?").
+              Global additionally fills the chip: the exceptional mode
+              should announce itself at a glance. Topic conversations
+              swap with the open topic; Global is one conversation
+              that follows the user across topics. */}
+          <button
+            type="button"
+            onClick={() => {
+              setScope(scope === "topic" ? "global" : "topic");
+              inputRef.current?.focus();
+            }}
+            aria-pressed={scope === "global"}
+            aria-label="Global conversation"
+            title={
+              scope === "topic"
+                ? "Topic conversation — switch to the global one"
+                : "Global conversation — switch back to this topic's"
+            }
+            className={cn(
+              "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.12em]",
+              "transition-colors duration-200 ease-out",
+              scope === "global"
+                ? "bg-forest-800 text-sand-100"
+                : "text-forest-500 hover:bg-forest-100 hover:text-forest-800",
+            )}
+          >
+            <Sparkles size={12} strokeWidth={2} aria-hidden />
+            {/* Reserve the wider label's width so toggling doesn't
+                nudge the input edge. */}
+            <span className="min-w-[2.75rem] text-center">
+              {scope === "topic" ? "Topic" : "Global"}
+            </span>
+            <ArrowLeftRight
+              size={11}
+              strokeWidth={2}
+              aria-hidden
+              className={scope === "global" ? "text-sand-100/70" : "text-forest-400"}
+            />
+          </button>
           <input
             ref={inputRef}
             type="text"
