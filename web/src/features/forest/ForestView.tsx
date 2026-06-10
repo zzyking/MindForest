@@ -1,37 +1,38 @@
 /**
  * ForestView — workspace-wide knowledge graph in the spirit of
- * Quartz's graph view.
- *
- * Reference: https://github.com/jackyzha0/quartz/blob/v4/quartz/components/scripts/graph.inline.ts
+ * Quartz's graph view, with Obsidian-style live physics.
  *
  * Design:
  *   - One unified graph of every node across every topic.
- *   - Layout via d3-force (manyBody + center + link + collide). No
- *     orbit seeding; topics emerge as visual clusters because their
- *     nodes are densely connected within and sparsely across.
- *   - Node radius = 4 + sqrt(degree). Hubs read bigger, leaves smaller.
+ *   - The d3-force simulation is ALIVE: useSimLoop ticks it per rAF
+ *     and writes positions into the graphology graph (sigma repaints
+ *     reactively). It sleeps when alpha cools below alphaMin — zero
+ *     physics and zero rendering at rest — and reheats on structure
+ *     changes, so the cold open reads as an "unfold" and a new node
+ *     glides in beside its parent.
+ *   - Node radius = 6 + 1.5·sqrt(degree). Hubs read bigger.
  *   - Labels hidden by default; only the hovered node and its direct
- *     neighbours light up + show titles. Everything else dims to 0.15
- *     alpha. Same affordance as the Quartz graph.
+ *     neighbours light up + show titles. Everything else dims.
  *   - Tree edges straight; reference links (same- and cross-topic) curved.
  *   - Click navigates to the node.
- *   - Topic labels float above each cluster's centroid (post-settle)
- *     for orientation; click navigates to that topic's root.
+ *   - Topic labels float above each cluster — positions recomputed per
+ *     frame (computeTopicAnchorPoints) since clusters drift while hot.
  *
  * The component owns lifecycle wiring only; the moving parts live in
  * sibling modules:
- *   graphBuild.ts     data → settled graphology graph (d3-force)
+ *   graphBuild.ts     live layout: graph + simulation + structure diffs
+ *   useSimLoop.ts     rAF tick loop with sleep/reheat
  *   camera.ts         framedGraph conversions, fit, target resolution
  *   palette.ts        canvas colors read from tokens.css
  *   drawLabel.ts      hover-capsule label renderer
  *   useHoverDim.ts    hover fade progress + neighbour dim set
  *   useCameraAnchor.ts  keep focus centered through sidebar resize
  *
- * Lifecycle: graph rebuilds are gated on `forestLayoutKey` (structure
- * only — node set, tree edges, links) with a 150ms settle window, so
- * hydration bursts and title edits don't tear sigma down. Rebuilds
- * warm-start d3-force from `lastLayoutPositions` and carry the zoom
- * ratio over; the sigma instance is still single-use per rebuild.
+ * Lifecycle: ONE ForestLayout and ONE sigma instance per mount. Store
+ * changes are diffed into the live graph (gated on `forestLayoutKey`
+ * with a 150ms settle window so hydration bursts coalesce); sigma is
+ * never torn down mid-session. Cross-mount continuity comes from the
+ * module-level `lastLayoutPositions` cache.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -44,7 +45,14 @@ import { useForestData } from "@/stores/forestData";
 import { useWorkspaceUI } from "@/stores/workspaceUI";
 import type { NodeId, TopicId } from "@/lib/types";
 
-import { buildForestGraph, forestLayoutKey } from "./graphBuild";
+import {
+  computeTopicAnchorPoints,
+  createForestLayout,
+  forestLayoutKey,
+  syncForestStructure,
+  type ForestLayout,
+  type TopicAnchorInfo,
+} from "./graphBuild";
 import {
   animateCameraToPoint,
   fitCameraToGraph,
@@ -58,6 +66,7 @@ import { makeDrawNodeLabel } from "./drawLabel";
 import { palette, withAlpha } from "./palette";
 import { useCameraAnchor } from "./useCameraAnchor";
 import { useHoverDim } from "./useHoverDim";
+import { useSimLoop } from "./useSimLoop";
 
 interface Props {
   focusedTopicId: TopicId;
@@ -68,8 +77,8 @@ interface Props {
 const DIM_ALPHA = 0.3;
 const HOVER_SCALE = 0.16;
 
-// Layout-continuity cache: node positions from the last completed
-// layout, fed back into buildForestGraph as warm-start seeds. Module
+// Layout-continuity cache: node positions captured when the view
+// unmounts, fed back as warm-start seeds on the next mount. Module
 // level on purpose so it survives view switches (tree → forest → tree
 // keeps the constellation in place). Purely derived data — stale or
 // missing entries only mean a colder start, never wrong rendering.
@@ -88,16 +97,21 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sigmaRef = useRef<Sigma | null>(null);
-  // Zoom carried across rebuilds *within* this mount — a structural
-  // rebuild (node added/deleted) shouldn't reset how far the user has
-  // zoomed. Across mounts (view switches) the ref resets and we re-fit.
-  const prevRatioRef = useRef<number | null>(null);
 
-  // Sigma init takes a real bite of main-thread time (d3-force 300 ticks
-  // + canvas allocation). Outer NodePage wrapper animation finishes
-  // before sigma even paints, so the entrance is invisible. We gate
-  // ForestView's own opacity+scale transition on `sigmaReady`, flipped
-  // to true one frame after sigma is constructed — guaranteeing the
+  // The live layout — graph + simulation, one per mount.
+  const layoutRef = useRef<ForestLayout | null>(null);
+  // Flipped once the layout has real structure; gates sigma creation.
+  const [graphReady, setGraphReady] = useState(false);
+  // React-rendered derivatives of the layout, replaced on each sync.
+  const [anchors, setAnchors] = useState<TopicAnchorInfo[]>([]);
+  const [neighbors, setNeighbors] = useState<Map<NodeId, Set<NodeId>>>(() => new Map());
+
+  const { reheat, ensureRunning } = useSimLoop(layoutRef, sigmaRef);
+
+  // Sigma init takes a real bite of main-thread time. The outer
+  // NodePage wrapper animation finishes before sigma even paints, so
+  // we gate ForestView's own opacity+scale transition on `sigmaReady`,
+  // flipped one frame after sigma is constructed — guaranteeing the
   // "settle in" lands on actual rendered content.
   const [sigmaReady, setSigmaReady] = useState(false);
 
@@ -113,50 +127,64 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     }
   }, [topics, topicDetails, detailLoading, fetchTopic]);
 
-  // Build + lay out the graph. Gated on the *structural* layout key,
-  // not store object identity — hydration churn and per-keystroke
-  // summary syncs share the same key, so they never trigger a relayout
-  // or sigma teardown. A 150ms settle window coalesces hydration
-  // bursts (N topic details resolving → one rebuild instead of N).
-  // The window only applies once a graph exists; the first real build
-  // settles immediately so initial paint isn't delayed.
+  // Structure syncs are gated on the *structural* layout key, not
+  // store object identity — hydration churn and per-keystroke summary
+  // syncs share the same key, so they never touch the graph. A 150ms
+  // settle window coalesces hydration bursts (N topic details
+  // resolving → one diff instead of N). The window only applies once a
+  // layout exists; the first real sync lands immediately so initial
+  // paint isn't delayed.
   const layoutKey = forestLayoutKey(topics, topicDetails);
   const [settledKey, setSettledKey] = useState(layoutKey);
 
-  const { graph, anchors, neighbors, hasNoData } = useMemo(
-    () => buildForestGraph(topics, topicDetails, lastLayoutPositions),
-    // Deliberately narrowed: settledKey is a pure function of
-    // (topics, topicDetails) — when it changes, this render's snapshots
-    // are exactly the ones that produced it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [settledKey],
-  );
-
   useEffect(() => {
     if (layoutKey === settledKey) return;
-    if (!graph) {
+    if (!layoutRef.current) {
       setSettledKey(layoutKey);
       return;
     }
     const t = window.setTimeout(() => setSettledKey(layoutKey), 150);
     return () => window.clearTimeout(t);
-  }, [layoutKey, settledKey, graph]);
+  }, [layoutKey, settledKey]);
 
-  // Capture settled positions for the next warm start. Replace
-  // wholesale so deleted nodes drop out of the cache.
+  // Diff the store snapshot into the live layout, then decide how much
+  // energy the change deserves.
   useEffect(() => {
-    if (!graph) return;
-    lastLayoutPositions.clear();
-    graph.forEachNode((id, attrs) =>
-      lastLayoutPositions.set(id as NodeId, { x: attrs.x as number, y: attrs.y as number }),
+    let layout = layoutRef.current;
+    const isCreation = !layout;
+    if (!layout) layout = createForestLayout();
+    const res = syncForestStructure(
+      layout,
+      topics,
+      topicDetails,
+      isCreation ? lastLayoutPositions : undefined,
     );
-  }, [graph]);
+    if (!res.hasReadyData) return;
+    layoutRef.current = layout;
+    setAnchors(layout.anchors);
+    setNeighbors(layout.neighbors);
+    setGraphReady(true);
+    if (isCreation) {
+      // Warm mounts (view switch back) resume nearly settled — a low
+      // simmer finishes whatever relaxing was cut off at unmount
+      // without visibly rearranging anything. Cold mounts get the
+      // full unfold (0.6 won the crossing-harness sweep).
+      reheat(res.warmFraction >= 0.95 ? 0.1 : 0.6);
+    } else if (res.added > 0 || res.removed > 0 || res.edgesChanged) {
+      // Fold the newcomers in without blasting the settled majority.
+      reheat(0.3);
+    }
+    // The closure's snapshots are exactly the ones that produced
+    // settledKey — see the settle effect above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settledKey]);
 
   // Title / type edits don't change the layout key; sync them into the
   // live graph in place so labels and colors stay fresh without a
-  // relayout.
+  // structure diff.
   useEffect(() => {
-    if (!graph) return;
+    const graph = layoutRef.current?.graph;
+    if (!graph || !graphReady) return;
     let dirty = false;
     for (const detail of Object.values(topicDetails)) {
       for (const n of detail.nodes) {
@@ -174,7 +202,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       }
     }
     if (dirty) sigmaRef.current?.refresh();
-  }, [graph, topicDetails]);
+  }, [graphReady, topicDetails]);
 
   const cameraAnchorRef = useCameraAnchor(sigmaRef, sidebarOpen);
   const {
@@ -184,15 +212,26 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     resolveDimSet,
   } = useHoverDim(sigmaRef, neighbors);
 
-  const labelsLayerRef = useRef<HTMLDivElement | null>(null);
   const labelNodeRefs = useRef(new Map<TopicId, HTMLDivElement>());
+
+  // Callback refs so the (single-use) sigma effect never has to re-run
+  // when a dependency's identity churns — setHover closes over the
+  // per-sync neighbors map, and tearing sigma down for that would
+  // throw away the whole "graph is alive" continuity.
+  const focusRef = useRef(focus);
+  const setHoverRef = useRef(setHover);
+  useEffect(() => {
+    focusRef.current = focus;
+    setHoverRef.current = setHover;
+  }, [focus, setHover]);
 
   const focusedNodeIdRef = useRef(focusedNodeId);
   const focusedTopicIdRef = useRef(focusedTopicId);
   useEffect(() => {
     focusedNodeIdRef.current = focusedNodeId;
     const s = sigmaRef.current;
-    if (!s || !graph) {
+    const graph = layoutRef.current?.graph ?? null;
+    if (!s || !graph || !graphReady) {
       focusedTopicIdRef.current = focusedTopicId;
       return;
     }
@@ -237,21 +276,17 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     focusedNodeId,
     focusedTopicId,
     forestCameraIntent,
-    graph,
+    graphReady,
     topicDetails,
   ]);
 
+  // Sigma lifecycle — created once per mount, killed only at unmount.
+  // Structure changes mutate the graph it's already rendering.
   useEffect(() => {
-    // Reset visibility on every graph rebuild so the next reveal
-    // triggers a fresh transition (false → true) rather than being
-    // batched away.
-    setSigmaReady(false);
-    if (!containerRef.current || !graph) return;
-    if (sigmaRef.current) {
-      prevRatioRef.current = sigmaRef.current.getCamera().ratio;
-      sigmaRef.current.kill();
-      sigmaRef.current = null;
-    }
+    if (!containerRef.current || !graphReady) return;
+    const layout = layoutRef.current;
+    if (!layout) return;
+    const graph = layout.graph;
 
     const drawLabel = makeDrawNodeLabel(() => hoverProgressRef.current);
 
@@ -326,12 +361,15 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       },
     });
 
+    // Topic labels track their (drifting) clusters: positions are
+    // recomputed from the live graph on every render/camera tick.
     const projectOverlays = () => {
-      for (const a of anchors) {
-        const label = labelNodeRefs.current.get(a.topicId);
-        if (!label) continue;
-        const v = s.graphToViewport({ x: a.centerX, y: a.topY });
-        label.style.transform = `translate3d(${v.x}px, ${v.y}px, 0) translate(-50%, -100%)`;
+      const points = computeTopicAnchorPoints(graph);
+      for (const [topicId, el] of labelNodeRefs.current) {
+        const p = points.get(topicId);
+        if (!p) continue;
+        const v = s.graphToViewport(p);
+        el.style.transform = `translate3d(${v.x}px, ${v.y}px, 0) translate(-50%, -100%)`;
       }
     };
 
@@ -342,25 +380,17 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       const x = graph.getNodeAttribute(node, "x") as number;
       const y = graph.getNodeAttribute(node, "y") as number;
 
-      void focus(node as NodeId, topicId);
+      void focusRef.current(node as NodeId, topicId);
       animateCameraToPoint(s, { x, y }, { duration: 400 });
       cameraAnchorRef.current = { x, y };
     });
-    s.on("enterNode", ({ node }) => setHover(node as NodeId));
-    s.on("leaveNode", () => setHover(null));
+    s.on("enterNode", ({ node }) => setHoverRef.current(node as NodeId));
+    s.on("leaveNode", () => setHoverRef.current(null));
     s.getCamera().on("updated", projectOverlays);
     s.on("afterRender", projectOverlays);
 
     sigmaRef.current = s;
-    if (prevRatioRef.current !== null) {
-      // Rebuild within this mount: restore the user's zoom instead of
-      // re-fitting. Warm-started layouts keep coordinates roughly
-      // stable, so with the ratio preserved and the camera re-centred
-      // on the focus below, a rebuild reads as "nothing moved".
-      s.getCamera().setState({ ratio: prevRatioRef.current });
-    } else {
-      fitCameraToGraph(s, graph);
-    }
+    fitCameraToGraph(s, graph);
     // Default anchor = the graph point that the fit just centred —
     // i.e. the current viewport centre in graph coords.
     {
@@ -376,25 +406,24 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
           focusedNodeId: focusedNodeIdRef.current,
           focusedTopicId: focusedTopicIdRef.current,
           graph,
-          // Graph rebuilds can be caused by background topic-detail hydration
-          // before the route focus changes. Preserve the current node then;
-          // route-driven topic changes are handled by the focus effect above.
+          // Mount can happen before the route focus changes; preserve
+          // the current node then — route-driven topic changes are
+          // handled by the focus effect above.
           cameraMode: "node",
-          topicDetails,
+          topicDetails: useForestData.getState().topicDetails,
         }) ?? getGraphNodePosition(graph, focusedNodeIdRef.current);
-      if (!target) {
-        projectOverlays();
-        return () => {
-          prevRatioRef.current = s.getCamera().ratio;
-          s.kill();
-          sigmaRef.current = null;
-        };
+      if (target) {
+        setCameraToPoint(s, target);
+        cameraAnchorRef.current = target;
       }
-      setCameraToPoint(s, target);
-      cameraAnchorRef.current = target;
     }
 
     projectOverlays();
+
+    // Resume the tick loop if the simulation still has energy — a
+    // StrictMode remount (or any future re-run) cancels the rAF in
+    // useSimLoop's cleanup, and nothing else would restart it.
+    ensureRunning();
 
     // Reveal one frame after sigma is constructed so the entrance
     // transition starts the moment the first real frame paints, not
@@ -404,28 +433,34 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
 
     return () => {
       cancelAnimationFrame(revealRafId);
-      prevRatioRef.current = s.getCamera().ratio;
+      // Cross-mount continuity: persist where every node ended up.
+      lastLayoutPositions.clear();
+      for (const n of layout.simNodes) {
+        lastLayoutPositions.set(n.id, { x: n.x ?? 0, y: n.y ?? 0 });
+      }
       s.kill();
       sigmaRef.current = null;
     };
-  }, [graph, focus, anchors, neighbors, setHover, resolveDimSet, hoverProgressRef, cameraAnchorRef]);
+    // Refs (callbacks routed through focusRef/setHoverRef) keep this
+    // effect single-use; only graphReady's false→true flip triggers it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graphReady, resolveDimSet, hoverProgressRef, cameraAnchorRef, ensureRunning]);
 
   const srSummary = useMemo(() => {
-    if (!graph) return "";
-    const topicCount = anchors.length;
-    const totalNodes = graph.order;
+    if (anchors.length === 0) return "";
+    const totalNodes = anchors.reduce((s, a) => s + a.nodeCount, 0);
     const topicTitles = anchors.map((a) => `${a.title} (${a.nodeCount})`).join(", ");
-    return `Forest map of the workspace. ${topicCount} topic${topicCount === 1 ? "" : "s"}, ${totalNodes} node${totalNodes === 1 ? "" : "s"} total. Topics: ${topicTitles}.`;
-  }, [anchors, graph]);
+    return `Forest map of the workspace. ${anchors.length} topic${anchors.length === 1 ? "" : "s"}, ${totalNodes} node${totalNodes === 1 ? "" : "s"} total. Topics: ${topicTitles}.`;
+  }, [anchors]);
 
-  if (hasNoData) {
+  if (Object.keys(topics).length === 0) {
     return (
       <div className="text-forest-400 flex h-full items-center justify-center text-sm">
         No topics yet.
       </div>
     );
   }
-  if (!graph) {
+  if (!graphReady) {
     return (
       <div className="text-forest-400 flex h-full items-center justify-center text-sm">
         Loading…
@@ -461,7 +496,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
           </p>
         ))}
       </div>
-      <div ref={labelsLayerRef} className="pointer-events-none absolute inset-0">
+      <div className="pointer-events-none absolute inset-0">
         {anchors.map((a) => {
           const focused = a.topicId === focusedTopicId;
           const detail = topicDetails[a.topicId];

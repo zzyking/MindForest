@@ -1,14 +1,23 @@
 /**
- * Forest graph assembly — pure data work, no React and no sigma.
+ * Forest graph assembly + live d3-force layout.
  *
- * Takes the store's topic summaries + details and produces:
- *   - a settled graphology graph (d3-force layout baked into x/y),
- *   - per-topic anchors (centroid + bbox top) for the floating labels,
- *   - a neighbour adjacency map for the hover reducer.
+ * The forest is a *live system*, Obsidian-style: ForestView owns one
+ * `ForestLayout` for its whole mount — a graphology graph, a d3-force
+ * simulation, and the simulation's node/link arrays — and `useSimLoop`
+ * ticks the simulation on rAF, writing positions into the graph each
+ * frame (sigma repaints reactively off graphology events). Structure
+ * changes never rebuild anything: `syncForestStructure` diffs the
+ * store snapshot into the existing graph + simulation and the caller
+ * reheats — new nodes glide in from beside their parent instead of the
+ * whole constellation re-settling.
  *
- * d3-force runs synchronously for a fixed 300 ticks — enough for the
- * layout to visually settle on graphs up to ~500 nodes. Callers should
- * treat a build as expensive (tens of ms) and memoize on inputs.
+ * Cold positions come from a radial tidy-tree seed (planar for tree
+ * edges — see radialTreeSeed) so the first relax animates an "unfold"
+ * instead of untangling random noise.
+ *
+ * The crossing-count harness (web/scripts/layout-crossings.mts) drives
+ * this same code through the synchronous `buildForestGraph` wrapper —
+ * re-run it whenever the forces or the seeding change.
  */
 
 import {
@@ -19,6 +28,8 @@ import {
   forceSimulation,
   forceX,
   forceY,
+  type ForceLink,
+  type Simulation,
   type SimulationLinkDatum,
   type SimulationNodeDatum,
 } from "d3-force";
@@ -27,7 +38,9 @@ import Graph from "graphology";
 import { palette } from "./palette";
 import type { NodeId, NodeType, TopicDetail, TopicId, TopicSummary } from "@/lib/types";
 
-interface SimNode extends SimulationNodeDatum {
+export type EdgeKind = "tree" | "link" | "xlink";
+
+export interface SimNode extends SimulationNodeDatum {
   id: NodeId;
   topicId: TopicId;
   type: NodeType;
@@ -35,27 +48,47 @@ interface SimNode extends SimulationNodeDatum {
   degree: number;
 }
 
-interface SimLink extends SimulationLinkDatum<SimNode> {
+export interface SimLink extends SimulationLinkDatum<SimNode> {
   source: NodeId | SimNode;
   target: NodeId | SimNode;
-  /** "tree" | "link" (same-topic) | "xlink" (cross-topic). */
-  kind: "tree" | "link" | "xlink";
+  kind: EdgeKind;
 }
 
-export interface TopicAnchor {
+/** Static per-topic info for the floating labels. Positions are
+ *  computed live per frame via computeTopicAnchorPoints — with a
+ *  running simulation there is no "settled centroid" to bake. */
+export interface TopicAnchorInfo {
   topicId: TopicId;
   title: string;
-  centerX: number;
-  centerY: number;
-  topY: number;
   nodeCount: number;
 }
 
-export interface ForestGraphData {
-  graph: Graph | null;
-  anchors: TopicAnchor[];
+/**
+ * The live layout owned by ForestView for its whole mount. `graph` and
+ * `sim` keep their identity across structure syncs; `simNodes` /
+ * `nodeById` / `neighbors` / `anchors` are replaced or mutated by
+ * syncForestStructure.
+ */
+export interface ForestLayout {
+  graph: Graph;
+  sim: Simulation<SimNode, SimLink>;
+  linkForce: ForceLink<SimNode, SimLink>;
+  simNodes: SimNode[];
+  nodeById: Map<NodeId, SimNode>;
   neighbors: Map<NodeId, Set<NodeId>>;
-  hasNoData: boolean;
+  anchors: TopicAnchorInfo[];
+}
+
+export interface SyncResult {
+  /** False when no topic detail has hydrated yet — nothing to show. */
+  hasReadyData: boolean;
+  /** True when this sync populated an empty layout. */
+  isCreation: boolean;
+  added: number;
+  removed: number;
+  edgesChanged: boolean;
+  /** Creation only: fraction of nodes seeded from prevPositions. */
+  warmFraction: number;
 }
 
 /** Seedable PRNG so HMR doesn't reshuffle the layout on each tick. */
@@ -75,6 +108,8 @@ function mulberry32(seed: number) {
  *  branches outward through each other. */
 const RING = 40;
 
+const nodeRadius = (n: SimNode) => 6 + 1.5 * Math.sqrt(n.degree);
+
 interface RadialSeed {
   positions: Map<NodeId, { x: number; y: number }>;
   /** Outer radius of the seeded disc (for topic-center spacing). */
@@ -88,7 +123,7 @@ interface RadialSeed {
  * wedge. By construction the tree edges of this embedding never cross
  * — and d3-force started from a planar embedding mostly just relaxes
  * distances instead of inventing a new (tangled) equilibrium, which is
- * what kills the edge crossings the old random-disc seeding produced.
+ * what kills the edge crossings random-disc seeding used to produce.
  * Cross-`links` may still cross tree edges; the graph including them
  * isn't planar in general, and they render as curves anyway.
  */
@@ -174,11 +209,11 @@ function radialTreeSeed(detail: TopicDetail): RadialSeed {
  * edges, link edges) — node titles and types deliberately excluded
  * because they only affect labels/colors, which ForestView syncs into
  * the live graph in place. Topic titles are included (they feed the
- * floating anchors, and renames are rare enough that a rebuild is
+ * floating anchors, and renames are rare enough that a resync is
  * fine).
  *
- * Used to gate `buildForestGraph` so that per-keystroke summary syncs
- * and hydration-order identity churn don't trigger relayouts.
+ * Used to gate `syncForestStructure` so that per-keystroke summary
+ * syncs and hydration-order identity churn don't trigger graph diffs.
  */
 export function forestLayoutKey(
   topics: Record<TopicId, TopicSummary>,
@@ -202,254 +237,419 @@ export function forestLayoutKey(
   return parts.join("|");
 }
 
-export function buildForestGraph(
+/**
+ * Fresh, empty live layout. Forces are configured once here; the alpha
+ * starts at 0 (asleep) — callers reheat after syncing structure in.
+ * Parameters tuned against the crossing harness:
+ *   charge -120 / center 0.3 / tree links 36px @ 0.7 /
+ *   reference links 64px @ 0.25 (anything stronger folds unrelated
+ *   branches through each other) / collide for spacing.
+ */
+export function createForestLayout(): ForestLayout {
+  const graph = new Graph({ multi: false, type: "undirected", allowSelfLoops: false });
+  const linkForce = forceLink<SimNode, SimLink>([])
+    .id((n) => n.id)
+    .distance((l) => (l.kind === "tree" ? 36 : 64))
+    .strength((l) => (l.kind === "tree" ? 0.7 : l.kind === "link" ? 0.25 : 0.2));
+  const sim = forceSimulation<SimNode>([])
+    .force("charge", forceManyBody().strength(-120))
+    .force("center", forceCenter(0, 0).strength(0.3))
+    .force("x", forceX(0).strength(0.04)) // Pull disconnected topics closer
+    .force("y", forceY(0).strength(0.04)) // Pull disconnected topics closer
+    .force("link", linkForce)
+    .force("collide", forceCollide<SimNode>((n) => nodeRadius(n) * 1.6).iterations(3))
+    .stop(); // we drive ticks manually (useSimLoop / buildForestGraph)
+  sim.alpha(0);
+  return {
+    graph,
+    sim,
+    linkForce,
+    simNodes: [],
+    nodeById: new Map(),
+    neighbors: new Map(),
+    anchors: [],
+  };
+}
+
+/**
+ * Diff the store snapshot into the live layout: add/remove graph nodes
+ * and edges in place, position newcomers, rebind the simulation arrays.
+ * Does NOT tick or reheat — the caller decides how much energy the
+ * change deserves (cold unfold vs. folding a few nodes in).
+ *
+ * New-node placement priority:
+ *   1. `prevPositions` (cross-mount warm start, creation only),
+ *   2. the topic's radial tidy-tree seed (creation, or a whole new
+ *      topic appearing mid-session — placed beyond the current bbox),
+ *   3. beside the parent's current position (multi-pass, so an agent
+ *      batch adding a whole subtree chains correctly),
+ *   4. the topic centroid (orphans).
+ */
+export function syncForestStructure(
+  layout: ForestLayout,
   topics: Record<TopicId, TopicSummary>,
   topicDetails: Record<TopicId, TopicDetail>,
-  /** Positions from the previous layout. When most nodes are covered,
-   *  the simulation warm-starts from them (fewer ticks, lower alpha) so
-   *  consecutive layouts stay visually continuous instead of finding a
-   *  fresh equilibrium that shuffles the whole constellation. */
   prevPositions?: ReadonlyMap<NodeId, { x: number; y: number }>,
-): ForestGraphData {
-  const buildStart = performance.now();
+): SyncResult {
+  const t0 = performance.now();
   const ready: TopicDetail[] = (Object.keys(topics) as TopicId[])
     .sort()
     .map((id) => topicDetails[id])
     .filter((d): d is TopicDetail => Boolean(d));
-
+  const isCreation = layout.simNodes.length === 0;
   if (ready.length === 0) {
-    return {
-      graph: null,
-      anchors: [],
-      neighbors: new Map<NodeId, Set<NodeId>>(),
-      hasNoData: Object.keys(topics).length === 0,
-    };
+    return { hasReadyData: false, isCreation, added: 0, removed: 0, edgesChanged: false, warmFraction: 0 };
   }
+  const { graph } = layout;
 
-  // Pass 1: build the simulation node + link lists. d3-force mutates
-  // these in place (assigns x/y), so we read the positions back
-  // after settling.
-  const simNodes: SimNode[] = [];
-  const simLinks: SimLink[] = [];
-  const nodeById = new Map<NodeId, SimNode>();
-  const adjacency = new Map<NodeId, Set<NodeId>>();
-  const addEdge = (a: NodeId, b: NodeId) => {
-    let ax = adjacency.get(a);
-    if (!ax) {
-      ax = new Set();
-      adjacency.set(a, ax);
+  // ── Desired structure ─────────────────────────────────────────────
+  interface DesiredNode {
+    topicId: TopicId;
+    type: NodeType;
+    title: string;
+    parent: NodeId | null;
+  }
+  const desiredNodes = new Map<NodeId, DesiredNode>();
+  for (const detail of ready) {
+    for (const n of detail.nodes) {
+      desiredNodes.set(n.id, {
+        topicId: detail.id,
+        type: n.type,
+        title: n.title || "Untitled",
+        parent: n.parent,
+      });
     }
+  }
+  const pairKey = (a: NodeId, b: NodeId) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+  const desiredEdges = new Map<string, { a: NodeId; b: NodeId; kind: EdgeKind }>();
+  const adjacency = new Map<NodeId, Set<NodeId>>();
+  const addAdj = (a: NodeId, b: NodeId) => {
+    let ax = adjacency.get(a);
+    if (!ax) adjacency.set(a, (ax = new Set()));
     ax.add(b);
     let bx = adjacency.get(b);
-    if (!bx) {
-      bx = new Set();
-      adjacency.set(b, bx);
-    }
+    if (!bx) adjacency.set(b, (bx = new Set()));
     bx.add(a);
   };
-
-  // Seed initial positions. Priority per node:
-  //   1. its own previous position (warm start),
-  //   2. next to its parent's previous position (a node just added to a
-  //      settled graph folds in beside its parent instead of flying in
-  //      from a random spot — no chance to drag an edge across others),
-  //   3. the topic's radial tidy-tree position (cold start; planar for
-  //      the tree edges, see radialTreeSeed).
-  // Topic centres sit on an orbit sized so neighbouring seed discs
-  // can't overlap (adjacent-centre distance ≈ 2·orbit·sin(π/N)).
-  const N = ready.length;
-  const rand = mulberry32(0xc0ffee);
-  const seeds = ready.map(radialTreeSeed);
-  const maxR = Math.max(...seeds.map((s) => s.radius)) + 30;
-  const orbit = N === 1 ? 0 : Math.max(60, maxR / Math.sin(Math.PI / N));
-  let warmCount = 0;
-  for (let i = 0; i < ready.length; i++) {
-    const detail = ready[i]!;
-    const seed = seeds[i]!;
-    const theta = N === 1 ? 0 : (2 * Math.PI * i) / N - Math.PI / 2;
-    const cx = Math.cos(theta) * orbit;
-    const cy = Math.sin(theta) * orbit;
-    for (const summary of detail.nodes) {
-      const prev = prevPositions?.get(summary.id);
-      const parentPrev = summary.parent ? prevPositions?.get(summary.parent) : undefined;
-      if (prev) warmCount += 1;
-      let x: number;
-      let y: number;
-      if (prev) {
-        x = prev.x;
-        y = prev.y;
-      } else if (parentPrev) {
-        const ang = rand() * Math.PI * 2;
-        x = parentPrev.x + Math.cos(ang) * 14;
-        y = parentPrev.y + Math.sin(ang) * 14;
-      } else {
-        const p = seed.positions.get(summary.id) ?? { x: 0, y: 0 };
-        // ±2px jitter breaks the perfect symmetry of e.g. star graphs,
-        // which can deadlock the charge force.
-        x = cx + p.x + (rand() - 0.5) * 4;
-        y = cy + p.y + (rand() - 0.5) * 4;
-      }
-      const node: SimNode = {
-        id: summary.id,
-        topicId: detail.id,
-        type: summary.type,
-        title: summary.title || "Untitled",
-        degree: 0,
-        x,
-        y,
-      };
-      simNodes.push(node);
-      nodeById.set(summary.id, node);
+  // Tree edges first so a parent edge wins over a duplicate reference
+  // link on the same pair.
+  for (const detail of ready) {
+    for (const n of detail.nodes) {
+      if (!n.parent || !desiredNodes.has(n.parent)) continue;
+      desiredEdges.set(pairKey(n.id, n.parent), { a: n.parent, b: n.id, kind: "tree" });
+      addAdj(n.id, n.parent);
     }
   }
-
-  // Tree-backbone edges.
   for (const detail of ready) {
-    for (const summary of detail.nodes) {
-      if (!summary.parent) continue;
-      if (!nodeById.has(summary.parent)) continue;
-      simLinks.push({ source: summary.parent, target: summary.id, kind: "tree" });
-      addEdge(summary.parent, summary.id);
-    }
-  }
-  // Link edges (same-topic + cross-topic).
-  const seen = new Set<string>();
-  for (const detail of ready) {
-    for (const summary of detail.nodes) {
-      for (const dst of summary.links) {
-        if (!nodeById.has(dst)) continue;
-        const key = summary.id < dst ? `${summary.id}|${dst}` : `${dst}|${summary.id}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const sameTopic = nodeById.get(summary.id)?.topicId === nodeById.get(dst)?.topicId;
-        simLinks.push({
-          source: summary.id,
-          target: dst,
-          kind: sameTopic ? "link" : "xlink",
+    for (const n of detail.nodes) {
+      for (const dst of n.links) {
+        const other = desiredNodes.get(dst);
+        if (!other || dst === n.id) continue;
+        const key = pairKey(n.id, dst);
+        if (desiredEdges.has(key)) continue;
+        desiredEdges.set(key, {
+          a: n.id,
+          b: dst,
+          kind: other.topicId === detail.id ? "link" : "xlink",
         });
-        addEdge(summary.id, dst);
+        addAdj(n.id, dst);
       }
     }
   }
 
-  // Compute degree (used for radius + reducer).
-  for (const node of simNodes) {
-    node.degree = adjacency.get(node.id)?.size ?? 0;
+  // ── Removals ──────────────────────────────────────────────────────
+  let removed = 0;
+  for (const id of [...layout.nodeById.keys()]) {
+    if (desiredNodes.has(id)) continue;
+    graph.dropNode(id); // drops incident edges too
+    layout.nodeById.delete(id);
+    removed += 1;
+  }
+  if (removed > 0) {
+    layout.simNodes = layout.simNodes.filter((n) => layout.nodeById.has(n.id));
   }
 
-  const nodeRadius = (n: SimNode) => 6 + 1.5 * Math.sqrt(n.degree);
-
-  // Run d3-force. Parameters tuned from Quartz's defaults:
-  //   charge -120 (a touch stronger than Quartz's -100·0.5; we have
-  //   tighter clusters because trees are densely connected),
-  //   centerForce 0.3, linkDistance 36 — plus collide for spacing.
-  // Warm start: when ≥70% of nodes carry positions from the previous
-  // layout, the equilibrium is already mostly found — the simulation
-  // only needs to fold the newcomers in. Lower alpha keeps the settled
-  // majority from being blasted apart again, and a third of the ticks
-  // suffices. This is what keeps rebuilds (node added/deleted) from
-  // shuffling the whole constellation.
-  const warm = simNodes.length > 0 && warmCount / simNodes.length >= 0.7;
-  if (simNodes.length > 1) {
-    const sim = forceSimulation<SimNode>(simNodes)
-      .force("charge", forceManyBody().strength(-120))
-      .force("center", forceCenter(0, 0).strength(0.3))
-      .force("x", forceX(0).strength(0.04)) // Pull disconnected topics closer
-      .force("y", forceY(0).strength(0.04)) // Pull disconnected topics closer
-      .force(
-        "link",
-        forceLink<SimNode, SimLink>(simLinks)
-          .id((n) => n.id)
-          .distance((l) => (l.kind === "tree" ? 36 : 64))
-          .strength((l) => (l.kind === "tree" ? 0.7 : l.kind === "link" ? 0.25 : 0.2)),
-      )
-      .force("collide", forceCollide<SimNode>((n) => nodeRadius(n) * 1.6).iterations(3))
-      .stop();
-    // Both branches start below d3's default alpha=1: the seed (radial
-    // tree or previous positions) is already near the equilibrium we
-    // want, and a full-energy run tears the planar embedding apart
-    // before it cools — measurably re-creating edge crossings the seed
-    // had already eliminated. 0.6 cold won the (alpha × link-strength)
-    // sweep in the crossing-count harness.
-    sim.alpha(warm ? 0.3 : 0.6);
-    // Run synchronously for a fixed number of ticks. 300 is enough
-    // for a cold layout to visually settle on graphs up to ~500 nodes.
-    const ticks = warm ? 100 : 300;
-    for (let i = 0; i < ticks; i++) sim.tick();
+  // ── Additions ─────────────────────────────────────────────────────
+  const rand = mulberry32(0xc0ffee);
+  // Topics needing a fresh radial seed: at creation all of them (on a
+  // non-overlapping orbit); incrementally only topics with no existing
+  // nodes (lined up beyond the current bounding box).
+  const seedsByTopic = new Map<
+    TopicId,
+    { positions: Map<NodeId, { x: number; y: number }>; cx: number; cy: number }
+  >();
+  if (isCreation) {
+    const seeds = ready.map(radialTreeSeed);
+    const N = ready.length;
+    const maxR = Math.max(...seeds.map((s) => s.radius)) + 30;
+    // Adjacent-centre distance on the orbit ≈ 2·orbit·sin(π/N) — keep
+    // it ≥ two disc radii so seed discs can't interleave.
+    const orbit = N === 1 ? 0 : Math.max(60, maxR / Math.sin(Math.PI / N));
+    for (let i = 0; i < N; i++) {
+      const theta = N === 1 ? 0 : (2 * Math.PI * i) / N - Math.PI / 2;
+      seedsByTopic.set(ready[i]!.id, {
+        positions: seeds[i]!.positions,
+        cx: Math.cos(theta) * orbit,
+        cy: Math.sin(theta) * orbit,
+      });
+    }
+  } else {
+    let maxX = -Infinity;
+    let sumY = 0;
+    let count = 0;
+    for (const n of layout.simNodes) {
+      const x = n.x ?? 0;
+      if (x > maxX) maxX = x;
+      sumY += n.y ?? 0;
+      count += 1;
+    }
+    let offsetX = count > 0 ? maxX : 0;
+    for (const detail of ready) {
+      if (detail.nodes.some((n) => layout.nodeById.has(n.id))) continue;
+      const seed = radialTreeSeed(detail);
+      offsetX += seed.radius + 80;
+      seedsByTopic.set(detail.id, {
+        positions: seed.positions,
+        cx: offsetX,
+        cy: count > 0 ? sumY / count : 0,
+      });
+      offsetX += seed.radius;
+    }
   }
 
-  // Pass 2: write into a graphology graph for sigma to render.
-  const g = new Graph({ multi: false, type: "undirected", allowSelfLoops: false });
-  for (const node of simNodes) {
-    g.addNode(node.id, {
-      x: node.x ?? 0,
-      y: node.y ?? 0,
+  let added = 0;
+  let warmCount = 0;
+  const addNodeAt = (id: NodeId, info: DesiredNode, x: number, y: number) => {
+    const node: SimNode = {
+      id,
+      topicId: info.topicId,
+      type: info.type,
+      title: info.title,
+      degree: 0,
+      x,
+      y,
+    };
+    layout.simNodes.push(node);
+    layout.nodeById.set(id, node);
+    graph.addNode(id, {
+      x,
+      y,
       size: nodeRadius(node),
-      label: node.title,
-      color: palette().types[node.type],
-      topicId: node.topicId,
-      nodeType: node.type,
-      degree: node.degree,
+      label: info.title,
+      color: palette().types[info.type],
+      topicId: info.topicId,
+      nodeType: info.type,
+      degree: 0,
     });
+    added += 1;
+  };
+
+  // Phase 1: previous position or topic seed.
+  const pending: NodeId[] = [];
+  for (const [id, info] of desiredNodes) {
+    if (layout.nodeById.has(id)) continue;
+    const prev = prevPositions?.get(id);
+    if (prev) {
+      warmCount += 1;
+      addNodeAt(id, info, prev.x, prev.y);
+      continue;
+    }
+    const seed = seedsByTopic.get(info.topicId);
+    const p = seed?.positions.get(id);
+    if (seed && p) {
+      // ±2px jitter breaks the perfect symmetry of e.g. star graphs,
+      // which can deadlock the charge force.
+      addNodeAt(id, info, seed.cx + p.x + (rand() - 0.5) * 4, seed.cy + p.y + (rand() - 0.5) * 4);
+      continue;
+    }
+    pending.push(id);
   }
-  for (const link of simLinks) {
-    const sId =
-      typeof link.source === "string" ? (link.source as NodeId) : link.source.id;
-    const tId =
-      typeof link.target === "string" ? (link.target as NodeId) : link.target.id;
-    const key = `${link.kind}:${sId}->${tId}`;
-    if (g.hasEdge(sId, tId)) continue;
-    g.addEdgeWithKey(key, sId, tId, {
+  // Phase 2: beside the parent. Multi-pass so freshly-placed parents
+  // can host their own new children in the same sync.
+  let progress = true;
+  while (progress && pending.length > 0) {
+    progress = false;
+    for (let i = pending.length - 1; i >= 0; i--) {
+      const id = pending[i]!;
+      const info = desiredNodes.get(id)!;
+      const parent = info.parent ? layout.nodeById.get(info.parent) : undefined;
+      if (!parent) continue;
+      const ang = rand() * Math.PI * 2;
+      addNodeAt(id, info, (parent.x ?? 0) + Math.cos(ang) * 14, (parent.y ?? 0) + Math.sin(ang) * 14);
+      pending.splice(i, 1);
+      progress = true;
+    }
+  }
+  // Phase 3: orphans land at their topic's current centroid.
+  for (const id of pending) {
+    const info = desiredNodes.get(id)!;
+    let sx = 0;
+    let sy = 0;
+    let c = 0;
+    for (const n of layout.simNodes) {
+      if (n.topicId !== info.topicId) continue;
+      sx += n.x ?? 0;
+      sy += n.y ?? 0;
+      c += 1;
+    }
+    const ang = rand() * Math.PI * 2;
+    addNodeAt(
+      id,
+      info,
+      (c > 0 ? sx / c : 0) + Math.cos(ang) * 30,
+      (c > 0 ? sy / c : 0) + Math.sin(ang) * 30,
+    );
+  }
+
+  // ── Edge diff ─────────────────────────────────────────────────────
+  let edgesChanged = false;
+  const dropKeys: string[] = [];
+  graph.forEachEdge((edgeKey, attrs, s, t) => {
+    const want = desiredEdges.get(pairKey(s as NodeId, t as NodeId));
+    // Kind changes (e.g. reparent turning a link pair into a tree pair)
+    // are handled as drop + re-add so render attrs stay consistent.
+    if (!want || want.kind !== (attrs.kind as EdgeKind)) dropKeys.push(edgeKey);
+  });
+  for (const k of dropKeys) graph.dropEdge(k);
+  edgesChanged = dropKeys.length > 0;
+  for (const { a, b, kind } of desiredEdges.values()) {
+    if (graph.hasEdge(a, b)) continue;
+    graph.addEdgeWithKey(`${kind}:${a}->${b}`, a, b, {
       // Curve every non-tree edge: reference edges read as an overlay
       // layer arcing over the tree, so their (unavoidable) crossings
       // stop registering as layout noise.
-      type: link.kind === "tree" ? "line" : "curve",
-      size: link.kind === "tree" ? 1 : 1.4,
+      type: kind === "tree" ? "line" : "curve",
+      size: kind === "tree" ? 1 : 1.4,
       color:
-        link.kind === "tree"
-          ? palette().dim
-          : link.kind === "link"
-            ? palette().accent
-            : palette().accentDeep,
-      kind: link.kind,
+        kind === "tree" ? palette().dim : kind === "link" ? palette().accent : palette().accentDeep,
+      kind,
     });
+    edgesChanged = true;
   }
 
-  // Pass 3: per-topic anchor (centroid + bbox top) for the floating
-  // topic-name label.
-  const anchorList: TopicAnchor[] = [];
-  const byTopic = new Map<TopicId, SimNode[]>();
-  for (const n of simNodes) {
-    const arr = byTopic.get(n.topicId) ?? [];
-    arr.push(n);
-    byTopic.set(n.topicId, arr);
-  }
-  for (const detail of ready) {
-    const arr = byTopic.get(detail.id);
-    if (!arr || arr.length === 0) continue;
-    let sumX = 0;
-    let sumY = 0;
-    let maxY = -Infinity;
-    for (const n of arr) {
-      const x = n.x ?? 0;
-      const y = n.y ?? 0;
-      sumX += x;
-      sumY += y;
-      if (y > maxY) maxY = y;
+  // ── Degrees + sizes ───────────────────────────────────────────────
+  for (const n of layout.simNodes) {
+    const d = adjacency.get(n.id)?.size ?? 0;
+    if (n.degree !== d) {
+      n.degree = d;
+      graph.mergeNodeAttributes(n.id, { degree: d, size: nodeRadius(n) });
     }
-    anchorList.push({
-      topicId: detail.id,
-      title: detail.title,
-      centerX: sumX / arr.length,
-      centerY: sumY / arr.length,
-      topY: maxY + 60,
-      nodeCount: arr.length,
-    });
   }
 
-  const buildMs = (performance.now() - buildStart).toFixed(1);
-  console.info(
-    `[forest] graph built in ${buildMs}ms (${warm ? "warm" : "cold"}) · ${ready.length} topics · ${g.order} nodes · ${g.size} edges`,
+  // ── Rebind the simulation ─────────────────────────────────────────
+  // nodes() re-initializes every force with the new array; links()
+  // must come after so the link force resolves ids against it.
+  layout.sim.nodes(layout.simNodes);
+  layout.linkForce.links(
+    [...desiredEdges.values()].map(({ a, b, kind }) => ({ source: a, target: b, kind })),
   );
-  return { graph: g, anchors: anchorList, neighbors: adjacency, hasNoData: false };
+
+  layout.neighbors = adjacency;
+  layout.anchors = ready.map((d) => ({
+    topicId: d.id,
+    title: d.title,
+    nodeCount: d.nodes.length,
+  }));
+
+  console.info(
+    `[forest] structure sync ${(performance.now() - t0).toFixed(1)}ms (${
+      isCreation ? "creation" : "incremental"
+    }) · +${added} −${removed} nodes · ${graph.size} edges`,
+  );
+  return {
+    hasReadyData: true,
+    isCreation,
+    added,
+    removed,
+    edgesChanged,
+    warmFraction: desiredNodes.size > 0 ? warmCount / desiredNodes.size : 0,
+  };
+}
+
+/** Copy the simulation's positions into the graphology graph in one
+ *  batched update — a single graphology event, which sigma coalesces
+ *  into one repaint. Called once per simulation tick. */
+export function writeSimPositionsToGraph(layout: ForestLayout): void {
+  layout.graph.updateEachNodeAttributes(
+    (id, attrs) => {
+      const sn = layout.nodeById.get(id as NodeId);
+      if (sn) {
+        attrs.x = sn.x ?? (attrs.x as number);
+        attrs.y = sn.y ?? (attrs.y as number);
+      }
+      return attrs;
+    },
+    { attributes: ["x", "y"] },
+  );
+}
+
+/** Live per-topic anchor points for the floating labels: centroid X,
+ *  cluster top + headroom. O(nodes); cheap enough to run per frame
+ *  while the simulation is hot. */
+export function computeTopicAnchorPoints(graph: Graph): Map<TopicId, { x: number; y: number }> {
+  const acc = new Map<TopicId, { sumX: number; maxY: number; count: number }>();
+  graph.forEachNode((_id, attrs) => {
+    const topicId = attrs.topicId as TopicId;
+    const x = attrs.x as number;
+    const y = attrs.y as number;
+    const a = acc.get(topicId);
+    if (a) {
+      a.sumX += x;
+      a.count += 1;
+      if (y > a.maxY) a.maxY = y;
+    } else {
+      acc.set(topicId, { sumX: x, maxY: y, count: 1 });
+    }
+  });
+  const out = new Map<TopicId, { x: number; y: number }>();
+  for (const [topicId, a] of acc) {
+    out.set(topicId, { x: a.sumX / a.count, y: a.maxY + 60 });
+  }
+  return out;
+}
+
+export interface ForestGraphData {
+  graph: Graph | null;
+  anchors: TopicAnchorInfo[];
+  neighbors: Map<NodeId, Set<NodeId>>;
+  hasNoData: boolean;
+}
+
+/**
+ * Synchronous one-shot layout: create → sync → settle. The app uses
+ * the live path (createForestLayout + syncForestStructure + useSimLoop)
+ * — this wrapper exists for the crossing harness and other headless
+ * callers that want baked positions. Warm/cold tick counts mirror what
+ * the live loop converges to.
+ */
+export function buildForestGraph(
+  topics: Record<TopicId, TopicSummary>,
+  topicDetails: Record<TopicId, TopicDetail>,
+  prevPositions?: ReadonlyMap<NodeId, { x: number; y: number }>,
+): ForestGraphData {
+  const layout = createForestLayout();
+  const res = syncForestStructure(layout, topics, topicDetails, prevPositions);
+  if (!res.hasReadyData) {
+    return {
+      graph: null,
+      anchors: [],
+      neighbors: new Map(),
+      hasNoData: Object.keys(topics).length === 0,
+    };
+  }
+  const warm = res.warmFraction >= 0.7;
+  // Both start below d3's default alpha=1: the seed (radial tree or
+  // previous positions) is already near the equilibrium we want, and a
+  // full-energy run tears the planar embedding apart before it cools.
+  // 0.6 cold won the (alpha × link-strength) sweep in the harness.
+  layout.sim.alpha(warm ? 0.3 : 0.6);
+  const ticks = warm ? 100 : 300;
+  for (let i = 0; i < ticks; i++) layout.sim.tick();
+  writeSimPositionsToGraph(layout);
+  return {
+    graph: layout.graph,
+    anchors: layout.anchors,
+    neighbors: layout.neighbors,
+    hasNoData: false,
+  };
 }
