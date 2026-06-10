@@ -30,32 +30,13 @@ import { cn } from "@/lib/cn";
 import { useFocusNode } from "@/app/navigation";
 import { useForestData } from "@/stores/forestData";
 import { useWorkspaceUI } from "@/stores/workspaceUI";
-import type { NodeId, NodeSummary, NodeType, TopicId } from "@/lib/types";
+import { TypeChip } from "@/ui/TypeChip";
+import type { NodeId, NodeSummary, TopicId } from "@/lib/types";
 
 interface Props {
   topicId: TopicId;
   focusedNodeId: NodeId;
 }
-
-const TYPE_LABEL: Record<NodeType, string> = {
-  concept: "concept",
-  fact: "fact",
-  source: "source",
-  example: "example",
-  question: "question",
-  task: "task",
-  misc: "misc",
-};
-
-const TYPE_TONE: Record<NodeType, string> = {
-  concept: "bg-forest-100 text-forest-700",
-  fact: "bg-sand-200 text-forest-700",
-  source: "bg-rust-100 text-rust-700",
-  example: "bg-rust-50 text-rust-700",
-  question: "bg-forest-100 text-forest-600",
-  task: "bg-forest-100 text-forest-700",
-  misc: "bg-sand-200 text-forest-500",
-};
 
 const PREVIEW_CHARS = 600;
 
@@ -351,20 +332,6 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
     <h2 className="text-forest-500 mb-3 text-[10px] font-medium uppercase tracking-[0.12em]">
       {children}
     </h2>
-  );
-}
-
-function TypeChip({ type, compact }: { type: NodeType; compact?: boolean }) {
-  return (
-    <span
-      className={cn(
-        "inline-flex shrink-0 items-center rounded-full font-medium uppercase tracking-[0.08em]",
-        compact ? "px-1.5 py-0.5 text-[9px]" : "px-2 py-0.5 text-[10px]",
-        TYPE_TONE[type],
-      )}
-    >
-      {TYPE_LABEL[type]}
-    </span>
   );
 }
 

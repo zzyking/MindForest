@@ -31,13 +31,15 @@ import { cn } from "@/lib/cn";
 import { useFocusNode, useNav } from "@/app/navigation";
 import { useForestData } from "@/stores/forestData";
 import { ApiError } from "@/lib/api";
-import type { NodeId, NodePatch, TopicId } from "@/lib/types";
+import { TypeChip } from "@/ui/TypeChip";
+import type { NodeId, NodePatch, NodeType, TopicId } from "@/lib/types";
 
 import { Breadcrumb } from "./Breadcrumb";
 import { CodeMirrorView } from "./CodeMirrorView";
 import { LinksPanel } from "./LinksPanel";
 import { MetadataLine } from "./MetadataLine";
 import { TitleInput } from "./TitleInput";
+import { TypePicker } from "./TypePicker";
 import { linkPicker } from "./linkPicker";
 import { livePreviewExtensions } from "./livePreviewExtensions";
 import { useDebouncedSave } from "./useDebouncedSave";
@@ -129,6 +131,20 @@ export function NodeEditor({ nodeId, topicId }: Props) {
       useForestData.setState((s) => ({ nodes: { ...s.nodes, [node.id]: draft } }));
     },
     [node, queue],
+  );
+
+  // Type changes are discrete picks, not keystrokes — fire the PATCH
+  // immediately instead of routing through the debounced queue. The
+  // store's patchNode is optimistic and rolls back on failure.
+  const onTypeChange = useCallback(
+    (t: NodeType) => {
+      if (!node || t === node.type) return;
+      void patchNode(node.id, { type: t }).catch((e) => {
+        if (e instanceof ApiError) setError(`save failed: ${e.message}`);
+        else setError(`save failed: ${String(e)}`);
+      });
+    },
+    [node, patchNode],
   );
 
   const onAddChild = useCallback(async () => {
@@ -244,10 +260,13 @@ export function NodeEditor({ nodeId, topicId }: Props) {
           placeholder="Untitled"
           ariaLabel="Node title"
         />
-        {/* Same-height placeholders for the metadata strip and editor
-            body so the real content swaps in without layout shift. */}
-        <div aria-hidden className="text-[10px]">
-          &nbsp;
+        {/* Same-height placeholders for the metadata row and editor
+            body so the real content swaps in without layout shift.
+            min-h matches the live row's TypePicker chip height (18px);
+            render a static chip from the summary when we have one so
+            the type doesn't pop in after the fetch. */}
+        <div aria-hidden className="flex min-h-[18px] items-center">
+          {summary ? <TypeChip type={summary.type} /> : <span>&nbsp;</span>}
         </div>
         <div aria-hidden className="min-h-[24vh]" />
       </EditorScaffold>
@@ -277,7 +296,13 @@ export function NodeEditor({ nodeId, topicId }: Props) {
         placeholder="Untitled"
         ariaLabel="Node title"
       />
-      <MetadataLine node={node} />
+      {/* Metadata row: editable type chip + read-only timestamps. The
+          min-h pins the row to the chip's 18px so the loading skeleton
+          (above) can reserve the exact same height. */}
+      <div className="flex min-h-[18px] flex-wrap items-center gap-3">
+        <TypePicker value={node.type} onChange={onTypeChange} />
+        <MetadataLine node={node} />
+      </div>
       {mode === "write" ? (
         <CodeMirrorView
           value={node.content}
