@@ -78,6 +78,17 @@ interface Props {
 const DIM_ALPHA = 0.3;
 const HOVER_SCALE = 0.16;
 
+// Zoom-based label fade — Obsidian's textAlpha curve. Alpha is a
+// continuous function of camera ratio (lower ratio = zoomed in):
+//   alpha = clamp(log2(1/ratio) − OFFSET, 0, 1)
+// With OFFSET 0.7 labels are hidden at the fitted overview, start
+// fading in around 1.6× zoom and are fully opaque around 3.2×. Never a
+// threshold pop: drawLabel reads this per frame, so the fade rides the
+// zoom animation.
+const LABEL_FADE_OFFSET = 0.7;
+const zoomLabelAlpha = (ratio: number) =>
+  Math.min(1, Math.max(0, Math.log2(1 / ratio) - LABEL_FADE_OFFSET));
+
 // Layout-continuity cache: node positions captured when the view
 // unmounts, fed back as warm-start seeds on the next mount. Module
 // level on purpose so it survives view switches (tree → forest → tree
@@ -294,11 +305,22 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     if (!layout) return;
     const graph = layout.graph;
 
-    const drawLabel = makeDrawNodeLabel(() => hoverProgressRef.current);
+    const drawLabel = makeDrawNodeLabel(
+      () => hoverProgressRef.current,
+      // Reading the live ratio per draw (via sigmaRef — the instance
+      // doesn't exist yet on this line) is what makes the fade
+      // continuous through sigma's animated wheel-zoom.
+      () => {
+        const live = sigmaRef.current;
+        return live ? zoomLabelAlpha(live.getCamera().ratio) : 0;
+      },
+    );
 
     const s = new Sigma(graph, containerRef.current, {
-      // Labels off by default — only the hovered node + its neighbours
-      // get `forceLabel: true` via the reducer.
+      // Every node carries forceLabel — visibility is decided per frame
+      // inside drawLabel (hover ramp ∨ zoom fade), which costs one
+      // early-returning call per node and avoids reducer re-runs on
+      // camera moves.
       renderLabels: true,
       labelSize: 12,
       labelFont: "system-ui, sans-serif",
@@ -308,7 +330,10 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       defaultNodeColor: palette().dim,
       minCameraRatio: 0.05,
       maxCameraRatio: 4,
-      hideLabelsOnMove: true,
+      // Labels must stay visible *during* camera moves — the zoom fade
+      // rides the animation; hiding the layer would turn it into a pop
+      // at the end.
+      hideLabelsOnMove: false,
       hideEdgesOnMove: false,
       edgeProgramClasses: { curve: EdgeCurveProgram },
 
@@ -319,6 +344,11 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
         const out: typeof attrs & { forceLabel?: boolean; isHoveredNode?: boolean } = {
           ...attrs,
         };
+
+        // Every node's label is force-rendered; drawLabel applies the
+        // continuous zoom/hover alpha (early-returns at 0). Hover dim
+        // below still blanks labels on dimmed nodes.
+        out.forceLabel = true;
 
         if (id === focusedNodeIdRef.current) {
           out.color = palette().ink;

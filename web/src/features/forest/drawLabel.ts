@@ -1,7 +1,14 @@
 /**
  * Custom node-label renderer for sigma. Replaces both the hover and
  * label draw paths so the hovered node gets a capsule that slides open
- * to the right, while neighbour labels render as plain text.
+ * to the right, while other labels render as plain text.
+ *
+ * Plain-label alpha is the max of two continuous signals:
+ *   - the hover fade (neighbour labels ramp in while hovering), and
+ *   - the zoom fade (Obsidian's textAlpha curve — labels fade in as a
+ *     continuous function of camera ratio, never a threshold pop).
+ * Both getters are read per draw call, so the fades track their
+ * sources frame-by-frame without any reducer re-runs.
  *
  * All colors come from the canvas palette (tokens.css via
  * getComputedStyle) — nothing hardcoded here, so a token tweak
@@ -27,14 +34,22 @@ interface LabelSettings {
 }
 
 /**
- * Build the draw function. `getHoverProgress` is read per frame — the
- * hover fade animation drives it from 0..1 outside of sigma's knowledge.
+ * Build the draw function. Both getters are read per draw call: the
+ * hover fade animation drives `getHoverProgress` 0..1 outside of
+ * sigma's knowledge, and `getZoomLabelAlpha` derives 0..1 from the
+ * live camera ratio.
  */
-export function makeDrawNodeLabel(getHoverProgress: () => number) {
+export function makeDrawNodeLabel(
+  getHoverProgress: () => number,
+  getZoomLabelAlpha: () => number = () => 0,
+) {
   return (context: CanvasRenderingContext2D, data: LabelData, settings: LabelSettings) => {
     if (!data.label) return;
     const hoverBoost = getHoverProgress();
-    const labelAlpha = Math.max(0, (hoverBoost - 0.4) / 0.6);
+    const hoverAlpha = Math.max(0, (hoverBoost - 0.4) / 0.6);
+    const labelAlpha = data.isHoveredNode
+      ? hoverAlpha
+      : Math.max(hoverAlpha, getZoomLabelAlpha());
     if (labelAlpha <= 0) return;
 
     const size = settings.labelSize;
