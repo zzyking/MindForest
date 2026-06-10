@@ -170,6 +170,13 @@ function useCurrentRouteContext(): {
   focusedNodeId: string | null;
 } {
   const matches = useRouterState({ select: (s) => s.matches });
+  // Fallback params — must be read *before* the early return below so
+  // both hooks run unconditionally on every render. Returning early
+  // past a hook call changes the hook order between "/" and
+  // "/$topicId/…" renders, which React punishes by remounting the
+  // tree from scratch via the nearest error boundary (wiping sidebar
+  // expansion state and flashing the whole shell).
+  const fallback = useParamsCompat();
   // Prefer the deepest match's params — that's the one with topicId / nodeId.
   for (let i = matches.length - 1; i >= 0; i -= 1) {
     const match = matches[i];
@@ -179,11 +186,9 @@ function useCurrentRouteContext(): {
       return { topicId: params.topicId, focusedNodeId: params.nodeId ?? null };
     }
   }
-  // Fall back to useParams in case the matches selector misses something.
-  const params = useParamsCompat();
   return {
-    topicId: params.topicId ?? null,
-    focusedNodeId: params.nodeId ?? null,
+    topicId: fallback.topicId ?? null,
+    focusedNodeId: fallback.nodeId ?? null,
   };
 }
 

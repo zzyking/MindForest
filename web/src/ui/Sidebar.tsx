@@ -9,7 +9,7 @@
  * users want it remembered.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "@tanstack/react-router";
 
 import { cn } from "@/lib/cn";
@@ -237,21 +237,31 @@ function NodeTree({ nodes, rootId, topicId, focusedNodeId }: NodeTreeProps) {
     return map;
   }, [nodes]);
 
-  // Auto-expand ancestors of the focused node so the user can see where
-  // they are. Built into initial state so the *first* render is correct;
-  // user collapses persist after that.
-  const [expanded, setExpanded] = useState<Set<NodeId>>(() => {
-    const out = new Set<NodeId>();
-    if (!focusedNodeId) return out;
-    const byId = new Map(nodes.map((n) => [n.id, n] as const));
-    let cursor: NodeId | null = focusedNodeId;
-    while (cursor) {
-      out.add(cursor);
-      const parent: NodeId | null = byId.get(cursor)?.parent ?? null;
-      cursor = parent;
-    }
-    return out;
-  });
+  // Auto-expand the focused node's ancestor chain whenever focus moves.
+  // An effect rather than a one-shot useState initializer: the tree
+  // mounts mid route-transition (focusedNodeId may not be resolved
+  // yet) and the same instance is reused across topic switches, so
+  // initial state alone misses both cases. User collapses elsewhere
+  // are preserved — we only ever add the focused chain.
+  const [expanded, setExpanded] = useState<Set<NodeId>>(new Set());
+  useEffect(() => {
+    if (!focusedNodeId) return;
+    setExpanded((prev) => {
+      const byId = new Map(nodes.map((n) => [n.id, n] as const));
+      const additions: NodeId[] = [];
+      let cursor: NodeId | null = focusedNodeId;
+      const seen = new Set<NodeId>();
+      while (cursor && !seen.has(cursor)) {
+        seen.add(cursor);
+        if (!prev.has(cursor)) additions.push(cursor);
+        cursor = byId.get(cursor)?.parent ?? null;
+      }
+      if (additions.length === 0) return prev;
+      const next = new Set(prev);
+      for (const id of additions) next.add(id);
+      return next;
+    });
+  }, [focusedNodeId, nodes]);
 
   const toggle = (id: NodeId) =>
     setExpanded((s) => {
