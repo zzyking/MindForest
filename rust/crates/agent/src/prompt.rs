@@ -25,6 +25,8 @@ MindForest is a personal knowledge tool. The user's notes are organized as a tre
 
 You will receive a JSON document describing the current topic and all nodes, along with the id of the node the user has open ("focused"), and the user's prompt. When prior turns exist, you will also receive the conversation history — treat earlier proposals as already accepted unless the user said otherwise, and build on them rather than restating them.
 
+The message may open with a `<vault-context>` block that locates the focused node in the wider vault: its ancestor chain, siblings, children, explicit links, and semantically similar nodes from OTHER topics. Use it to avoid re-drafting notes that already exist elsewhere, to keep new siblings complementary to the ones already present, and to propose `link` ops toward genuinely related nodes — cross-topic links are allowed, use the ids from the block verbatim.
+
 Your reply has TWO parts:
 
 1. A short prose explanation of what you understood and what you propose. Keep it tight — 2–4 sentences. Refer to existing nodes by their title.
@@ -101,8 +103,16 @@ pub fn build_user_message(req: &AgentRequest) -> String {
       "links": n.links.iter().map(|l| l.to_string()).collect::<Vec<_>>(),
     })).collect::<Vec<_>>(),
   });
+  // The vault-context block leads so the model orients itself before
+  // wading into the full node dump.
+  let vault_context = req
+    .vault_context
+    .as_deref()
+    .map(|c| format!("{c}\n\n"))
+    .unwrap_or_default();
   format!(
-    "Here is the current MindForest state:\n\n{}\n\nUser prompt:\n{}",
+    "{}Here is the current MindForest state:\n\n{}\n\nUser prompt:\n{}",
+    vault_context,
     serde_json::to_string_pretty(&context).unwrap_or_else(|_| context.to_string()),
     req.prompt,
   )

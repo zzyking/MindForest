@@ -31,6 +31,7 @@ use domain::{
 
 mod agent_ops;
 mod config;
+mod context;
 mod model;
 mod search;
 mod workers;

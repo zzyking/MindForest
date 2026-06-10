@@ -25,12 +25,19 @@ impl ForestService {
   ) -> ForestResult<AgentStream> {
     let topic = self.repo.get_topic(topic_id).await?;
     let nodes = self.repo.list_nodes_in_topic(topic_id).await?;
+    // H1: locate the focus inside the wider vault (spine + cross-topic
+    // neighbors). Best-effort — a None here just means the model works
+    // from the node dump alone, as it did before the harness.
+    let vault_context = self
+      .build_vault_context(&topic, &nodes, focused_node_id)
+      .await;
     let req = AgentRequest {
       topic,
       nodes,
       focused_node_id,
       prompt,
       history,
+      vault_context,
     };
     let proposer = self.proposer.read().await.clone();
     proposer.propose(req).await

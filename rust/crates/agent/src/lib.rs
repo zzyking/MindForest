@@ -448,6 +448,13 @@ pub struct AgentRequest {
   /// don't repeat it inside `history`.
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub history: Vec<AgentTurn>,
+  /// Pre-rendered `<vault-context>` block locating the focus inside the
+  /// wider vault — focus spine, resolved links, cross-topic semantic
+  /// neighbors. Built by app-core's context builder (harness H1, see
+  /// `AGENT_HARNESS.md` §L1); `None` when the focus couldn't be
+  /// resolved. Prepended to the user message by `build_user_message`.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub vault_context: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

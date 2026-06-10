@@ -89,6 +89,7 @@ mod tests {
       focused_node_id: None,
       prompt: "say something interesting".into(),
       history: vec![],
+      vault_context: None,
     }
   }
 
