@@ -3,20 +3,24 @@
  * prose and prior turns at the top, structured proposals below with
  * accept / reject affordances. Same width and same main-pane axis as
  * the bar, so prompt + reply read as one surface (the input is the
- * bottom edge of the conversation). Closes when the user dismisses
- * explicitly — we don't auto-close on Done so the user has time to
+ * bottom edge of the conversation). Esc / ✕ only HIDE the panel — the
+ * conversation survives and the next prompt (or reopening the agent
+ * surface) brings it back; the header's Clear is the explicit end of
+ * a session. We don't auto-close on Done so the user has time to
  * decide on each proposal.
  *
  * Accept order matters when proposals reference each other through
  * `client_id` placeholders, so the overlay accepts in array order and
- * threads the resolution table forward.
+ * threads the resolution table forward. Accepts target the session's
+ * topic (`sessionTopicId`), not the current route — the user may have
+ * navigated elsewhere since the proposals were generated.
  */
 
-import { useEffect, useState } from "react";
-import { useParams } from "@tanstack/react-router";
+import { useEffect, useRef, useState } from "react";
 
 import { useMainPaneShiftClass } from "@/app/mainPaneShift";
 import { cn } from "@/lib/cn";
+import { useWorkspaceUI } from "@/stores/workspaceUI";
 import type { AgentProposal } from "@/lib/types";
 import { useAgentSession, type ProposalEntry } from "./agentStore";
 import { applyProposal, type ResolveTable } from "./applyProposal";
@@ -31,33 +35,51 @@ export function DraftOverlay() {
   const history = useAgentSession((s) => s.history);
   const turnCount = useAgentSession((s) => s.turnCount);
   const close = useAgentSession((s) => s.close);
+  const reset = useAgentSession((s) => s.reset);
   const setProposalStatus = useAgentSession((s) => s.setProposalStatus);
   const resolvedTable = useAgentSession((s) => s.resolvedTable);
   const mergeResolvedTable = useAgentSession((s) => s.mergeResolvedTable);
-  const params = useParams({ strict: false }) as { topicId?: string };
+  const sessionTopicId = useAgentSession((s) => s.sessionTopicId);
+  // The panel is part of the agent surface: it only shows while the
+  // prompt bar shows, so collapsing the bar (or the whole dock) can't
+  // leave a conversation floating with no input under it.
+  const dockExpanded = useWorkspaceUI((s) => s.dockExpanded);
+  const agentBarOpen = useWorkspaceUI((s) => s.agentBarOpen);
   const [bulkBusy, setBulkBusy] = useState(false);
   const shift = useMainPaneShiftClass();
+  const visible = open && dockExpanded && agentBarOpen;
 
-  // ESC closes the overlay (parallel to the X button + backdrop click).
+  // ESC hides the panel (parallel to the ✕ button); the session
+  // survives — see agentStore.
   useEffect(() => {
-    if (!open) return;
+    if (!visible) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") close();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, close]);
+  }, [visible, close]);
 
-  if (!open) return null;
+  // Pin-to-bottom scroll: while the reader is at (or near) the bottom,
+  // new tokens / turns / proposals keep the newest content in view;
+  // scrolling up to re-read releases the pin until they return.
+  const scrollRef = useRef<HTMLElement | null>(null);
+  const pinnedRef = useRef(true);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
+  }, [draft, history, proposals, errors, streaming]);
+
+  if (!visible) return null;
 
   const acceptOne = async (entry: ProposalEntry, table: ResolveTable): Promise<ResolveTable> => {
-    if (entry.status !== "pending" || !params.topicId) return table;
+    if (entry.status !== "pending" || !sessionTopicId) return table;
     // Merge the store's accumulated table with the local threading table so
     // individual-card accepts can resolve client_ids created earlier in the
     // same session, not just within a single acceptAll run.
     const base = { ...resolvedTable, ...table };
     try {
-      const next = await applyProposal(entry.proposal, params.topicId, base);
+      const next = await applyProposal(entry.proposal, sessionTopicId, base);
       setProposalStatus(entry.id, "accepted");
       mergeResolvedTable(next);
       return { ...table, ...next };
@@ -68,7 +90,7 @@ export function DraftOverlay() {
   };
 
   const acceptAll = async () => {
-    if (!params.topicId) return;
+    if (!sessionTopicId) return;
     setBulkBusy(true);
     let table: ResolveTable = {};
     for (const entry of proposals) {
@@ -118,20 +140,41 @@ export function DraftOverlay() {
               {prompt || lastUserPrompt(history) || "—"}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={close}
-            className="text-forest-500 hover:text-forest-800 rounded-full px-2 py-0.5 text-xs"
-            aria-label="Close draft"
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-1">
+            {/* Clear ends the session (aborts + wipes history); ✕ only
+                hides the panel and the conversation continues. */}
+            <button
+              type="button"
+              onClick={reset}
+              className="text-forest-500 hover:text-forest-800 rounded-full px-2 py-0.5 text-xs"
+              aria-label="Clear conversation"
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              onClick={close}
+              className="text-forest-500 hover:text-forest-800 rounded-full px-2 py-0.5 text-xs"
+              aria-label="Hide draft"
+            >
+              ✕
+            </button>
+          </div>
         </header>
 
         {/* min-h-0: inside the max-h flex column the scroll area must
             be allowed to shrink below its content, or long sessions
             push the footer past the panel edge instead of scrolling. */}
-        <section className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        <section
+          ref={scrollRef}
+          onScroll={() => {
+            const el = scrollRef.current;
+            if (!el) return;
+            pinnedRef.current =
+              el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+          }}
+          className="min-h-0 flex-1 overflow-y-auto px-4 py-3"
+        >
           {/* Confirmed prior turns. Each (user, assistant) pair becomes
               two stacked bubbles so the user can scroll the conversation. */}
           {history.length > 0 && (
@@ -208,7 +251,7 @@ export function DraftOverlay() {
           <button
             type="button"
             onClick={acceptAll}
-            disabled={bulkBusy || streaming || proposals.every((p) => p.status !== "pending") || !params.topicId}
+            disabled={bulkBusy || streaming || proposals.every((p) => p.status !== "pending") || !sessionTopicId}
             className="text-sand-100 bg-forest-700 hover:bg-forest-800 disabled:opacity-40 rounded-full px-3 py-1 text-xs"
           >
             {bulkBusy ? "Applying…" : "Accept all"}

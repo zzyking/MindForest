@@ -12,8 +12,12 @@
  * draft) and ship that history with the next request. The model gets to
  * see what it said last time and what the user said next.
  *
- * Closing the overlay (or hitting Reset) clears history; opening a
- * fresh session starts a new conversation.
+ * Sessions are per-topic and survive hiding the panel: `close()` only
+ * flips visibility (Esc / ✕ / collapsing the agent surface), and the
+ * conversation continues on the next prompt. It actually ends on the
+ * panel's explicit Clear (`reset`) or when a prompt is issued from a
+ * different topic (`sessionTopicId` mismatch starts a fresh session —
+ * history from topic A must never ship with a request about topic B).
  *
  * Aborting mid-stream just closes the underlying fetch — the server
  * tears down its task on the next chunk because the SSE response is
@@ -45,8 +49,13 @@ export interface ProposalEntry {
 }
 
 interface AgentSessionState {
+  /** Panel visibility — NOT session lifetime. See header comment. */
   open: boolean;
   streaming: boolean;
+  /** Topic this session belongs to. Proposals are applied against it
+   *  (not the current route, which the user may have navigated away
+   *  from), and a prompt from a different topic starts a new session. */
+  sessionTopicId: TopicId | null;
   /** Most recent user prompt the bar issued. */
   prompt: string;
   /** Live tokens for the *current* (in-flight) assistant turn only. */
@@ -72,7 +81,10 @@ interface AgentSessionState {
     prompt: string;
   }) => Promise<void>;
   cancel: () => void;
+  /** Hide the panel. The session (history, proposals) survives. */
   close: () => void;
+  /** Re-show a hidden panel if there's a session worth showing. */
+  show: () => void;
   setProposalStatus: (id: string, status: ProposalStatus, error?: string) => void;
   mergeResolvedTable: (updates: ResolveTable) => void;
   reset: () => void;
@@ -81,6 +93,7 @@ interface AgentSessionState {
 const initial = {
   open: false,
   streaming: false,
+  sessionTopicId: null as TopicId | null,
   prompt: "",
   draft: "",
   proposals: [] as ProposalEntry[],
@@ -105,22 +118,28 @@ export const useAgentSession = create<AgentSessionState>((set, get) => ({
     // a new one — only one in-flight stream at a time per session.
     get().abort?.abort();
     const controller = new AbortController();
+    // A prompt from a different topic starts a fresh session — topic A's
+    // history must not ship with (or render next to) topic B's request.
+    const sameTopic = get().sessionTopicId === topicId;
     // Snapshot history at request time. The user's *new* prompt is
     // attached separately on the request body; we don't double-include
     // it in `history`.
-    const historyForRequest = get().history;
-    const turnIndex = get().turnCount + 1;
+    const historyForRequest = sameTopic ? get().history : [];
+    const turnIndex = sameTopic ? get().turnCount + 1 : 1;
     set((s) => ({
       open: true,
       streaming: true,
+      sessionTopicId: topicId,
       prompt,
       draft: "",
       // Keep prior proposals so the user can still accept/reject them
       // after asking a follow-up. Fresh ones land alongside.
-      proposals: s.proposals,
+      proposals: sameTopic ? s.proposals : [],
       errors: [],
       abort: controller,
       turnCount: turnIndex,
+      history: sameTopic ? s.history : [],
+      resolvedTable: sameTopic ? s.resolvedTable : {},
     }));
 
     let stream;
@@ -206,10 +225,20 @@ export const useAgentSession = create<AgentSessionState>((set, get) => ({
     set({ streaming: false, abort: null });
   },
 
-  close: () => {
-    get().abort?.abort();
-    set({ ...initial });
-  },
+  // Hiding deliberately does NOT abort: a stream started before the
+  // panel was hidden keeps running and commits its turn silently — the
+  // bar's Cancel button (driven by `streaming`) remains the abort path.
+  close: () => set({ open: false }),
+
+  show: () =>
+    set((s) =>
+      s.streaming ||
+      s.history.length > 0 ||
+      s.proposals.length > 0 ||
+      s.errors.length > 0
+        ? { open: true }
+        : s,
+    ),
 
   setProposalStatus: (id, status, error) =>
     set((s) => ({
@@ -221,7 +250,10 @@ export const useAgentSession = create<AgentSessionState>((set, get) => ({
   mergeResolvedTable: (updates) =>
     set((s) => ({ resolvedTable: { ...s.resolvedTable, ...updates } })),
 
-  reset: () => set({ ...initial }),
+  reset: () => {
+    get().abort?.abort();
+    set({ ...initial });
+  },
 }));
 
 function errorMessage(e: unknown): string {

@@ -75,12 +75,16 @@ export function AgentPromptBar() {
 
   // Whatever opened the bar (dock trigger, `/`, ⌘I), focus the input
   // and remember where focus came from so Esc can hand it back. Runs
-  // after the commit, so `inert` has already been lifted.
+  // after the commit, so `inert` has already been lifted. Reopening
+  // the agent surface also brings back a hidden conversation panel —
+  // the session survives hiding (see agentStore), so the bar and its
+  // context reappear as one unit.
   const prevFocusRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     if (!agentBarOpen) return;
     prevFocusRef.current = document.activeElement as HTMLElement | null;
     inputRef.current?.focus();
+    useAgentSession.getState().show();
   }, [agentBarOpen]);
 
   const close = () => {
