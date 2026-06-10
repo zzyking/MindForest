@@ -107,7 +107,14 @@ export function getForestCameraMode({
   return null;
 }
 
-/** Frame the camera to the graph bounds with 25% padding. */
+/**
+ * Frame the camera to the graph bounds with generous padding. 1.6
+ * rather than a snug 1.25 for two live-layout reasons: the fit runs at
+ * mount against the *seed* positions and the relax expands the
+ * constellation outward from there, and the floating dock + agent bar
+ * overlay the bottom ~15% of the viewport — a tight fit reads as "the
+ * tree doesn't fit on screen".
+ */
 export function fitCameraToGraph(s: Sigma, graph: Graph) {
   if (graph.order === 0) return;
   let minX = Infinity;
@@ -129,7 +136,7 @@ export function fitCameraToGraph(s: Sigma, graph: Graph) {
   const container = s.getContainer();
   const vw = container.clientWidth || 1;
   const vh = container.clientHeight || 1;
-  const padding = 1.25;
+  const padding = 1.6;
   const probeA = s.viewportToGraph({ x: 0, y: 0 });
   const probeB = s.viewportToGraph({ x: vw, y: 0 });
   const graphUnitsPerViewportWidth = Math.abs(probeB.x - probeA.x);
