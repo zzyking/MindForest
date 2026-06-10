@@ -70,6 +70,104 @@ function mulberry32(seed: number) {
   };
 }
 
+/** Ring spacing of the radial seed — a touch over the simulation's
+ *  linkDistance (36) so the relax pass pulls inward rather than pushing
+ *  branches outward through each other. */
+const RING = 40;
+
+interface RadialSeed {
+  positions: Map<NodeId, { x: number; y: number }>;
+  /** Outer radius of the seeded disc (for topic-center spacing). */
+  radius: number;
+}
+
+/**
+ * Radial tidy-tree seed for one topic's parent-edge tree, centred on
+ * (0,0). Every subtree gets an angular wedge proportional to its leaf
+ * count; a node sits at `depth × RING` along the bisector of its
+ * wedge. By construction the tree edges of this embedding never cross
+ * — and d3-force started from a planar embedding mostly just relaxes
+ * distances instead of inventing a new (tangled) equilibrium, which is
+ * what kills the edge crossings the old random-disc seeding produced.
+ * Cross-`links` may still cross tree edges; the graph including them
+ * isn't planar in general, and they render as curves anyway.
+ */
+function radialTreeSeed(detail: TopicDetail): RadialSeed {
+  const ids = new Set(detail.nodes.map((n) => n.id));
+  const children = new Map<NodeId, NodeId[]>();
+  const roots: NodeId[] = [];
+  // ULID sort = creation order; keeps sibling wedge order deterministic.
+  const sorted = [...detail.nodes].sort((a, b) => a.id.localeCompare(b.id));
+  for (const n of sorted) {
+    if (n.parent && ids.has(n.parent)) {
+      const arr = children.get(n.parent) ?? [];
+      arr.push(n.id);
+      children.set(n.parent, arr);
+    } else {
+      roots.push(n.id);
+    }
+  }
+
+  // Subtree leaf counts, iterative post-order (no recursion: depth is
+  // user-controlled).
+  const leaves = new Map<NodeId, number>();
+  for (const root of roots) {
+    const stack: [NodeId, boolean][] = [[root, false]];
+    const seen = new Set<NodeId>();
+    while (stack.length > 0) {
+      const [id, processed] = stack.pop()!;
+      const kids = children.get(id) ?? [];
+      if (processed || kids.length === 0) {
+        leaves.set(
+          id,
+          kids.length === 0 ? 1 : kids.reduce((s, k) => s + (leaves.get(k) ?? 1), 0),
+        );
+      } else {
+        if (seen.has(id)) continue; // corrupt-data cycle guard
+        seen.add(id);
+        stack.push([id, true]);
+        for (const k of kids) stack.push([k, false]);
+      }
+    }
+  }
+
+  // BFS wedge assignment. Siblings keep ULID (= creation) order — a
+  // barycenter reorder that pulls link-partner subtrees adjacent was
+  // prototyped here and measured *flat to slightly worse* on synthetic
+  // forests (deep-node chords sweep intermediate subtrees regardless of
+  // sibling order), so it was dropped for simplicity.
+  const positions = new Map<NodeId, { x: number; y: number }>();
+  let maxDepth = 0;
+  const totalLeaves = roots.reduce((s, r) => s + (leaves.get(r) ?? 1), 0) || 1;
+  // Multiple roots only happen on orphaned nodes (parent missing from
+  // the snapshot) — push them to depth 1 so they don't stack at origin.
+  const rootDepth = roots.length > 1 ? 1 : 0;
+  const queue: { id: NodeId; depth: number; a0: number; a1: number }[] = [];
+  let cursor = 0;
+  for (const r of roots) {
+    const span = ((leaves.get(r) ?? 1) / totalLeaves) * Math.PI * 2;
+    queue.push({ id: r, depth: rootDepth, a0: cursor, a1: cursor + span });
+    cursor += span;
+  }
+  while (queue.length > 0) {
+    const { id, depth, a0, a1 } = queue.shift()!;
+    const mid = (a0 + a1) / 2;
+    const r = depth * RING;
+    positions.set(id, { x: Math.cos(mid) * r, y: Math.sin(mid) * r });
+    if (depth > maxDepth) maxDepth = depth;
+    const kids = children.get(id) ?? [];
+    const kidLeaves = kids.reduce((s, k) => s + (leaves.get(k) ?? 1), 0) || 1;
+    let ca = a0;
+    for (const k of kids) {
+      if (positions.has(k)) continue;
+      const span = ((leaves.get(k) ?? 1) / kidLeaves) * (a1 - a0);
+      queue.push({ id: k, depth: depth + 1, a0: ca, a1: ca + span });
+      ca += span;
+    }
+  }
+  return { positions, radius: Math.max(RING, maxDepth * RING) };
+}
+
 /**
  * Layout-relevant signature of the store snapshots. Two snapshots with
  * the same key produce the same graph *structure* (node set, tree
@@ -150,32 +248,55 @@ export function buildForestGraph(
     bx.add(a);
   };
 
-  // Seed initial positions so d3-force converges quickly + stably:
-  // each topic gets an angular slice on a unit circle, nodes randomly
-  // placed inside its slice's disc.
+  // Seed initial positions. Priority per node:
+  //   1. its own previous position (warm start),
+  //   2. next to its parent's previous position (a node just added to a
+  //      settled graph folds in beside its parent instead of flying in
+  //      from a random spot — no chance to drag an edge across others),
+  //   3. the topic's radial tidy-tree position (cold start; planar for
+  //      the tree edges, see radialTreeSeed).
+  // Topic centres sit on an orbit sized so neighbouring seed discs
+  // can't overlap (adjacent-centre distance ≈ 2·orbit·sin(π/N)).
   const N = ready.length;
-  const SEED_RADIUS = 80;
-  const ORBIT_R = 20;
   const rand = mulberry32(0xc0ffee);
+  const seeds = ready.map(radialTreeSeed);
+  const maxR = Math.max(...seeds.map((s) => s.radius)) + 30;
+  const orbit = N === 1 ? 0 : Math.max(60, maxR / Math.sin(Math.PI / N));
   let warmCount = 0;
   for (let i = 0; i < ready.length; i++) {
     const detail = ready[i]!;
+    const seed = seeds[i]!;
     const theta = N === 1 ? 0 : (2 * Math.PI * i) / N - Math.PI / 2;
-    const cx = N === 1 ? 0 : Math.cos(theta) * ORBIT_R;
-    const cy = N === 1 ? 0 : Math.sin(theta) * ORBIT_R;
+    const cx = Math.cos(theta) * orbit;
+    const cy = Math.sin(theta) * orbit;
     for (const summary of detail.nodes) {
-      const ang = rand() * Math.PI * 2;
-      const r = Math.sqrt(rand()) * SEED_RADIUS;
       const prev = prevPositions?.get(summary.id);
+      const parentPrev = summary.parent ? prevPositions?.get(summary.parent) : undefined;
       if (prev) warmCount += 1;
+      let x: number;
+      let y: number;
+      if (prev) {
+        x = prev.x;
+        y = prev.y;
+      } else if (parentPrev) {
+        const ang = rand() * Math.PI * 2;
+        x = parentPrev.x + Math.cos(ang) * 14;
+        y = parentPrev.y + Math.sin(ang) * 14;
+      } else {
+        const p = seed.positions.get(summary.id) ?? { x: 0, y: 0 };
+        // ±2px jitter breaks the perfect symmetry of e.g. star graphs,
+        // which can deadlock the charge force.
+        x = cx + p.x + (rand() - 0.5) * 4;
+        y = cy + p.y + (rand() - 0.5) * 4;
+      }
       const node: SimNode = {
         id: summary.id,
         topicId: detail.id,
         type: summary.type,
         title: summary.title || "Untitled",
         degree: 0,
-        x: prev ? prev.x : cx + Math.cos(ang) * r,
-        y: prev ? prev.y : cy + Math.sin(ang) * r,
+        x,
+        y,
       };
       simNodes.push(node);
       nodeById.set(summary.id, node);
@@ -239,12 +360,18 @@ export function buildForestGraph(
         "link",
         forceLink<SimNode, SimLink>(simLinks)
           .id((n) => n.id)
-          .distance(36)
-          .strength((l) => (l.kind === "xlink" ? 0.2 : 0.7)),
+          .distance((l) => (l.kind === "tree" ? 36 : 64))
+          .strength((l) => (l.kind === "tree" ? 0.7 : l.kind === "link" ? 0.25 : 0.2)),
       )
       .force("collide", forceCollide<SimNode>((n) => nodeRadius(n) * 1.6).iterations(3))
       .stop();
-    if (warm) sim.alpha(0.3);
+    // Both branches start below d3's default alpha=1: the seed (radial
+    // tree or previous positions) is already near the equilibrium we
+    // want, and a full-energy run tears the planar embedding apart
+    // before it cools — measurably re-creating edge crossings the seed
+    // had already eliminated. 0.6 cold won the (alpha × link-strength)
+    // sweep in the crossing-count harness.
+    sim.alpha(warm ? 0.3 : 0.6);
     // Run synchronously for a fixed number of ticks. 300 is enough
     // for a cold layout to visually settle on graphs up to ~500 nodes.
     const ticks = warm ? 100 : 300;
@@ -273,7 +400,10 @@ export function buildForestGraph(
     const key = `${link.kind}:${sId}->${tId}`;
     if (g.hasEdge(sId, tId)) continue;
     g.addEdgeWithKey(key, sId, tId, {
-      type: link.kind === "xlink" ? "curve" : "line",
+      // Curve every non-tree edge: reference edges read as an overlay
+      // layer arcing over the tree, so their (unavoidable) crossings
+      // stop registering as layout noise.
+      type: link.kind === "tree" ? "line" : "curve",
       size: link.kind === "tree" ? 1 : 1.4,
       color:
         link.kind === "tree"

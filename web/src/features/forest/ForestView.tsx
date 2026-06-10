@@ -13,7 +13,7 @@
  *   - Labels hidden by default; only the hovered node and its direct
  *     neighbours light up + show titles. Everything else dims to 0.15
  *     alpha. Same affordance as the Quartz graph.
- *   - Same-topic links straight, cross-topic links curved.
+ *   - Tree edges straight; reference links (same- and cross-topic) curved.
  *   - Click navigates to the node.
  *   - Topic labels float above each cluster's centroid (post-settle)
  *     for orientation; click navigates to that topic's root.
