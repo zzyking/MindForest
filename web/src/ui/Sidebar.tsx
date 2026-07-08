@@ -9,8 +9,9 @@
  * users want it remembered.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "@tanstack/react-router";
+import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { cn } from "@/lib/cn";
 import { useFocusNode } from "@/app/navigation";
@@ -184,11 +185,11 @@ export function Sidebar() {
       </section>
 
       {focusedDetail && (
-        // `scrollbar-gutter: stable` so the rows don't narrow-shift
-        // when the tree grows past the viewport and the (classic)
-        // scrollbar appears. Single-edge: content is left-aligned, a
-        // left gutter would just waste column width.
-        <section className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
+        // Heading is pinned outside the scroll area so the virtualized
+        // list is the sole child of the scroll element (the virtualizer's
+        // scrollElement) — no scrollMargin bookkeeping for preceding
+        // content.
+        <section className="flex min-h-0 flex-1 flex-col">
           <h3 className="text-forest-500 mb-2 text-[10px] font-medium uppercase tracking-wide">
             Nodes
           </h3>
@@ -225,6 +226,21 @@ interface NodeTreeProps {
   topicId: TopicId;
   focusedNodeId: NodeId | null;
 }
+
+// One visible tree row, flattened out of the recursive structure so the
+// list can be virtualized. `depth` drives the indent; `hasChildren` /
+// `isOpen` drive the chevron.
+interface FlatRow {
+  node: NodeSummary;
+  depth: number;
+  hasChildren: boolean;
+  isOpen: boolean;
+}
+
+// Fallback row height before measurement kicks in. Rows are single-line
+// (truncated title, `py-1` + text-sm ≈ 26px); measureElement refines the
+// real value per row, so this only affects the very first paint.
+const ROW_HEIGHT = 28;
 
 function NodeTree({ nodes, rootId, topicId, focusedNodeId }: NodeTreeProps) {
   // Build adjacency: parent → children, sorted by id (ULID is time-sorted
@@ -275,133 +291,182 @@ function NodeTree({ nodes, rootId, topicId, focusedNodeId }: NodeTreeProps) {
       return next;
     });
 
+  // Flatten the visible tree (root + expanded descendants) into a linear
+  // DFS-ordered list. Collapsed subtrees never enter it — mirroring the
+  // old "collapsed children don't mount" behaviour — so virtualization
+  // caps mounted DOM to the visible window regardless of total node count.
+  const rows = useMemo<FlatRow[]>(() => {
+    const root = nodes.find((n) => n.id === rootId);
+    if (!root) return [];
+    const out: FlatRow[] = [];
+    const walk = (node: NodeSummary, depth: number) => {
+      const kids = childrenByParent.get(node.id) ?? [];
+      const isOpen = expanded.has(node.id);
+      out.push({ node, depth, hasChildren: kids.length > 0, isOpen });
+      if (isOpen) for (const c of kids) walk(c, depth + 1);
+    };
+    walk(root, 0);
+    return out;
+  }, [nodes, rootId, childrenByParent, expanded]);
+
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 12,
+    getItemKey: (index) => rows[index]?.node.id ?? index,
+  });
+
+  // Keep the focused row in view when focus lands on a node that may be
+  // outside the rendered window. The ancestor chain is auto-expanded
+  // above, so the row exists in `rows` (possibly a render later, once the
+  // expansion state settles). A ref gates this to once per focus change:
+  // unrelated expand/collapse mutate `rows` but must not yank the scroll
+  // position back to the focused row.
+  const scrolledFor = useRef<NodeId | null>(null);
+  useEffect(() => {
+    if (!focusedNodeId) return;
+    if (scrolledFor.current === focusedNodeId) return;
+    const idx = rows.findIndex((r) => r.node.id === focusedNodeId);
+    if (idx < 0) return; // ancestors still expanding — retry on next rows change
+    scrolledFor.current = focusedNodeId;
+    virtualizer.scrollToIndex(idx, { align: "auto" });
+  }, [focusedNodeId, rows, virtualizer]);
+
   return (
-    <ul className="flex flex-col">
-      <NodeRow
-        node={nodes.find((n) => n.id === rootId)!}
-        depth={0}
-        childrenByParent={childrenByParent}
-        topicId={topicId}
-        focusedNodeId={focusedNodeId}
-        expanded={expanded}
-        toggle={toggle}
-      />
-    </ul>
+    // `scrollbar-gutter: stable` so rows don't narrow-shift when the tree
+    // grows past the viewport and the (classic) scrollbar appears.
+    // Single-edge: content is left-aligned, a left gutter would just
+    // waste column width. This div is the virtualizer's scrollElement.
+    <div
+      ref={scrollRef}
+      className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]"
+    >
+      <div
+        role="tree"
+        style={{
+          height: virtualizer.getTotalSize(),
+          position: "relative",
+          width: "100%",
+        }}
+      >
+        {virtualizer.getVirtualItems().map((vi) => {
+          const row = rows[vi.index];
+          if (!row) return null; // count tracks rows.length; guards the index type
+          return (
+            <div
+              key={vi.key}
+              data-index={vi.index}
+              ref={virtualizer.measureElement}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                transform: `translateY(${vi.start}px)`,
+              }}
+            >
+              <NodeRow
+                row={row}
+                topicId={topicId}
+                focused={row.node.id === focusedNodeId}
+                onToggle={toggle}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
 interface NodeRowProps {
-  node: NodeSummary;
-  depth: number;
-  childrenByParent: Map<NodeId | null, NodeSummary[]>;
+  row: FlatRow;
   topicId: TopicId;
-  focusedNodeId: NodeId | null;
-  expanded: Set<NodeId>;
-  toggle: (id: NodeId) => void;
+  focused: boolean;
+  onToggle: (id: NodeId) => void;
 }
 
-function NodeRow({
-  node,
-  depth,
-  childrenByParent,
-  topicId,
-  focusedNodeId,
-  expanded,
-  toggle,
-}: NodeRowProps) {
+function NodeRow({ row, topicId, focused, onToggle }: NodeRowProps) {
+  const { node, depth, hasChildren, isOpen } = row;
   const focus = useFocusNode();
   const prefetchNode = useForestData((s) => s.prefetchNode);
-  const children = childrenByParent.get(node.id) ?? [];
-  const isOpen = expanded.has(node.id);
-  const isFocused = node.id === focusedNodeId;
 
   // Indent guide lines: one per ancestor depth, pinned through the
   // chevron column of that ancestor. Drawn as absolute spans inside the
-  // row so they stack continuously between rows (no row-gap → no
-  // visible breaks). Each chevron column is 1.5rem wide, sitting after
-  // the row's 0.25rem padding-left + (depth × 0.75rem) indent step, so
-  // the chevron centre at depth k lives at `k·0.75 + 1rem`.
+  // row so they stack continuously between rows (virtual rows sit at
+  // contiguous cumulative offsets → no visible breaks). Each chevron
+  // column is 1.5rem wide, sitting after the row's 0.25rem padding-left +
+  // (depth × 0.75rem) indent step, so the chevron centre at depth k lives
+  // at `k·0.75 + 1rem`.
   const guides = Array.from({ length: depth }, (_, k) => k);
 
   return (
-    <li>
+    <div
+      role="treeitem"
+      aria-level={depth + 1}
+      aria-expanded={hasChildren ? isOpen : undefined}
+      aria-selected={focused}
+      className="group relative flex items-stretch text-sm text-forest-600"
+      style={{ paddingLeft: `${depth * 0.75}rem` }}
+    >
+      {guides.map((k) => (
+        <span
+          key={k}
+          aria-hidden
+          className="bg-forest-200/50 pointer-events-none absolute top-0 bottom-0 w-px"
+          style={{ left: `calc(${k * 0.75}rem + 0.5rem)` }}
+        />
+      ))}
+      {/* Highlight surface starts where the chevron column begins,
+          so the focused / hover bg never reaches left of the deepest
+          ancestor's guide line. Right edge is flush with the sidebar
+          inner padding (no -mr trick), matching the topic rows. */}
       <div
-        className="group relative flex items-stretch text-sm text-forest-600"
-        style={{ paddingLeft: `${depth * 0.75}rem` }}
+        className={cn(
+          "relative flex w-full items-center gap-1 rounded transition-colors",
+          "before:absolute before:left-0.5 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full",
+          focused
+            ? "bg-forest-100 text-forest-900 before:bg-accent"
+            : "hover:bg-forest-100/50 before:bg-transparent",
+        )}
       >
-        {guides.map((k) => (
-          <span
-            key={k}
-            aria-hidden
-            className="bg-forest-200/50 pointer-events-none absolute top-0 bottom-0 w-px"
-            style={{ left: `calc(${k * 0.75}rem + 0.5rem)` }}
-          />
-        ))}
-        {/* Highlight surface starts where the chevron column begins,
-            so the focused / hover bg never reaches left of the deepest
-            ancestor's guide line. Right edge is flush with the sidebar
-            inner padding (no -mr trick), matching the topic rows. */}
-        <div
+        <button
+          type="button"
+          aria-label={hasChildren ? (isOpen ? "Collapse" : "Expand") : undefined}
+          // Visible glyph stays compact so the indent rhythm holds,
+          // but a transparent before:-inset-1 pseudo expands the hit
+          // target to ~28×32 — clears WCAG 2.5.8 (24×24 minimum).
           className={cn(
-            "relative flex w-full items-center gap-1 rounded transition-colors",
-            "before:absolute before:left-0.5 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full",
-            isFocused
-              ? "bg-forest-100 text-forest-900 before:bg-accent"
-              : "hover:bg-forest-100/50 before:bg-transparent",
+            "text-forest-500 hover:text-forest-800 relative inline-flex h-6 w-1 flex-none items-center justify-center text-base leading-none px-2",
+            "before:absolute before:-inset-1 before:content-['']",
+            !hasChildren && "invisible",
           )}
+          onClick={() => onToggle(node.id)}
+          tabIndex={hasChildren ? 0 : -1}
         >
-          <button
-            type="button"
-            aria-label={children.length > 0 ? (isOpen ? "Collapse" : "Expand") : undefined}
-            // Visible glyph stays compact so the indent rhythm holds,
-            // but a transparent before:-inset-1 pseudo expands the hit
-            // target to ~28×32 — clears WCAG 2.5.8 (24×24 minimum).
-            className={cn(
-              "text-forest-500 hover:text-forest-800 relative inline-flex h-6 w-1 flex-none items-center justify-center text-base leading-none px-2",
-              "before:absolute before:-inset-1 before:content-['']",
-              children.length === 0 && "invisible",
-            )}
-            onClick={() => toggle(node.id)}
-            tabIndex={children.length > 0 ? 0 : -1}
-          >
-            {isOpen ? "▾" : "▸"}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              focus(node.id, topicId);
-              if (children.length > 0 && !isOpen) {
-                toggle(node.id);
-              }
-            }}
-            // Warm the node cache during hover so the editor pane has
-            // data by the time the click lands — kills the
-            // loading-state flash for first visits.
-            onPointerEnter={() => prefetchNode(node.id)}
-            onFocus={() => prefetchNode(node.id)}
-            className="min-w-0 flex-1 truncate py-1 text-left"
-            title={node.title}
-          >
-            {node.title || "Untitled"}
-          </button>
-        </div>
+          {isOpen ? "▾" : "▸"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            focus(node.id, topicId);
+            if (hasChildren && !isOpen) {
+              onToggle(node.id);
+            }
+          }}
+          // Warm the node cache during hover so the editor pane has
+          // data by the time the click lands — kills the
+          // loading-state flash for first visits.
+          onPointerEnter={() => prefetchNode(node.id)}
+          onFocus={() => prefetchNode(node.id)}
+          className="min-w-0 flex-1 truncate py-1 text-left"
+          title={node.title}
+        >
+          {node.title || "Untitled"}
+        </button>
       </div>
-      {isOpen && children.length > 0 && (
-        <ul className="flex flex-col">
-          {children.map((c) => (
-            <NodeRow
-              key={c.id}
-              node={c}
-              depth={depth + 1}
-              childrenByParent={childrenByParent}
-              topicId={topicId}
-              focusedNodeId={focusedNodeId}
-              expanded={expanded}
-              toggle={toggle}
-            />
-          ))}
-        </ul>
-      )}
-    </li>
+    </div>
   );
 }
