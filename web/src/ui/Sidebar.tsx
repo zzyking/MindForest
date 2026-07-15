@@ -89,11 +89,11 @@ export function Sidebar() {
   const isStub = !backend || backend === "stub";
 
   return (
-    // pt-8 (32px) clears macOS traffic lights at top-left (they
-    // extend to ~y=22) and stays within 8px of the main pane's
-    // scaffold `py-6`, keeping the two sides visually aligned along
-    // the same top horizon.
-    <div className="flex h-full w-[var(--spacing-sidebar)] flex-col gap-4 px-4 pb-5 pt-8">
+    // Floating panel shell owns outer chrome (WorkspaceShell). Inner
+    // padding only — width is 100% of the panel, not a second sidebar
+    // column. pt-4 is enough inside the rounded card (outer pt-10
+    // already clears traffic lights).
+    <div className="flex h-full w-full flex-col gap-4 overflow-hidden px-4 pb-5 pt-4">
       <header className="flex items-baseline justify-between gap-3">
         <h2 className="text-forest-900 font-serif text-2xl font-medium tracking-tight leading-none">
           MindForest

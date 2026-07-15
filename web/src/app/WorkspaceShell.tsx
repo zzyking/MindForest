@@ -1,20 +1,12 @@
 /**
- * Persistent layout. Renders sidebar + dock + search palette around an
- * `<Outlet />`-driven main area. Mounted at the router's root so it
- * survives every per-node navigation.
+ * Persistent layout. Renders floating sidebar + dock + search palette
+ * around an `<Outlet />`-driven main area. Mounted at the router's root
+ * so it survives every per-node navigation.
  *
- * Layout uses CSS Grid with two columns; the sidebar column collapses
- * from 18rem to 0 when `sidebarOpen` is false. The transition is on
- * `grid-template-columns` rather than `width` on a flex item — same
- * visual result, but a single property on a single container is far
- * cheaper for the browser than a flex+width animation that cascades
- * recalc through every flex item. `contain: layout` on the aside
- * scopes the sidebar's internal reflow during the transition.
- *
- * Dock and AgentPromptBar shift horizontally to track the centred-on-
- * main-pane axis; those use `translate-x` (compositor-only) instead of
- * `padding-left` so they don't pile additional layout work onto the
- * same 300 ms window.
+ * L1+: the sidebar is a **floating panel** (like the Dock) — it does not
+ * take a grid column. Main stays full-width so the field never reflows
+ * when the outline opens/closes. Open/close is compositor-only
+ * (`translate-x`), matching Dock / AgentPromptBar motion.
  */
 
 import { useEffect } from "react";
@@ -37,6 +29,7 @@ export function WorkspaceShell({ children }: Props) {
   const sidebarOpen = useWorkspaceUI((s) => s.sidebarOpen);
   const setSearchPalette = useWorkspaceUI((s) => s.setSearchPalette);
   const toggleSidebar = useWorkspaceUI((s) => s.toggleSidebar);
+  const setSidebar = useWorkspaceUI((s) => s.setSidebar);
   const agentSettingsOpen = useWorkspaceUI((s) => s.agentSettingsOpen);
   const setAgentSettings = useWorkspaceUI((s) => s.setAgentSettings);
 
@@ -45,6 +38,7 @@ export function WorkspaceShell({ children }: Props) {
   //   Cmd/Ctrl+K  → search palette
   //   Cmd/Ctrl+\  → toggle sidebar
   //   Cmd/Ctrl+,  → agent settings
+  //   Esc         → close floating sidebar (when open, and not typing)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const cmd = e.metaKey || e.ctrlKey;
@@ -71,7 +65,7 @@ export function WorkspaceShell({ children }: Props) {
   return (
     <div className="bg-noise relative flex h-screen flex-col bg-forest-50 text-forest-900">
       {/* Skip link — invisible until focused via Tab. Lets keyboard
-          users jump past the sidebar and into the main editor pane. */}
+          users jump past the sidebar and into the main pane. */}
       <a
         href="#main-content"
         className={cn(
@@ -84,75 +78,58 @@ export function WorkspaceShell({ children }: Props) {
       {/* Window drag affordance. With TitleBarStyle::Overlay there's no
           system titlebar to grab — this invisible strip across the top
           ~32px makes the same area draggable. `left-[78px]` starts the
-          strip after the traffic lights (which AppKit owns and which
-          must continue to receive clicks). Requires
-          `core:window:allow-start-dragging` in capabilities/default.json
-          — without that permission the IPC call silently fails and
-          drag stops working. */}
+          strip after the traffic lights. */}
       <div
         data-tauri-drag-region
         aria-hidden
         className="absolute left-[78px] right-0 top-0 z-30 h-8"
       />
-      <div
+
+      {/* Main is always full-width — field never reflows for chrome. */}
+      <main
+        id="main-content"
+        tabIndex={-1}
+        className="relative min-h-0 min-w-0 flex-1 overflow-y-auto pt-2 [contain:layout_paint] [scrollbar-gutter:stable_both-edges]"
+      >
+        <ModelDownloadCard />
+        {children}
+      </main>
+
+      {/* Floating sidebar — slides in from the left over the field.
+          translate-x only (compositor); no grid-track animation. */}
+      <aside
+        aria-hidden={!sidebarOpen}
+        aria-label="Topics and nodes"
+        inert={!sidebarOpen}
         className={cn(
-          "grid flex-1 overflow-hidden",
-          // 350ms (vs the typical 300ms for a UI tween) gives the eye
-          // a beat to follow the sidebar's collapse to 0 without
-          // feeling rushed. Dock + AgentPromptBar use the same duration
-          // so the three transitions finish in lockstep. Width comes
-          // from --spacing-sidebar (tokens.css), shared with Sidebar
-          // and the dock/prompt-bar half-width shift.
-          "transition-[grid-template-columns] duration-[350ms] ease-out",
-          sidebarOpen ? "grid-cols-[var(--spacing-sidebar)_1fr]" : "grid-cols-[0_1fr]",
+          "pointer-events-none absolute inset-y-0 left-0 z-40 flex items-stretch p-3 pt-10 pb-20",
+          "transition-transform duration-[350ms] ease-out will-change-transform resize-keep-transform",
+          sidebarOpen ? "translate-x-0" : "-translate-x-[calc(100%+0.75rem)]",
         )}
       >
-        <aside
-          // `contain: layout paint` (was `layout` only) scopes both
-          // reflow and paint to the sidebar — during a live window
-          // resize the browser doesn't have to invalidate paint
-          // regions outside this element, which kills a major source
-          // of jitter on left-edge drag.
-          className="border-forest-100 bg-sand-100/70 overflow-hidden border-r backdrop-blur-md [contain:layout_paint]"
-          aria-hidden={!sidebarOpen}
-          aria-label="Topics and nodes"
-          // inert removes the collapsed sidebar's descendants from the
-          // tab order and the accessibility tree. aria-hidden alone
-          // hides from AT but doesn't change keyboard reachability.
-          inert={!sidebarOpen}
+        <div
+          className={cn(
+            "pointer-events-auto flex h-full w-[var(--spacing-sidebar)] flex-col overflow-hidden",
+            "shadow-glass border-forest-200 bg-sand-100/85 rounded-2xl border backdrop-blur-md",
+            "[-webkit-font-smoothing:antialiased] [contain:layout_paint]",
+          )}
         >
           <Sidebar />
-        </aside>
-        <main
-          id="main-content"
-          tabIndex={-1}
-          // `relative` is required for `contain: paint` to take effect
-          // (the spec needs a positioning context). `contain: layout
-          // paint` keeps the editor / tree / forest panes from
-          // pushing their reflow up to the grid root during a live
-          // resize — measurable reduction in per-frame compositor work.
-          // `pt-2` (8px) keeps every view's first card / toolbar clear
-          // of the traffic-light overlay at top-left (the Tauri
-          // TitleBarStyle::Overlay window has no system titlebar). The
-          // inner scaffold's `py-6` (24px) compounds to 32px above
-          // first content, matching the sidebar's `pt-8`.
-          // `scrollbar-gutter: stable both-edges` reserves the
-          // scrollbar track whether or not content overflows, so the
-          // centered editor column doesn't shift sideways when a long
-          // node brings the scrollbar in. Only takes effect with
-          // classic (space-taking) scrollbars — system "always show" /
-          // mouse plugged in; overlay scrollbars are unaffected.
-          // `both-edges` keeps the column optically centered instead
-          // of biased half a track to the left.
-          className="relative min-w-0 overflow-y-auto pt-2 [contain:layout_paint] [scrollbar-gutter:stable_both-edges]"
-        >
-          <ModelDownloadCard />
-          {children}
-        </main>
-      </div>
-      {/* Bottom chrome — all three centre on the main-pane axis via
-          useMainPaneShiftClass and stack bottom-up: dock, prompt bar,
-          draft panel. */}
+        </div>
+      </aside>
+
+      {/* Soft scrim while sidebar is open — click dismisses. Does not
+          dim the field heavily; just captures outside clicks. */}
+      {sidebarOpen && (
+        <button
+          type="button"
+          aria-label="Close sidebar"
+          className="absolute inset-0 z-30 cursor-default border-0 bg-transparent"
+          onClick={() => setSidebar(false)}
+        />
+      )}
+
+      {/* Bottom chrome — centres on the full window (main is full-bleed). */}
       <DraftOverlay />
       <AgentPromptBar />
       <Dock />
