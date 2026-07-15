@@ -5,13 +5,12 @@
  * URL grammar:
  *   /                          IndexPage — pick or create a topic
  *   /$topicId                  TopicPage — redirects to focused root
- *   /$topicId/$nodeId          NodePage — workspace + editor
+ *   /$topicId/$nodeId          NodePage — field + optional Inspect
+ *   /$topicId/$nodeId?w=1      NodePage with Inspect open on that node
  *
  * The route hierarchy mounts `WorkspaceShell` at the root so the
  * sidebar / dock / palette persist across navigations; only `<Outlet/>`
- * swaps when the user moves between nodes. This makes back/forward feel
- * like a browser instead of remounting half the UI on every focus
- * change.
+ * swaps when the user moves between nodes.
  */
 
 import {
@@ -47,9 +46,7 @@ const topicRoute = createRoute({
   getParentRoute: () => rootRoute,
   // `$topicId` is the slug. We don't render anything for the bare
   // topic URL — the loader fetches the topic and throws a redirect to
-  // its root node so the editor always has an id to focus on. If the
-  // topic is missing the API throws an ApiError; the router shows its
-  // default error UI (we'll style it in P4 polish).
+  // its root node so the field always has an id to focus on.
   path: "/$topicId",
   loader: async ({ params }) => {
     const detail = await getTopic(params.topicId);
@@ -64,6 +61,13 @@ const topicRoute = createRoute({
 const nodeRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/$topicId/$nodeId",
+  validateSearch: (search: Record<string, unknown>): { w?: true } => {
+    const raw = search.w;
+    if (raw === true || raw === "1" || raw === 1 || raw === "true") {
+      return { w: true };
+    }
+    return {};
+  },
   component: NodePage,
 });
 
