@@ -10,7 +10,13 @@ A single thoughtful person tending their own knowledge over months and years. No
 
 ## Product Purpose
 
-MindForest is a local-first knowledge workspace where the same node renders as a row in a tree (when you want hierarchy) and as a node in a force-directed graph (when you want to see what connects across topics). The editor is markdown; the source of truth is a folder of `.md` files. An optional on-device embedding model (EmbeddingGemma via MLX) feeds semantic search and an agent that proposes structured edits — both live entirely on the user's machine. Success looks like: a year from now, the vault still opens in any markdown editor even if MindForest never ships another release.
+MindForest helps a single person **grow a fuzzy thought into a clear concept tree**, driven by questions, stored as plain markdown.
+
+The same node renders as a row in a tree (depth inside a topic) and as a node in a force-directed graph (connections across topics). The editor is markdown; the source of truth is a folder of `.md` files. An optional on-device embedding model (EmbeddingGemma via MLX) feeds semantic search and an agent that proposes structured edits for human accept/reject — both live entirely on the user's machine.
+
+**Success looks like:** the user is clearer than when they started; and a year from now, the vault still opens in any markdown editor even if MindForest never ships another release.
+
+Full product thesis, growth loop, type roles, and non-goals: **`PRODUCT_DESIGN.md`**.
 
 ## Brand Personality
 
@@ -38,7 +44,7 @@ The voice is honest and quiet. We don't write "✨ Magic ✨", we write "Open a 
 
 2. **Local-first, single-user, no telemetry.** The app works fully offline. No accounts. No cloud sync we control (iCloud Drive on the user's vault folder is on them). No analytics. API keys never leave the user's machine — they're stored at `0600` permissions in `<data_dir>/agent.json` and traverse only the loopback HTTP between the UI and the in-process Rust API.
 
-3. **Two views, one model.** TreeView (one topic, hierarchical) and ForestView (workspace-wide, force-directed) are different visualisations of the same nodes — never duplicated state, never a "tree-mode" data shape vs. a "graph-mode" data shape. The toggle is a view switch, not a context switch.
+3. **One field, one model, one axis.** The workspace is a single Morph Field over the same nodes — never a tree-shaped store vs a graph-shaped store. Near↔far (distance + form with hysteresis) is one continuum, not peer “Editor / Tree / Forest” apps. Writing is Inspect (immersive center on the focused node), not a separate data mode. See `UI_VISION.md`.
 
 4. **The tool disappears into the writing.** Editor uses CodeMirror live-preview so you can write markdown without ever seeing un-rendered syntax. Chrome (sidebar, dock, agent bar) compresses to the corners when not in use. The largest, most prominent text on screen is what the user wrote.
 
