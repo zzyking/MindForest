@@ -25,7 +25,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use domain::{Node, NodeId, NodeType, Topic};
+use domain::{Node, NodeId, NodeType, Topic, TopicId};
 
 use crate::ForestService;
 
@@ -37,6 +37,20 @@ const DEFAULT_BUDGET_TOKENS: usize = 2000;
 /// filtered out without starving the final list.
 const NEIGHBOR_FETCH_K: usize = 12;
 const NEIGHBOR_KEEP: usize = 5;
+
+/// Minimum cosine similarity for a node to count as a semantic neighbor.
+/// Below this the match is too weak to spend the model's attention on,
+/// and — because EmbeddingGemma-300M sits any two English passages around
+/// a ~0.58 baseline — junk / near-empty nodes would otherwise slip in and
+/// dominate a sparse vault's cross-topic pool. Override with
+/// `MINDFOREST_AGENT_NEIGHBOR_MIN_COSINE`.
+///
+/// Calibrated on this model against the focused "Tokenization" node:
+/// genuinely related cross-topic nodes (subword/BPE) scored ~0.69,
+/// loosely related (text-feature preprocessing) ~0.64, a stub-draft junk
+/// node ~0.58, and unrelated content (image CNNs, logistics) below that.
+/// 0.60 keeps the first two tiers and drops the generic-baseline noise.
+const DEFAULT_NEIGHBOR_MIN_COSINE: f32 = 0.60;
 
 /// Walking parent pointers must terminate even on a corrupted vault
 /// where the files encode a cycle.
@@ -96,18 +110,9 @@ impl ForestService {
     // full; explicit links are excluded because they render above.
     let linked: HashSet<NodeId> = focus.links.iter().copied().collect();
     let query = format!("{} {}", focus.title, excerpt(&focus.content, 200));
-    let neighbors: Vec<domain::SearchHit> = match self.search(&query, None, NEIGHBOR_FETCH_K).await
-    {
-      Ok(hits) => hits
-        .into_iter()
-        .filter(|h| h.id != focus_id && h.topic != topic.id && !linked.contains(&h.id))
-        .take(NEIGHBOR_KEEP)
-        .collect(),
-      Err(e) => {
-        tracing::warn!("vault-context: neighbor search failed, omitting the section: {e}");
-        Vec::new()
-      }
-    };
+    let neighbors = self
+      .semantic_neighbors(&query, focus_id, &topic.id, &linked)
+      .await;
 
     // ── Render sections ──────────────────────────────────────────────
     let focus_sec = format!(
@@ -201,6 +206,59 @@ impl ForestService {
       .clone();
     Some(block)
   }
+
+  /// Cross-topic semantic neighbors for the focus — embedding-only, with
+  /// a hard cosine floor.
+  ///
+  /// Deliberately NOT the RRF-fused `search`: fusion mixes in lexical FTS
+  /// hits and reports a rank-based score that says nothing about
+  /// relevance, so it can't be thresholded. Pure vector search returns
+  /// cosine similarity, and a floor drops weak/junk matches — a
+  /// near-empty node embeds to a spurious vector that fuzzily "matches"
+  /// everything at low similarity, exactly the noise we don't want the
+  /// model chasing. When the embedder is unavailable the section is
+  /// simply empty: no neighbors beats lexical noise dressed up as
+  /// "semantic".
+  async fn semantic_neighbors(
+    &self,
+    query: &str,
+    focus_id: NodeId,
+    topic_id: &TopicId,
+    linked: &HashSet<NodeId>,
+  ) -> Vec<domain::SearchHit> {
+    if !self.embedder.available() {
+      return Vec::new();
+    }
+    let mut embedded = match self.embedder.embed(std::slice::from_ref(&query.to_owned())).await {
+      Ok(v) => v,
+      Err(e) => {
+        tracing::warn!("vault-context: neighbor embed failed, omitting the section: {e}");
+        return Vec::new();
+      }
+    };
+    let Some(q_vec) = embedded.pop() else {
+      return Vec::new();
+    };
+    let floor = neighbor_min_cosine();
+    match self.index.search_vec(&q_vec, None, NEIGHBOR_FETCH_K).await {
+      Ok(hits) => hits
+        .into_iter()
+        .filter(|h| {
+          h.id != focus_id
+            && &h.topic != topic_id
+            && !linked.contains(&h.id)
+            && h.score >= floor
+        })
+        .take(NEIGHBOR_KEEP)
+        .collect(),
+      Err(e) => {
+        // Not routine — semantic search quietly returning nothing is the
+        // "it silently broke" class of bug (see search.rs module docs).
+        tracing::error!("vault-context: neighbor vec search failed, omitting the section: {e}");
+        Vec::new()
+      }
+    }
+  }
 }
 
 fn render_list(tag: &str, entries: impl Iterator<Item = String>) -> String {
@@ -280,6 +338,13 @@ fn context_budget() -> usize {
     .ok()
     .and_then(|v| v.parse().ok())
     .unwrap_or(DEFAULT_BUDGET_TOKENS)
+}
+
+fn neighbor_min_cosine() -> f32 {
+  std::env::var("MINDFOREST_AGENT_NEIGHBOR_MIN_COSINE")
+    .ok()
+    .and_then(|v| v.parse().ok())
+    .unwrap_or(DEFAULT_NEIGHBOR_MIN_COSINE)
 }
 
 #[cfg(test)]

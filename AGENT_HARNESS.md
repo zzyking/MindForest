@@ -1,6 +1,8 @@
 # Agent Harness Design
 
-> Status: **H1 implemented** (`app-core/src/context.rs`, 2026-06-11); H2–H4 remain design. Captures the shape of how the in-app agent should plug into the vault — what context goes in, what operations come out, how those operations land. Refer back when implementing phases H1..H4 below.
+> Status: **H1 implemented + validated** (`app-core/src/context.rs`; injection 2026-06-11, live-provider validation + cosine-floor hardening 2026-07-15); H2–H4 remain design. Captures the shape of how the in-app agent should plug into the vault — what context goes in, what operations come out, how those operations land. Refer back when implementing phases H1..H4 below.
+>
+> H1 validation (real provider, real embeddings): the model demonstrably consumes the block — when a genuinely-related cross-topic node exists it emits a verbatim-id cross-topic `link` the single-topic node dump could never produce; when none exists it correctly declines. The gate is met. Note the marquee `<semantic-neighbors>` channel is only as good as the vault is dense: at ~25 nodes with a near-empty second topic it mostly renders empty, which is correct. The cosine floor (below) was added after validation surfaced junk nodes scoring at the ~0.58 English baseline.
 
 ## 1. Why
 
@@ -56,6 +58,8 @@ XML-ish, not prose: providers parse the structure cleanly and the closing tags s
 4. never touch `<focus>` or `<ancestors>` — those are the spine
 
 Skip-connections are expressed via `<links>` (explicit) + `<semantic-neighbors>` (implicit). Both are needed: the user's own link choices are the strongest signal of intent, the embeddings catch what they haven't linked yet.
+
+`<semantic-neighbors>` is **embedding-only** — a pure vector search, not the RRF-fused hybrid `search`. Fusion mixes in lexical FTS hits and reports a rank-based score that says nothing about relevance, so it can't be thresholded; a raw cosine can. Neighbors below a **cosine floor** (`MINDFOREST_AGENT_NEIGHBOR_MIN_COSINE`, default **0.60**) are dropped, and when the embedder is unavailable the section is empty rather than falling back to lexical noise. The floor matters because EmbeddingGemma-300M sits any two English passages around ~0.58, so without it a junk / near-empty node slips in and dominates a sparse vault's tiny cross-topic pool (measured: genuinely-related cross-topic node ~0.69, stub-draft junk ~0.58).
 
 ### L2 — Tool-using edits
 
@@ -153,7 +157,7 @@ DraftOverlay (web)
 
 ## 6. Phases
 
-**H1 — Context only, no tools.** Ship `ContextBuilder` and inject `<vault-context>`. `AgentProposer` signature unchanged. **Validation gate**: ask the agent to add a sibling, check it picks a title that doesn't collide with existing siblings (today's agent doesn't know they exist). If L1 alone doesn't measurably move output quality, stop — H2/H3 won't fix it either.
+**H1 — Context only, no tools.** Ship `ContextBuilder` and inject `<vault-context>`. `AgentProposer` signature unchanged. **Validation gate**: the sibling-title test from the original plan turned out weak — the request body already dumps the whole topic (siblings included), so avoiding a collision doesn't isolate L1. The signal that *does* isolate it: with a genuinely-related node in **another** topic, the agent emits a cross-topic `link` using an id it could only have seen in `<semantic-neighbors>` (the dump is single-topic). That's the test that was run and passed (2026-07-15). If L1 alone doesn't measurably move output quality, stop — H2/H3 won't fix it either.
 
 **H2 — Read-only tools.** Add `mf_read_node` + `mf_search`. Provider can decide to dig further. No mutations. UI unchanged — text proposals only.
 

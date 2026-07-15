@@ -1,6 +1,8 @@
 # Agent Harness 设计
 
-> 状态：**H1 已实现**（`app-core/src/context.rs`，2026-06-11）；H2–H4 仍为设计。本文档是 `AGENT_HARNESS.md` 的中文版，描述应用内 agent 如何接入 vault——什么上下文进去、什么操作出来、这些操作如何落盘。实现下方 H1..H4 各阶段时请回头参照。两版若有出入，以英文版为准。
+> 状态：**H1 已实现 + 已验证**（`app-core/src/context.rs`；注入 2026-06-11,真 provider 验证 + 余弦阈值加固 2026-07-15）；H2–H4 仍为设计。本文档是 `AGENT_HARNESS.md` 的中文版，描述应用内 agent 如何接入 vault——什么上下文进去、什么操作出来、这些操作如何落盘。实现下方 H1..H4 各阶段时请回头参照。两版若有出入，以英文版为准。
+>
+> H1 验证（真 provider + 真 embeddings）：模型确实消费这个块——当另一 topic 存在真正相关的节点时,它发出逐字 id 的跨 topic `link`(单 topic 的 node dump 绝不可能产出);无相关节点时正确地不链接。门槛达标。注意招牌的 `<semantic-neighbors>` 通道好坏取决于 vault 的稠密度:~25 节点 + 近乎空的第二 topic 下它大多渲染为空,这是正确的。余弦阈值(见下)是验证暴露出"垃圾节点落在 ~0.58 泛英文基线"后补的。
 
 ## 1. 为什么
 
@@ -56,6 +58,8 @@
 4. 永不触碰 `<focus>` 和 `<ancestors>`——那是脊柱
 
 Skip-connection 通过 `<links>`（显式）+ `<semantic-neighbors>`（隐式）表达。两者都需要：用户自己的链接选择是最强的意图信号，嵌入向量负责捕捉他们还没来得及链接的部分。
+
+`<semantic-neighbors>` 是**纯嵌入**的——走纯向量搜索,不是 RRF 融合的混合 `search`。融合会掺入词法 FTS 命中,给出的是 rank-based 分数,和相关性无关,没法拿来卡阈值;原始余弦可以。低于**余弦阈值**（`MINDFOREST_AGENT_NEIGHBOR_MIN_COSINE`,默认 **0.60**）的邻居被丢弃,embedder 不可用时该段直接为空,而不是退回词法噪声。这个阈值有必要,因为 EmbeddingGemma-300M 把任意两段英文都拉到 ~0.58 附近,没有它,一个垃圾/近空节点就会挤进来、在稀疏 vault 的小跨 topic 池里占主导(实测:真正相关的跨 topic 节点 ~0.69,stub 占位垃圾 ~0.58)。
 
 ### L2 — 工具化编辑
 
@@ -153,7 +157,7 @@ DraftOverlay（web）
 
 ## 6. 阶段划分
 
-**H1 — 只有上下文，没有工具。** 实现 `ContextBuilder` 并注入 `<vault-context>`。`AgentProposer` 签名不变。**验收门槛**：让 agent 添加一个兄弟节点，检查它选的标题是否避开了现有兄弟（今天的 agent 根本不知道它们存在）。如果 L1 单独无法明显提升输出质量，就停——H2/H3 也救不回来。
+**H1 — 只有上下文，没有工具。** 实现 `ContextBuilder` 并注入 `<vault-context>`。`AgentProposer` 签名不变。**验收门槛**：原计划的"加兄弟节点看标题是否避重"其实是弱测试——请求体本就把整个 topic（含兄弟）dump 进去了,避重并不能隔离 L1。真正能隔离 L1 的信号：当**另一** topic 里存在真正相关的节点时,agent 发出跨 topic 的 `link`,用的是只可能在 `<semantic-neighbors>` 里见过的 id(dump 是单 topic 的)。这就是已跑通并通过的测试(2026-07-15)。如果 L1 单独无法明显提升输出质量，就停——H2/H3 也救不回来。
 
 **H2 — 只读工具。** 加 `mf_read_node` + `mf_search`。Provider 可以自行决定深挖。无变更操作。UI 不变——仍然只是文本提案。
 
