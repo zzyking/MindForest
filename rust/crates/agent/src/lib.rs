@@ -46,12 +46,17 @@ mod prompt;
 pub mod secrets;
 mod sse;
 mod stub;
+mod tools;
 
 pub use anthropic::{AnthropicConfig, AnthropicProposer};
 pub use openai::{OpenAICompatibleProposer, OpenAIConfig};
 pub use parse::{extract_proposals, ProposalParseError};
 pub use secrets::{mask_secret, InMemoryStore, KeyringStore, SecretError, SecretStore};
 pub use stub::StubProposer;
+pub use tools::{
+  read_only_tools, AgentToolCall, ReadNodeInput, SearchInput, ToolDef, ToolExecutor, ToolResult,
+  DEFAULT_SEARCH_K, MF_READ_NODE, MF_SEARCH,
+};
 
 use std::sync::Arc;
 

@@ -48,6 +48,10 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-
 # system lib). sqlite-vec registers itself via sqlite3_auto_extension at
 # process startup, so we don't need rusqlite's `load_extension` feature.
 rusqlite = { version = "0.31", features = ["bundled"] }
+# JSON Schema generation for agent tool-input structs (harness L2). The
+# `derive` feature is on by default; each tool's schema is handed to
+# providers as its `input_schema` / `function.parameters`.
+schemars = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlite-vec = "0.1"
