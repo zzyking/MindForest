@@ -268,22 +268,27 @@ html[data-resizing] .bg-noise::before {
   }
 }
 
-/* View-pane entrance — applied in NodePage when viewMode changes so
-   switching editor/tree/forest reads as a soft re-enter rather than
-   a hard swap. Matches TreeView's `tree-card-in` (320ms,
-   cubic-bezier(0.2, 0.8, 0.2, 1), scale 0.97 → 1) so the three views
-   feel consistent and so that switching INTO tree composes cleanly:
-   outer wrapper scales in while the inner sections do their own
-   translateY + scale stagger inside it.
-
-   No translateY on the outer wrapper — main is `overflow-y-auto` and
-   any vertical translate would briefly push `h-full` content past
-   the edge and mount a scrollbar mid-animation. `scale` is purely a
-   transform, doesn't touch layout, so it never triggers overflow. */
+/* View-pane entrance — legacy three-mode swap (retired in L1; keyframe
+   kept so any residual className references stay valid). */
 @keyframes view-pane-in {
   from {
     opacity: 0;
     transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Inspect entrance — NodePage sets transform-origin to the focused
+   node's viewport point so the panel reads as growing from that node.
+   Scale only (no translateY) so main's overflow-y-auto never mounts a
+   scrollbar mid-animation. prefers-reduced-motion uses fade-in instead. */
+@keyframes inspect-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
   }
   to {
     opacity: 1;
