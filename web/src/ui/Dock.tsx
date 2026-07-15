@@ -1,12 +1,11 @@
 /**
  * Floating bottom dock. Holds workspace-wide affordances: sidebar
- * toggle, view-mode segmented switch (editor / tree / forest), search
- * palette opener, and the agent-bar trigger. Sticks to bottom-center so
- * it's reachable from any pointer position without being modal.
+ * toggle, search palette opener, agent bar, agent settings, collapse.
+ * Sticks to bottom-center so it's reachable from any pointer position
+ * without being modal.
  *
- * The view-mode toggle only flips the workspace's pane; the route stays
- * the same. Picking a node from tree/forest navigates back to editor by
- * default — see `useFocusNode` callers in TreeView / ForestView.
+ * L1: view-mode segmented control retired — the field is always home;
+ * Inspect open lives in `?w=1`, not a dock toggle.
  *
  * The agent bar rests collapsed: at rest the dock is the only chrome
  * row, and the Sparkles trigger (or `/` / ⌘I) expands the bar above it
@@ -17,26 +16,22 @@
  * bottom-right lets the user bring them back.
  */
 
-import { ChevronDown, ChevronUp, PanelLeft, PanelLeftClose, Pencil, Search, Settings, Shrub, Sparkles, Trees } from "lucide-react";
+import { ChevronDown, ChevronUp, PanelLeft, PanelLeftClose, Search, Settings, Sparkles, Trees } from "lucide-react";
 
 import { useMainPaneShiftClass } from "@/app/mainPaneShift";
 import { cn } from "@/lib/cn";
-import { useWorkspaceUI, type ViewMode } from "@/stores/workspaceUI";
+import { useWorkspaceUI } from "@/stores/workspaceUI";
 
 export function Dock() {
   const sidebarOpen = useWorkspaceUI((s) => s.sidebarOpen);
   const toggleSidebar = useWorkspaceUI((s) => s.toggleSidebar);
   const setSearchPalette = useWorkspaceUI((s) => s.setSearchPalette);
   const setAgentSettings = useWorkspaceUI((s) => s.setAgentSettings);
-  const viewMode = useWorkspaceUI((s) => s.viewMode);
-  const setViewMode = useWorkspaceUI((s) => s.setViewMode);
   const dockExpanded = useWorkspaceUI((s) => s.dockExpanded);
   const toggleDock = useWorkspaceUI((s) => s.toggleDock);
   const agentBarOpen = useWorkspaceUI((s) => s.agentBarOpen);
   const toggleAgentBar = useWorkspaceUI((s) => s.toggleAgentBar);
   const shift = useMainPaneShiftClass();
-
-  const CurrentViewIcon = VIEW_MODES.find((m) => m.id === viewMode)?.Icon ?? Pencil;
 
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-4">
@@ -79,8 +74,6 @@ export function Dock() {
             {sidebarOpen ? <PanelLeftClose size={16} strokeWidth={2} /> : <PanelLeft size={16} strokeWidth={2} />}
           </DockButton>
           <DockSeparator />
-          <ViewToggle value={viewMode} onChange={setViewMode} />
-          <DockSeparator />
           <DockButton label="Search" onClick={() => setSearchPalette(true)} shortcut="⌘K">
             <Search size={16} strokeWidth={2} />
           </DockButton>
@@ -114,7 +107,7 @@ export function Dock() {
             : "translate-y-0 opacity-100",
         )}
       >
-        <CurrentViewIcon size={14} strokeWidth={2} className="text-forest-600" aria-hidden />
+        <Trees size={14} strokeWidth={2} className="text-forest-600" aria-hidden />
         <ChevronUp size={12} strokeWidth={2} className="text-forest-400" aria-hidden />
       </button>
 
@@ -155,46 +148,4 @@ function DockButton({ children, label, active, shortcut, onClick }: DockButtonPr
 
 function DockSeparator() {
   return <span aria-hidden className="bg-forest-200/60 mx-1 h-5 w-px" />;
-}
-
-
-interface ViewToggleProps {
-  value: ViewMode;
-  onChange: (m: ViewMode) => void;
-}
-
-const VIEW_MODES: { id: ViewMode; label: string; Icon: typeof Pencil }[] = [
-  { id: "editor", label: "Editor", Icon: Pencil },
-  { id: "tree", label: "Tree", Icon: Shrub },
-  { id: "forest", label: "Forest", Icon: Trees },
-];
-
-function ViewToggle({ value, onChange }: ViewToggleProps) {
-  // Deliberately NOT role="tablist": there's no addressable tabpanel
-  // (the whole main pane swaps) and we don't implement the roving-
-  // tabindex arrow-key contract the tabs pattern requires. A group of
-  // toggle buttons with aria-pressed describes exactly what this is.
-  return (
-    <div role="group" aria-label="View mode" className="flex items-center gap-0.5">
-      {VIEW_MODES.map((m) => (
-        <button
-          key={m.id}
-          type="button"
-          aria-pressed={value === m.id}
-          title={m.label}
-          onClick={() => onChange(m.id)}
-          className={cn(
-            "inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-sm transition-all duration-200 ease-out",
-            "will-change-transform hover:-translate-y-px active:translate-y-0",
-            value === m.id
-              ? "bg-forest-800 text-sand-100 shadow-soft"
-              : "text-forest-600 hover:bg-forest-100",
-          )}
-        >
-          <m.Icon size={16} strokeWidth={2} aria-hidden />
-          <span className="hidden sm:inline">{m.label}</span>
-        </button>
-      ))}
-    </div>
-  );
 }
