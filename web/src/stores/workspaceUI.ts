@@ -4,23 +4,20 @@
  *
  * - Sidebar open/closed (persists across navigations within a session)
  * - Search palette open/closed (Cmd+K toggle)
- * - View mode (editor | tree | forest) — tab toggle in the dock; only
- *   meaningful when a topic is focused, but cheap to keep here so the
- *   shell can render the right pane without route-aware logic. Tree
- *   shows just the focused topic; Forest shows the whole workspace.
+ * - Agent settings / dock / agent bar
+ * - Forest camera intent (field framing after navigation)
  *
- * Focus is URL-driven via TanStack Router (see `app/navigation.ts`).
+ * Focus is URL-driven via TanStack Router (`/$topicId/$nodeId`).
+ * Inspect open is URL-driven via `?w=1` — not stored here.
+ *
  * For Back/Forward affordances we keep two cursors — `navBack` /
- * `navForward` — bumped by the navigation hooks. TanStack Router's
- * `BrowserHistory` doesn't expose its own cursor, so we maintain
- * counts here ourselves instead of guessing from `window.history`.
+ * `navForward` — bumped by the navigation hooks.
  */
 
 import { create } from "zustand";
 
 import type { NodeId, TopicId } from "@/lib/types";
 
-export type ViewMode = "editor" | "tree" | "forest";
 export type ForestCameraMode = "node" | "topic-root";
 
 interface ForestCameraIntent {
@@ -37,7 +34,6 @@ interface WorkspaceUIState {
   /** Agent prompt bar expanded above the dock. Rest state is a dock
    *  trigger; `/` / ⌘I / the dock button open it on demand. */
   agentBarOpen: boolean;
-  viewMode: ViewMode;
   forestCameraIntent: ForestCameraIntent | null;
   /** Number of focus-pushes behind the current cursor (≥ 0). */
   navBack: number;
@@ -52,7 +48,6 @@ interface WorkspaceUIState {
   expandDock: () => void;
   toggleAgentBar: () => void;
   setAgentBar: (open: boolean) => void;
-  setViewMode: (mode: ViewMode) => void;
   setForestCameraIntent: (intent: ForestCameraIntent | null) => void;
   consumeForestCameraIntent: (targetNodeId: NodeId, topicId: TopicId) => void;
   /** Called by `useFocusNode` when a *non-replace* push lands. */
@@ -64,12 +59,12 @@ interface WorkspaceUIState {
 }
 
 export const useWorkspaceUI = create<WorkspaceUIState>((set) => ({
-  sidebarOpen: true,
+  // Field is home — greet unobstructed. Sidebar stays reachable via ⌘\ / pill.
+  sidebarOpen: false,
   searchPaletteOpen: false,
   agentSettingsOpen: false,
   dockExpanded: true,
   agentBarOpen: false,
-  viewMode: "editor",
   forestCameraIntent: null,
   navBack: 0,
   navForward: 0,
@@ -82,7 +77,6 @@ export const useWorkspaceUI = create<WorkspaceUIState>((set) => ({
   expandDock: () => set({ dockExpanded: true }),
   toggleAgentBar: () => set((s) => ({ agentBarOpen: !s.agentBarOpen })),
   setAgentBar: (open) => set({ agentBarOpen: open }),
-  setViewMode: (mode) => set({ viewMode: mode }),
   setForestCameraIntent: (intent) => set({ forestCameraIntent: intent }),
   consumeForestCameraIntent: (targetNodeId, topicId) =>
     set((s) =>
