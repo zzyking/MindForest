@@ -34,6 +34,7 @@ mod config;
 mod context;
 mod model;
 mod search;
+mod tool_exec;
 mod workers;
 
 pub use model::{ModelStatusResponse, EMBEDDING_MODEL_FILES, EMBEDDING_MODEL_REPO};
@@ -960,5 +961,87 @@ mod tests {
       hits.iter().any(|h| h.id == n.id),
       "FTS hit must survive a broken vec arm"
     );
+  }
+
+  #[tokio::test]
+  async fn tool_executor_reads_node_and_errors_recoverably() {
+    use agent::{AgentToolCall, ReadNodeInput, ToolExecutor};
+    let (_tmp, svc) = fixture().await;
+    let topic = svc
+      .create_topic(NewTopic { title: "T".into(), slug: None })
+      .await
+      .unwrap();
+    let node = svc
+      .create_node(NewNode {
+        topic: topic.id.clone(),
+        parent: Some(topic.root_node_id),
+        title: "Attention".into(),
+        content: "self-attention weights".into(),
+        node_type: NodeType::Concept,
+      })
+      .await
+      .unwrap();
+
+    // Existing node → ok result carrying the node JSON.
+    let r = svc
+      .execute(AgentToolCall::ReadNode(ReadNodeInput {
+        id: node.id.to_string(),
+      }))
+      .await;
+    assert!(!r.is_error);
+    let v: serde_json::Value = serde_json::from_str(&r.content).unwrap();
+    assert_eq!(v["title"], "Attention");
+
+    // Malformed id → recoverable tool error, never a dropped turn.
+    let r = svc
+      .execute(AgentToolCall::ReadNode(ReadNodeInput {
+        id: "not-a-ulid".into(),
+      }))
+      .await;
+    assert!(r.is_error);
+    assert!(r.content.contains("not a valid node id"));
+
+    // Well-formed but absent id → tool error, not a panic.
+    let r = svc
+      .execute(AgentToolCall::ReadNode(ReadNodeInput {
+        id: "01BX5ZZKBKACTAV9WEVGEMMVRZ".into(),
+      }))
+      .await;
+    assert!(r.is_error);
+  }
+
+  #[tokio::test]
+  async fn tool_executor_search_returns_hits_json() {
+    use agent::{AgentToolCall, SearchInput, ToolExecutor};
+    let (_tmp, svc) = fixture().await;
+    let topic = svc
+      .create_topic(NewTopic { title: "T".into(), slug: None })
+      .await
+      .unwrap();
+    svc
+      .create_node(NewNode {
+        topic: topic.id.clone(),
+        parent: Some(topic.root_node_id),
+        title: "Tokenization".into(),
+        content: "byte pair encoding subword units".into(),
+        node_type: NodeType::Concept,
+      })
+      .await
+      .unwrap();
+
+    let r = svc
+      .execute(AgentToolCall::Search(SearchInput {
+        query: "subword".into(),
+        k: None,
+      }))
+      .await;
+    assert!(!r.is_error);
+    let hits: serde_json::Value = serde_json::from_str(&r.content).unwrap();
+    assert!(hits.is_array());
+    assert!(hits
+      .as_array()
+      .unwrap()
+      .iter()
+      .any(|h| h["title"] == "Tokenization"));
   }
 }
