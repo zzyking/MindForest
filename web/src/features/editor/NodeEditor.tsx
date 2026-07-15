@@ -158,7 +158,7 @@ export function NodeEditor({ nodeId, topicId }: Props) {
         content: "",
         node_type: "concept",
       });
-      await focusNode(child.id, child.topic);
+      await focusNode(child.id, child.topic, { write: true });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }

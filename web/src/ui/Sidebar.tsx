@@ -451,7 +451,8 @@ function NodeRow({ row, topicId, focused, onToggle }: NodeRowProps) {
         <button
           type="button"
           onClick={() => {
-            focus(node.id, topicId);
+            // Outline pick = intent-to-edit → open Inspect (`?w=1`).
+            void focus(node.id, topicId, { write: true });
             if (hasChildren && !isOpen) {
               onToggle(node.id);
             }

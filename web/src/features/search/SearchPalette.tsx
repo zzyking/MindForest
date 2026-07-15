@@ -75,7 +75,8 @@ export function SearchPalette() {
 
   const onPick = useCallback(
     async (hit: SearchHit) => {
-      await focus(hit.id, hit.topic);
+      // Search pick = intent-to-edit → open Inspect (`?w=1`).
+      await focus(hit.id, hit.topic, { write: true });
       setOpen(false);
     },
     [focus, setOpen],
