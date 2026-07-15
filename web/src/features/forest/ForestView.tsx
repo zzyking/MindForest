@@ -69,6 +69,25 @@ import { useCameraAnchor } from "./useCameraAnchor";
 import { useHoverDim } from "./useHoverDim";
 import { useSimLoop } from "./useSimLoop";
 
+/** Module-level sigma handle so Inspect can read the focused node's
+ *  viewport origin without coupling NodePage into the sim stack. */
+let liveSigma: Sigma | null = null;
+
+/** Screen-space center of a graph node (viewport coords), or null. */
+export function getFocusedNodeViewportPoint(nodeId: NodeId): { x: number; y: number } | null {
+  const s = liveSigma;
+  if (!s) return null;
+  const graph = s.getGraph();
+  if (!graph.hasNode(nodeId)) return null;
+  const x = graph.getNodeAttribute(nodeId, "x") as number;
+  const y = graph.getNodeAttribute(nodeId, "y") as number;
+  try {
+    return s.graphToViewport({ x, y });
+  } catch {
+    return null;
+  }
+}
+
 interface Props {
   focusedTopicId: TopicId;
   focusedNodeId: NodeId;
@@ -483,8 +502,23 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       const topicId = graph.getNodeAttribute(node, "topicId") as TopicId;
       const x = graph.getNodeAttribute(node, "x") as number;
       const y = graph.getNodeAttribute(node, "y") as number;
+      const id = node as NodeId;
+      // Second click on already-focused node → open Inspect.
+      const openWrite = focusedNodeIdRef.current === id;
 
-      void focusRef.current(node as NodeId, topicId);
+      void focusRef.current(id, topicId, openWrite ? { write: true } : undefined);
+      animateCameraToPoint(s, { x, y }, { duration: 400 });
+      cameraAnchorRef.current = { x, y };
+    });
+    s.on("doubleClickNode", (payload) => {
+      // Prevent sigma's default double-click zoom when opening Inspect.
+      payload.preventSigmaDefault();
+      if (drag.wasDragged()) return;
+      const node = payload.node;
+      const topicId = graph.getNodeAttribute(node, "topicId") as TopicId;
+      const x = graph.getNodeAttribute(node, "x") as number;
+      const y = graph.getNodeAttribute(node, "y") as number;
+      void focusRef.current(node as NodeId, topicId, { write: true });
       animateCameraToPoint(s, { x, y }, { duration: 400 });
       cameraAnchorRef.current = { x, y };
     });
@@ -494,6 +528,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
     s.on("afterRender", projectOverlays);
 
     sigmaRef.current = s;
+    liveSigma = s;
     // Initial framing: fit the whole forest, centred on the focused
     // node when there is one. fitCameraToGraph measures half-extents
     // from the centre point, so "my node is centred" and "everything
@@ -560,6 +595,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       }
       s.kill();
       sigmaRef.current = null;
+      if (liveSigma === s) liveSigma = null;
     };
     // Refs (callbacks routed through focusRef/setHoverRef) keep this
     // effect single-use; only graphReady's false→true flip triggers it.
