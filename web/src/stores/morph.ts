@@ -4,10 +4,10 @@
  * Session-only (not URL, not localStorage). Maturity / node count never
  * writes here. Inspect open freezes μ (snapshot + restore).
  *
- * Dual-zone (UI_VISION §3.1):
- *   - Camera dolly tracks μ continuously (small moves = survey).
- *   - Material blend lags with hysteresis so fine moves don't
- *     rematerialize the world.
+ * Wheel and slider are one control family: both write absolute μ, and
+ * camera + material read the same μ (no lag channel). Soft-form change
+ * is continuous along μ, not a separate delayed track — delayed material
+ * made wheel feel “dolly only” while the slider rematerialized.
  *
  * Cold open: fixed Grove mid (MU_COLD), not empty Mist.
  */
@@ -16,11 +16,6 @@ import { create } from "zustand";
 
 /** Cold-open / Grove lean — mid on the continuum. */
 export const MU_COLD = 0.45;
-
-/** Half-width of the pure-dolly band around the last material μ.
- *  Small enough that a short slider drag still rematerializes; large
- *  enough that fine wheel ticks survey without popping form. */
-const HYSTERESIS = 0.045;
 
 /** Discrete stations when prefers-reduced-motion. */
 const STATIONS = [0.2, 0.45, 0.85] as const;
@@ -50,29 +45,15 @@ function snapStation(v: number): number {
 }
 
 /**
- * Dual-zone mapping from raw μ → { camera, material }.
- *
- * Camera follows μ 1:1 (dolly always).
- * Material always eases toward μ — never freezes — so wheel and slider
- * share one family. Dual-zone is rate, not a hard gate:
- *   - |Δ| ≤ hysteresis → slow catch-up (survey without hard pop)
- *   - |Δ| > hysteresis → fast catch-up (form + distance together)
- *
- * (Earlier freeze-inside-band made wheel feel “camera only” while a
- *  slider jump rematerialized — same setMu path, different step size.)
+ * Camera + material share μ 1:1 (wheel ≡ slider).
+ * `materialPrev` kept for call-site compatibility; ignored.
  */
 export function mapMorph(
   mu: number,
-  materialPrev: number,
+  _materialPrev?: number,
 ): { camera: number; material: number } {
-  const camera = clamp01(mu);
-  const delta = camera - materialPrev;
-  if (Math.abs(delta) < 1e-6) {
-    return { camera, material: materialPrev };
-  }
-  const rate = Math.abs(delta) <= HYSTERESIS ? 0.4 : 0.9;
-  const material = clamp01(materialPrev + delta * rate);
-  return { camera, material };
+  const v = clamp01(mu);
+  return { camera: v, material: v };
 }
 
 /**
@@ -139,19 +120,18 @@ export function edgeStyleForMaterial(material: number): {
 }
 
 interface MorphState {
-  /** User control value ∈ [0,1]. */
+  /** User control value ∈ [0,1] — drives camera + material together. */
   mu: number;
-  /** Lagged material channel (hysteresis). */
+  /** Same as mu (alias for render sites that read material). */
   material: number;
   /** Fit ratio captured at field mount — base for dolly. */
   fitRatio: number | null;
   /** While Inspect is open, μ is frozen. */
   frozen: boolean;
   snapshotMu: number | null;
-  snapshotMaterial: number | null;
 
   setMu: (next: number) => void;
-  /** Relative nudge (wheel / pinch). Positive = farther. */
+  /** Relative nudge (wheel / pinch). Positive = farther. Same as setMu(mu+δ). */
   nudgeMu: (delta: number) => void;
   setFitRatio: (ratio: number) => void;
   freezeForInspect: () => void;
@@ -164,21 +144,19 @@ export const useMorph = create<MorphState>((set, get) => ({
   fitRatio: null,
   frozen: false,
   snapshotMu: null,
-  snapshotMaterial: null,
 
   setMu: (next) => {
     const s = get();
     if (s.frozen) return;
     let mu = clamp01(next);
     if (prefersReducedMotion()) mu = snapStation(mu);
-    const { camera, material } = mapMorph(mu, s.material);
+    const { camera, material } = mapMorph(mu);
     set({ mu: camera, material });
   },
 
   nudgeMu: (delta) => {
     const s = get();
     if (s.frozen) return;
-    // Throttle-friendly: caller should pass small deltas (~0.02–0.06).
     get().setMu(s.mu + delta);
   },
 
@@ -190,24 +168,13 @@ export const useMorph = create<MorphState>((set, get) => ({
   freezeForInspect: () => {
     const s = get();
     if (s.frozen) return;
-    set({
-      frozen: true,
-      snapshotMu: s.mu,
-      snapshotMaterial: s.material,
-    });
+    set({ frozen: true, snapshotMu: s.mu });
   },
 
   restoreAfterInspect: () => {
     const s = get();
     if (!s.frozen) return;
     const mu = s.snapshotMu ?? s.mu;
-    const material = s.snapshotMaterial ?? s.material;
-    set({
-      frozen: false,
-      mu,
-      material,
-      snapshotMu: null,
-      snapshotMaterial: null,
-    });
+    set({ frozen: false, mu, material: mu, snapshotMu: null });
   },
 }));

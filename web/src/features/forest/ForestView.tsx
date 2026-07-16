@@ -334,11 +334,10 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
     morphFrozenRef.current = morphFrozen;
   }, [inspectOpen, morphFrozen]);
 
-  // Empty-field wheel → μ (not over bubble / Inspect / chrome).
+  // Empty-field wheel → same setMu path as the slider (absolute μ).
   useEffect(() => {
     const el = containerRef.current;
     if (!el || !graphReady) return;
-    let lastTs = 0;
     const onWheel = (e: WheelEvent) => {
       if (inspectOpenRef.current || morphFrozenRef.current) return;
       // Pointer over a node → content/no-op (never morph).
@@ -347,25 +346,40 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
       if (Math.abs(e.deltaY) < Math.abs(e.deltaX) * 0.6) return;
       e.preventDefault();
       e.stopPropagation();
-      // Throttle ~45Hz. Step sized so a normal trackpad gesture
-      // rematerializes within ~1–2 flicks (same family as slider).
-      const now = performance.now();
-      if (now - lastTs < 22) return;
-      lastTs = now;
-      // Positive deltaY = scroll down = farther (μ ↑).
-      const raw = e.deltaY;
-      const step = Math.sign(raw) * Math.min(0.08, Math.abs(raw) * 0.0018 + 0.02);
+      // Map wheel delta onto μ like a continuous slider scrub.
+      // deltaMode: 0=pixel, 1=line, 2=page. Normalize to ~slider feel.
+      let dy = e.deltaY;
+      if (e.deltaMode === 1) dy *= 16;
+      if (e.deltaMode === 2) dy *= 400;
+      // ~800px of scroll ≈ full 0→1 range (trackpad-friendly).
+      const step = dy / 800;
       nudgeMu(step);
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, [graphReady, nudgeMu]);
 
-  const openQuestionCount = useMemo(() => {
-    const detail = topicDetails[focusedTopicId];
-    if (!detail) return 0;
-    return detail.nodes.filter((n) => n.type === "question").length;
-  }, [topicDetails, focusedTopicId]);
+  // Growth win A: `q` adds a child question under focus (no chrome button).
+  useEffect(() => {
+    const isTyping = (t: EventTarget | null) => {
+      if (!(t instanceof HTMLElement)) return false;
+      const tag = t.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+      if (t.isContentEditable) return true;
+      if (t.closest(".cm-editor, .cm-content")) return true;
+      return false;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "q" && e.key !== "Q") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (inspectOpenRef.current) return;
+      if (isTyping(e.target)) return;
+      e.preventDefault();
+      void onAddChildQuestionRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const onAddChildQuestion = useCallback(async () => {
     if (addingQuestion || inspectOpen) return;
@@ -397,6 +411,8 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
     createNode,
     focus,
   ]);
+  const onAddChildQuestionRef = useRef(onAddChildQuestion);
+  onAddChildQuestionRef.current = onAddChildQuestion;
 
   const focusedNodeIdRef = useRef(focusedNodeId);
   const focusedTopicIdRef = useRef(focusedTopicId);
@@ -840,32 +856,11 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
         })}
       </div>
 
-      {/* Morph chrome — bottom-center; hidden while Inspect open */}
+      {/* Morph chrome — bottom-center; hidden while Inspect open.
+          Growth: topic labels show open-question count; press `q` to add. */}
       {!inspectOpen && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-20 z-10 flex justify-center gap-2 px-4">
+        <div className="pointer-events-none absolute inset-x-0 bottom-20 z-10 flex justify-center px-4">
           <MorphSlider />
-          <button
-            type="button"
-            onClick={() => void onAddChildQuestion()}
-            disabled={addingQuestion}
-            title="Add child question under focus (growth)"
-            aria-label="Add child question under focused node"
-            className={cn(
-              "pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-forest-200",
-              "bg-sand-100/85 px-3 py-1.5 text-[11px] font-medium text-forest-700 shadow-glass backdrop-blur-md",
-              "hover:bg-sand-100 hover:border-forest-300 transition-colors",
-              "disabled:opacity-50",
-              "[-webkit-font-smoothing:antialiased]",
-            )}
-          >
-            <span aria-hidden className="text-forest-500">
-              ?
-            </span>
-            <span>问</span>
-            {openQuestionCount > 0 && (
-              <span className="text-forest-400 tabular-nums">{openQuestionCount}</span>
-            )}
-          </button>
         </div>
       )}
     </div>
