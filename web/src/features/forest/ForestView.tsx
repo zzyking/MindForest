@@ -333,29 +333,6 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
     morphFrozenRef.current = morphFrozen;
   }, [inspectOpen, morphFrozen]);
 
-  // Empty-field wheel → same setMu as the slider (store is source of
-  // truth; MorphSlider thumb/fill re-render from μ on every tick).
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el || !graphReady) return;
-    const onWheel = (e: WheelEvent) => {
-      if (inspectOpenRef.current || morphFrozenRef.current) return;
-      // Pointer over a node → content/no-op (never morph).
-      if (hoverNodeRef.current) return;
-      // Don't steal horizontal-ish trackpad pans.
-      if (Math.abs(e.deltaY) < Math.abs(e.deltaX) * 0.6) return;
-      e.preventDefault();
-      e.stopPropagation();
-      let dy = e.deltaY;
-      if (e.deltaMode === 1) dy *= 16;
-      if (e.deltaMode === 2) dy *= 400;
-      // Absolute write — identical path to dragging the range input.
-      useMorph.getState().setMu(useMorph.getState().mu + dy / 800);
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, [graphReady]);
-
   // Growth win A: `q` adds a child question under focus (no chrome button).
   useEffect(() => {
     const isTyping = (t: EventTarget | null) => {
@@ -660,12 +637,34 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
       hoverNodeRef.current = null;
       setHoverRef.current(null);
     });
-    // Block sigma's default wheel-zoom; empty-field wheel → μ (DOM handler).
-    const blockWheel = (e: { preventSigmaDefault: () => void }) => {
-      e.preventSigmaDefault();
+    // Wheel on field → μ (same setMu as MorphSlider). Block sigma zoom.
+    // wheelStage = empty field; wheelNode = over bubble (no morph).
+    const onWheelStage = (payload: {
+      event: { delta?: number; original?: Event };
+      preventSigmaDefault: () => void;
+    }) => {
+      payload.preventSigmaDefault();
+      if (inspectOpenRef.current || morphFrozenRef.current) return;
+      const orig = payload.event.original;
+      let dy = 0;
+      if (orig instanceof WheelEvent) {
+        dy = orig.deltaY;
+        if (orig.deltaMode === 1) dy *= 16;
+        if (orig.deltaMode === 2) dy *= 400;
+      } else if (typeof payload.event.delta === "number") {
+        dy = payload.event.delta * 40;
+      }
+      // ~600px scroll ≈ full range — thumb + camera + material together.
+      useMorph.getState().setMu(useMorph.getState().mu + dy / 600);
     };
-    s.on("wheelStage", blockWheel);
-    s.on("wheelNode", blockWheel);
+    const onWheelNode = (payload: { preventSigmaDefault: () => void }) => {
+      payload.preventSigmaDefault();
+      // Over bubble: never morph.
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    s.on("wheelStage", onWheelStage as any);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    s.on("wheelNode", onWheelNode as any);
     s.getCamera().on("updated", projectOverlays);
     s.on("afterRender", projectOverlays);
 
@@ -734,8 +733,10 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
     return () => {
       cancelAnimationFrame(revealRafId);
       drag.dispose();
-      s.off("wheelStage", blockWheel);
-      s.off("wheelNode", blockWheel);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      s.off("wheelStage", onWheelStage as any);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      s.off("wheelNode", onWheelNode as any);
       // Cross-mount continuity: persist where every node ended up.
       lastLayoutPositions.clear();
       for (const n of layout.simNodes) {
