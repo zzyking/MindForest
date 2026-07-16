@@ -161,7 +161,10 @@ export const useMorph = create<MorphState>((set, get) => ({
   },
 
   setFitRatio: (ratio) => {
+    // Mount-only baseline. Never overwrite from a live camera.ratio
+    // (that would bake in a prior morph and fight the slider formula).
     if (!(ratio > 0) || !Number.isFinite(ratio)) return;
+    if (get().fitRatio != null) return;
     set({ fitRatio: ratio });
   },
 

@@ -43,12 +43,13 @@ import {
   getForestCameraMode,
   getGraphNodePosition,
   resolveCameraTarget,
+  syncCameraRatioToMorph,
   type GraphPoint,
 } from "./camera";
 import { dimSoftColor, softNodeColor, softNodeSize } from "./drawNode";
 import { makeDrawNodeLabel } from "./drawLabel";
 import { MorphSlider } from "./MorphSlider";
-import { cameraRatioForMu, edgeStyleForMaterial } from "./morphMap";
+import { edgeStyleForMaterial } from "./morphMap";
 import { wireNodeDrag } from "./nodeDrag";
 import { palette, withAlpha } from "./palette";
 import { useCameraAnchor } from "./useCameraAnchor";
@@ -111,9 +112,7 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
   const sidebarOpen = useWorkspaceUI((s) => s.sidebarOpen);
   const focus = useFocusNode();
 
-  const mu = useMorph((s) => s.mu);
   const material = useMorph((s) => s.material);
-  const fitRatio = useMorph((s) => s.fitRatio);
   const morphFrozen = useMorph((s) => s.frozen);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -270,7 +269,8 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
     if (dirty) sigmaRef.current?.refresh();
   }, [graphReady, topicDetails]);
 
-  // Apply morph material → edge style; camera ratio from μ + fitRatio.
+  // Material → edges only. Camera ratio is applied solely via
+  // syncCameraRatioToMorph (store.subscribe + mount) so wheel ≡ slider.
   useEffect(() => {
     const s = sigmaRef.current;
     const graph = layoutRef.current?.graph;
@@ -290,21 +290,23 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
       graph.setEdgeAttribute(edge, "color", withAlpha(base, alpha));
       graph.setEdgeAttribute(edge, "size", size);
     });
-
-    // Dolly always tracks μ (even while Inspect freezes further nudges —
-    // restore restores prior μ and this effect re-applies). fitRatio is
-    // the mount-time overview baseline.
-    const base = fitRatio ?? s.getCamera().ratio;
-    if (base > 0 && Number.isFinite(base)) {
-      if (fitRatio == null) useMorph.getState().setFitRatio(base);
-      const next = cameraRatioForMu(mu, fitRatio ?? base);
-      const cam = s.getCamera();
-      if (Math.abs(cam.ratio - next) > 0.0005) {
-        cam.setState({ ratio: next });
-      }
-    }
     s.refresh();
-  }, [graphReady, material, mu, fitRatio, morphFrozen]);
+  }, [graphReady, material]);
+
+  // μ is the only distance control: any setMu (slider or wheel) rewrites ratio.
+  useEffect(() => {
+    if (!graphReady) return;
+    const apply = () => {
+      const s = sigmaRef.current;
+      if (!s) return;
+      syncCameraRatioToMorph(s);
+      s.refresh();
+    };
+    apply();
+    return useMorph.subscribe((state, prev) => {
+      if (state.mu !== prev.mu || state.fitRatio !== prev.fitRatio) apply();
+    });
+  }, [graphReady]);
 
   const cameraAnchorRef = useCameraAnchor(sigmaRef, sidebarOpen);
   const {
@@ -637,8 +639,10 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
       hoverNodeRef.current = null;
       setHoverRef.current(null);
     });
-    // Wheel on field → μ (same setMu as MorphSlider). Block sigma zoom.
-    // wheelStage = empty field; wheelNode = over bubble (no morph).
+    // Wheel = only setMu (slider formula). Kill sigma's own zoom path.
+    const killSigmaZoom = (payload: { preventSigmaDefault: () => void }) => {
+      payload.preventSigmaDefault();
+    };
     const onWheelStage = (payload: {
       event: { delta?: number; original?: Event };
       preventSigmaDefault: () => void;
@@ -654,17 +658,19 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
       } else if (typeof payload.event.delta === "number") {
         dy = payload.event.delta * 40;
       }
-      // ~600px scroll ≈ full range — thumb + camera + material together.
+      // Same absolute setMu as MorphSlider scrub — camera follows via subscribe.
       useMorph.getState().setMu(useMorph.getState().mu + dy / 600);
-    };
-    const onWheelNode = (payload: { preventSigmaDefault: () => void }) => {
-      payload.preventSigmaDefault();
-      // Over bubble: never morph.
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     s.on("wheelStage", onWheelStage as any);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    s.on("wheelNode", onWheelNode as any);
+    s.on("wheelNode", killSigmaZoom as any);
+    // Also stop double-click zoom (Inspect uses prevent on doubleClickNode).
+    const killDblZoom = (payload: { preventSigmaDefault: () => void }) => {
+      payload.preventSigmaDefault();
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    s.on("doubleClickStage", killDblZoom as any);
     s.getCamera().on("updated", projectOverlays);
     s.on("afterRender", projectOverlays);
 
@@ -692,10 +698,11 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
           }) ?? getGraphNodePosition(graph, focusId))
         : null;
     fitCameraToGraph(s, graph, mountTarget ? { center: mountTarget } : undefined);
-    // Capture fit ratio as morph base, then apply cold-open μ dolly.
+    // fitRatio is the ONLY baseline for morph dolly; set once at mount.
+    // All later distance changes go through μ → syncCameraRatioToMorph.
     const fitted = s.getCamera().ratio;
     useMorph.getState().setFitRatio(fitted);
-    s.getCamera().setState({ ratio: cameraRatioForMu(useMorph.getState().mu, fitted) });
+    syncCameraRatioToMorph(s);
     if (mountTarget) {
       cameraAnchorRef.current = mountTarget;
     } else {
@@ -736,7 +743,9 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       s.off("wheelStage", onWheelStage as any);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      s.off("wheelNode", onWheelNode as any);
+      s.off("wheelNode", killSigmaZoom as any);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      s.off("doubleClickStage", killDblZoom as any);
       // Cross-mount continuity: persist where every node ended up.
       lastLayoutPositions.clear();
       for (const n of layout.simNodes) {

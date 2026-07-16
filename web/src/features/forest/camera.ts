@@ -12,6 +12,7 @@
 import type Graph from "graphology";
 import type Sigma from "sigma";
 
+import { cameraRatioForMu, useMorph } from "@/stores/morph";
 import type { ForestCameraMode } from "@/stores/workspaceUI";
 import type { NodeId, TopicDetail, TopicId } from "@/lib/types";
 
@@ -39,15 +40,28 @@ function getFramedGraphPoint(sigma: Sigma, point: GraphPoint) {
   return sigma.viewportToFramedGraph(view, conversion);
 }
 
+/**
+ * Sole writer of camera.ratio for the morph field.
+ * ratio = cameraRatioForMu(μ, fitRatio) — same formula for slider + wheel.
+ * Pan (x/y) is independent; only distance/form is owned by μ.
+ */
+export function syncCameraRatioToMorph(sigma: Sigma): void {
+  const { mu, fitRatio } = useMorph.getState();
+  if (fitRatio == null || !(fitRatio > 0)) return;
+  const next = cameraRatioForMu(mu, fitRatio);
+  const cam = sigma.getCamera();
+  if (Math.abs(cam.ratio - next) > 1e-6) {
+    cam.setState({ ratio: next });
+  }
+}
+
 export function animateCameraToPoint(
   sigma: Sigma,
   point: GraphPoint,
   options: { duration: number },
 ) {
   const framed = getFramedGraphPoint(sigma, point);
-  // sigma camera animations are JS-driven (not CSS), so the global
-  // prefers-reduced-motion override in globals.css doesn't reach them.
-  // Honour the preference here by jumping to the target instead.
+  // Pan only — never touch ratio (morph owns distance).
   const reduceMotion =
     typeof window !== "undefined" &&
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -59,6 +73,7 @@ export function animateCameraToPoint(
 }
 
 export function setCameraToPoint(sigma: Sigma, point: GraphPoint) {
+  // Pan only — preserve morph ratio.
   const framed = getFramedGraphPoint(sigma, point);
   sigma.getCamera().setState({ x: framed.x, y: framed.y });
 }
