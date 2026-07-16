@@ -85,14 +85,9 @@ interface Props {
 const DIM_ALPHA = 0.3;
 const HOVER_SCALE = 0.16;
 
-// Zoom-based label fade — Obsidian's textAlpha curve. Alpha is a
-// continuous function of camera ratio (lower ratio = zoomed in):
-//   alpha = clamp(log2(1/ratio) − OFFSET, 0, 1)
-// With OFFSET 0.7 labels are hidden at the fitted overview, start
-// fading in around 1.6× zoom and are fully opaque around 3.2×. Never a
-// threshold pop: drawLabel reads this per frame, so the fade rides the
-// zoom animation.
-const LABEL_FADE_OFFSET = 0.7;
+// Zoom-based label fade — continuous in camera ratio (lower = closer).
+// Near morph shows more titles; far keeps overview clean.
+const LABEL_FADE_OFFSET = 0.35;
 const zoomLabelAlpha = (ratio: number) =>
   Math.min(1, Math.max(0, Math.log2(1 / ratio) - LABEL_FADE_OFFSET));
 
@@ -470,6 +465,7 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
         const live = sigmaRef.current;
         return live ? zoomLabelAlpha(live.getCamera().ratio) : 0;
       },
+      () => materialRef.current,
     );
 
     const s = new Sigma(graph, containerRef.current, {

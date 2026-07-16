@@ -17,6 +17,7 @@
  * propagates to the canvas without touching this file.
  */
 
+import { drawSoftBody } from "./drawNode";
 import { palette } from "./palette";
 
 interface LabelData {
@@ -37,27 +38,30 @@ interface LabelSettings {
 }
 
 /**
- * Build the draw function. Both getters are read per draw call: the
- * hover fade animation drives `getHoverProgress` 0..1 outside of
- * sigma's knowledge, and `getZoomLabelAlpha` derives 0..1 from the
- * live camera ratio.
+ * Build the draw function. Getters are read per draw call so fades and
+ * soft-body material track their sources frame-by-frame.
  */
 export function makeDrawNodeLabel(
   getHoverProgress: () => number,
   getZoomLabelAlpha: () => number = () => 0,
+  getMaterial: () => number = () => 0.45,
 ) {
   return (context: CanvasRenderingContext2D, data: LabelData, settings: LabelSettings) => {
+    // Soft resin membrane (near μ) — under labels / question marks.
+    drawSoftBody(context, data, getMaterial());
+
     // Static question mark — scannable even when title label is hidden.
     if (data.nodeType === "question") {
-      const glyphSize = Math.max(8, Math.min(13, data.size * 0.95));
+      const glyphSize = Math.max(9, Math.min(16, data.size * 1.05));
       const [lr, lg, lb] = palette().labelRgb;
-      const qAlpha = Math.max(0.55, getZoomLabelAlpha() * 0.4 + 0.55);
+      const material = getMaterial();
+      const qAlpha = Math.max(0.6, 0.55 + (1 - material) * 0.35);
       context.save();
       context.font = `600 ${glyphSize}px system-ui, sans-serif`;
       context.textAlign = "center";
       context.textBaseline = "middle";
       context.fillStyle = `rgba(${lr},${lg},${lb},${qAlpha})`;
-      context.fillText("?", data.x, data.y - data.size - glyphSize * 0.45);
+      context.fillText("?", data.x, data.y - data.size - glyphSize * 0.55);
       context.restore();
     }
 

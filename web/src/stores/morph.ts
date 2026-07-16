@@ -17,8 +17,10 @@ import { create } from "zustand";
 /** Cold-open / Grove lean — mid on the continuum. */
 export const MU_COLD = 0.45;
 
-/** Half-width of the pure-dolly band around the last material μ. */
-const HYSTERESIS = 0.07;
+/** Half-width of the pure-dolly band around the last material μ.
+ *  Small enough that a short slider drag still rematerializes; large
+ *  enough that fine wheel ticks survey without popping form. */
+const HYSTERESIS = 0.045;
 
 /** Discrete stations when prefers-reduced-motion. */
 const STATIONS = [0.2, 0.45, 0.85] as const;
@@ -63,29 +65,29 @@ export function mapMorph(
   }
   // Past hysteresis: material eases toward camera (not a hard snap).
   const step = delta > 0 ? delta - HYSTERESIS : delta + HYSTERESIS;
-  const material = clamp01(materialPrev + step * 0.55);
+  const material = clamp01(materialPrev + step * 0.72);
   return { camera, material };
 }
 
 /**
  * Camera ratio relative to a fitted overview ratio.
- * μ=0 → closer (smaller ratio); μ=1 → farther (larger ratio).
+ * μ=0 → close intimacy; μ=1 → high overview.
  * Grove (0.45) sits near the fitted overview.
  */
 export function cameraRatioForMu(mu: number, fitRatio: number): number {
-  // fitRatio ≈ overview; scale so mid ≈ fit, near ~0.45×, far ~1.65×.
+  // Dramatic dolly: near ~0.22× fit (inside a thought), far ~2.4× fit.
   const t = clamp01(mu);
-  const scale = 0.42 + t * 1.35; // 0→0.42, 0.45→~1.03, 1→1.77
-  return Math.max(0.05, Math.min(4, fitRatio * scale));
+  const scale = 0.22 + t * 2.2; // 0→0.22, 0.45→~1.21, 1→2.42
+  return Math.max(0.04, Math.min(5, fitRatio * scale));
 }
 
 /** Node size multiplier from material μ + type residual softness. */
 export function sizeScaleForMaterial(material: number, typeSoftness: number): number {
-  // Near (0): larger bodies; far (1): smaller graph dots.
-  // Soft types keep a residual size bump even at high material.
-  const nearBoost = 1.55 - material * 0.85; // 1.55 → 0.70
-  const residual = typeSoftness * (0.12 + material * 0.08);
-  return nearBoost + residual;
+  // Near: large resin bodies; far: small constellation dots.
+  // Soft types keep residual bulk even at high material.
+  const nearBoost = 2.65 - material * 2.05; // 2.65 → 0.60
+  const residual = typeSoftness * (0.35 * (1 - material) + 0.12);
+  return Math.max(0.45, nearBoost + residual);
 }
 
 /**
@@ -122,11 +124,11 @@ export function edgeStyleForMaterial(material: number): {
   treeSize: number;
   linkSize: number;
 } {
-  // material 0 (near): faint membrane; 1 (far): harder strokes
-  const treeAlpha = 0.25 + material * 0.75;
-  const linkAlpha = 0.15 + material * 0.7;
-  const treeSize = 0.7 + material * 0.5;
-  const linkSize = 0.9 + material * 0.7;
+  // Near: almost-membrane (faint sap); far: hard graph strokes.
+  const treeAlpha = 0.08 + material * 0.92;
+  const linkAlpha = 0.02 + material * 0.85;
+  const treeSize = 0.45 + material * 1.1;
+  const linkSize = 0.5 + material * 1.4;
   return { treeAlpha, linkAlpha, treeSize, linkSize };
 }
 
