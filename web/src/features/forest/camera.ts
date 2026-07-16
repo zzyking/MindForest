@@ -43,15 +43,26 @@ function getFramedGraphPoint(sigma: Sigma, point: GraphPoint) {
 /**
  * Sole writer of camera.ratio for the morph field.
  * ratio = cameraRatioForMu(μ, fitRatio) — same formula for slider + wheel.
- * Pan (x/y) is independent; only distance/form is owned by μ.
+ *
+ * When `center` is given (focused node), pan so that point stays at
+ * viewport center after the ratio change — morph zooms around focus,
+ * never around the cursor / stray pan offset.
  */
-export function syncCameraRatioToMorph(sigma: Sigma): void {
+export function syncCameraRatioToMorph(
+  sigma: Sigma,
+  opts?: { center?: GraphPoint | null },
+): void {
   const { mu, fitRatio } = useMorph.getState();
   if (fitRatio == null || !(fitRatio > 0)) return;
   const next = cameraRatioForMu(mu, fitRatio);
   const cam = sigma.getCamera();
   if (Math.abs(cam.ratio - next) > 1e-6) {
     cam.setState({ ratio: next });
+  }
+  if (opts?.center) {
+    // After ratio update: framed conversion uses the new ratio, so this
+    // places `center` at viewport middle (not under the pointer).
+    setCameraToPoint(sigma, opts.center);
   }
 }
 

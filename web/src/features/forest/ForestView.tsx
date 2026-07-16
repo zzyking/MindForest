@@ -293,22 +293,32 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
     s.refresh();
   }, [graphReady, material]);
 
-  // μ is the only distance control: any setMu (slider or wheel) rewrites ratio.
+  const cameraAnchorRef = useCameraAnchor(sigmaRef, sidebarOpen);
+  const focusedNodeIdRef = useRef(focusedNodeId);
+  const focusedTopicIdRef = useRef(focusedTopicId);
+  focusedNodeIdRef.current = focusedNodeId;
+  focusedTopicIdRef.current = focusedTopicId;
+
+  // μ is the only distance control: any setMu (slider or wheel) rewrites
+  // ratio and re-centers on the focused node (not the cursor).
   useEffect(() => {
     if (!graphReady) return;
     const apply = () => {
       const s = sigmaRef.current;
       if (!s) return;
-      syncCameraRatioToMorph(s);
+      const graph = layoutRef.current?.graph;
+      const id = focusedNodeIdRef.current;
+      const center =
+        graph && id && graph.hasNode(id) ? getGraphNodePosition(graph, id) : null;
+      syncCameraRatioToMorph(s, { center });
+      if (center) cameraAnchorRef.current = center;
       s.refresh();
     };
     apply();
     return useMorph.subscribe((state, prev) => {
       if (state.mu !== prev.mu || state.fitRatio !== prev.fitRatio) apply();
     });
-  }, [graphReady]);
-
-  const cameraAnchorRef = useCameraAnchor(sigmaRef, sidebarOpen);
+  }, [graphReady, cameraAnchorRef]);
   const {
     hoverNode,
     setHover,
@@ -390,18 +400,11 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
   const onAddChildQuestionRef = useRef(onAddChildQuestion);
   onAddChildQuestionRef.current = onAddChildQuestion;
 
-  const focusedNodeIdRef = useRef(focusedNodeId);
-  const focusedTopicIdRef = useRef(focusedTopicId);
   useEffect(() => {
-    focusedNodeIdRef.current = focusedNodeId;
     const s = sigmaRef.current;
     const graph = layoutRef.current?.graph ?? null;
-    if (!s || !graph || !graphReady) {
-      focusedTopicIdRef.current = focusedTopicId;
-      return;
-    }
+    if (!s || !graph || !graphReady) return;
 
-    focusedTopicIdRef.current = focusedTopicId;
     const cameraMode = getForestCameraMode({
       focusedNodeId,
       focusedTopicId,
@@ -699,10 +702,11 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
         : null;
     fitCameraToGraph(s, graph, mountTarget ? { center: mountTarget } : undefined);
     // fitRatio is the ONLY baseline for morph dolly; set once at mount.
-    // All later distance changes go through μ → syncCameraRatioToMorph.
+    // All later distance changes go through μ → syncCameraRatioToMorph,
+    // always re-centering on the focused node.
     const fitted = s.getCamera().ratio;
     useMorph.getState().setFitRatio(fitted);
-    syncCameraRatioToMorph(s);
+    syncCameraRatioToMorph(s, { center: mountTarget });
     if (mountTarget) {
       cameraAnchorRef.current = mountTarget;
     } else {
