@@ -44,10 +44,10 @@ function getFramedGraphPoint(sigma: Sigma, point: GraphPoint) {
  * Sole writer of camera.ratio for the morph field.
  * ratio = cameraRatioForMu(μ, fitRatio) — same formula for slider + wheel.
  *
- * When `center` (focused node, graph coords) is given, zoom with that
- * node as pivot via getViewportZoomedState: the node stays under the
- * same screen pixel. No separate re-center step (that caused jumps).
- * Pivot is the focus node, never the cursor.
+ * Pivot is always the focused node (graph coords), never the cursor:
+ * getViewportZoomedState is fed the node's current screen pixel so that
+ * pixel (the focus body) stays fixed while the world scales. Cursor
+ * position is never read.
  */
 export function syncCameraRatioToMorph(
   sigma: Sigma,
@@ -61,13 +61,18 @@ export function syncCameraRatioToMorph(
 
   if (opts?.center) {
     try {
-      const pivot = sigma.graphToViewport(opts.center);
-      cam.setState(sigma.getViewportZoomedState(pivot, next));
+      // Focus node → screen pixel (not mouse). Zoom keeps that pixel fixed.
+      const focusScreen = sigma.graphToViewport({
+        x: opts.center.x,
+        y: opts.center.y,
+      });
+      cam.setState(sigma.getViewportZoomedState(focusScreen, next));
       return;
     } catch {
       // Fall through if conversion fails (e.g. zero-size stage).
     }
   }
+  // No focus: pure ratio (world scales around current view center).
   cam.setState({ ratio: next });
 }
 

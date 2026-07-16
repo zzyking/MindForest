@@ -641,38 +641,41 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
       hoverNodeRef.current = null;
       setHoverRef.current(null);
     });
-    // Wheel = only setMu (slider formula). Kill sigma's own zoom path.
+    // Capture-phase wheel: fully own the gesture so sigma never applies
+    // its cursor-pivoted zoom. We only setMu; camera pivots on focus node.
+    const host = containerRef.current;
+    const onWheelCapture = (e: WheelEvent) => {
+      // Stop sigma MouseCaptor (bubble/target) and browser scroll.
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === "function") {
+        e.stopImmediatePropagation();
+      }
+      if (inspectOpenRef.current || morphFrozenRef.current) return;
+      // Over a node: content/no-op (never morph) — same law as before.
+      if (hoverNodeRef.current) return;
+      if (Math.abs(e.deltaY) < Math.abs(e.deltaX) * 0.6) return;
+      let dy = e.deltaY;
+      if (e.deltaMode === 1) dy *= 16;
+      if (e.deltaMode === 2) dy *= 400;
+      // Cursor x/y intentionally unused — only delta magnitude → μ.
+      useMorph.getState().setMu(useMorph.getState().mu + dy / 600);
+    };
+    host?.addEventListener("wheel", onWheelCapture, {
+      capture: true,
+      passive: false,
+    });
+
+    // Belt-and-suspenders: if anything still reaches sigma, kill zoom.
     const killSigmaZoom = (payload: { preventSigmaDefault: () => void }) => {
       payload.preventSigmaDefault();
     };
-    const onWheelStage = (payload: {
-      event: { delta?: number; original?: Event };
-      preventSigmaDefault: () => void;
-    }) => {
-      payload.preventSigmaDefault();
-      if (inspectOpenRef.current || morphFrozenRef.current) return;
-      const orig = payload.event.original;
-      let dy = 0;
-      if (orig instanceof WheelEvent) {
-        dy = orig.deltaY;
-        if (orig.deltaMode === 1) dy *= 16;
-        if (orig.deltaMode === 2) dy *= 400;
-      } else if (typeof payload.event.delta === "number") {
-        dy = payload.event.delta * 40;
-      }
-      // Same absolute setMu as MorphSlider scrub — camera follows via subscribe.
-      useMorph.getState().setMu(useMorph.getState().mu + dy / 600);
-    };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    s.on("wheelStage", onWheelStage as any);
+    s.on("wheelStage", killSigmaZoom as any);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     s.on("wheelNode", killSigmaZoom as any);
-    // Also stop double-click zoom (Inspect uses prevent on doubleClickNode).
-    const killDblZoom = (payload: { preventSigmaDefault: () => void }) => {
-      payload.preventSigmaDefault();
-    };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    s.on("doubleClickStage", killDblZoom as any);
+    s.on("doubleClickStage", killSigmaZoom as any);
     s.getCamera().on("updated", projectOverlays);
     s.on("afterRender", projectOverlays);
 
@@ -743,12 +746,13 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
     return () => {
       cancelAnimationFrame(revealRafId);
       drag.dispose();
+      host?.removeEventListener("wheel", onWheelCapture, { capture: true });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      s.off("wheelStage", onWheelStage as any);
+      s.off("wheelStage", killSigmaZoom as any);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       s.off("wheelNode", killSigmaZoom as any);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      s.off("doubleClickStage", killDblZoom as any);
+      s.off("doubleClickStage", killSigmaZoom as any);
       // Cross-mount continuity: persist where every node ended up.
       lastLayoutPositions.clear();
       for (const n of layout.simNodes) {
