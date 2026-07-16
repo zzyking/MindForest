@@ -300,7 +300,7 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
   focusedTopicIdRef.current = focusedTopicId;
 
   // μ is the only distance control: any setMu (slider or wheel) rewrites
-  // ratio and re-centers on the focused node (not the cursor).
+  // ratio, pivoting on the focused node's current screen position.
   useEffect(() => {
     if (!graphReady) return;
     const apply = () => {
@@ -311,14 +311,13 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
       const center =
         graph && id && graph.hasNode(id) ? getGraphNodePosition(graph, id) : null;
       syncCameraRatioToMorph(s, { center });
-      if (center) cameraAnchorRef.current = center;
       s.refresh();
     };
     apply();
     return useMorph.subscribe((state, prev) => {
       if (state.mu !== prev.mu || state.fitRatio !== prev.fitRatio) apply();
     });
-  }, [graphReady, cameraAnchorRef]);
+  }, [graphReady]);
   const {
     hoverNode,
     setHover,
