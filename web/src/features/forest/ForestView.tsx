@@ -347,13 +347,14 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
       if (Math.abs(e.deltaY) < Math.abs(e.deltaX) * 0.6) return;
       e.preventDefault();
       e.stopPropagation();
-      // Throttle ~45Hz + ease via small steps.
+      // Throttle ~45Hz. Step sized so a normal trackpad gesture
+      // rematerializes within ~1–2 flicks (same family as slider).
       const now = performance.now();
       if (now - lastTs < 22) return;
       lastTs = now;
       // Positive deltaY = scroll down = farther (μ ↑).
       const raw = e.deltaY;
-      const step = Math.sign(raw) * Math.min(0.055, Math.abs(raw) * 0.0012 + 0.012);
+      const step = Math.sign(raw) * Math.min(0.08, Math.abs(raw) * 0.0018 + 0.02);
       nudgeMu(step);
     };
     el.addEventListener("wheel", onWheel, { passive: false });

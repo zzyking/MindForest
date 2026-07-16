@@ -51,8 +51,15 @@ function snapStation(v: number): number {
 
 /**
  * Dual-zone mapping from raw μ → { camera, material }.
- * Camera follows μ 1:1; material only advances when μ leaves the
- * hysteresis band around the previous material value.
+ *
+ * Camera follows μ 1:1 (dolly always).
+ * Material always eases toward μ — never freezes — so wheel and slider
+ * share one family. Dual-zone is rate, not a hard gate:
+ *   - |Δ| ≤ hysteresis → slow catch-up (survey without hard pop)
+ *   - |Δ| > hysteresis → fast catch-up (form + distance together)
+ *
+ * (Earlier freeze-inside-band made wheel feel “camera only” while a
+ *  slider jump rematerialized — same setMu path, different step size.)
  */
 export function mapMorph(
   mu: number,
@@ -60,12 +67,11 @@ export function mapMorph(
 ): { camera: number; material: number } {
   const camera = clamp01(mu);
   const delta = camera - materialPrev;
-  if (Math.abs(delta) <= HYSTERESIS) {
+  if (Math.abs(delta) < 1e-6) {
     return { camera, material: materialPrev };
   }
-  // Past hysteresis: material eases toward camera (not a hard snap).
-  const step = delta > 0 ? delta - HYSTERESIS : delta + HYSTERESIS;
-  const material = clamp01(materialPrev + step * 0.72);
+  const rate = Math.abs(delta) <= HYSTERESIS ? 0.4 : 0.9;
+  const material = clamp01(materialPrev + delta * rate);
   return { camera, material };
 }
 
