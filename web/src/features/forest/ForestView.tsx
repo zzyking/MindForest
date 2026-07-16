@@ -115,7 +115,6 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
   const material = useMorph((s) => s.material);
   const fitRatio = useMorph((s) => s.fitRatio);
   const morphFrozen = useMorph((s) => s.frozen);
-  const nudgeMu = useMorph((s) => s.nudgeMu);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sigmaRef = useRef<Sigma | null>(null);
@@ -334,7 +333,8 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
     morphFrozenRef.current = morphFrozen;
   }, [inspectOpen, morphFrozen]);
 
-  // Empty-field wheel → same setMu path as the slider (absolute μ).
+  // Empty-field wheel → same setMu as the slider (store is source of
+  // truth; MorphSlider thumb/fill re-render from μ on every tick).
   useEffect(() => {
     const el = containerRef.current;
     if (!el || !graphReady) return;
@@ -346,18 +346,15 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
       if (Math.abs(e.deltaY) < Math.abs(e.deltaX) * 0.6) return;
       e.preventDefault();
       e.stopPropagation();
-      // Map wheel delta onto μ like a continuous slider scrub.
-      // deltaMode: 0=pixel, 1=line, 2=page. Normalize to ~slider feel.
       let dy = e.deltaY;
       if (e.deltaMode === 1) dy *= 16;
       if (e.deltaMode === 2) dy *= 400;
-      // ~800px of scroll ≈ full 0→1 range (trackpad-friendly).
-      const step = dy / 800;
-      nudgeMu(step);
+      // Absolute write — identical path to dragging the range input.
+      useMorph.getState().setMu(useMorph.getState().mu + dy / 800);
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [graphReady, nudgeMu]);
+  }, [graphReady]);
 
   // Growth win A: `q` adds a child question under focus (no chrome button).
   useEffect(() => {
