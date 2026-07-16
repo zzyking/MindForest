@@ -292,11 +292,15 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
       graph.setEdgeAttribute(edge, "size", size);
     });
 
-    if (fitRatio != null && !morphFrozen) {
+    // Dolly always tracks μ (even while Inspect freezes further nudges —
+    // restore restores prior μ and this effect re-applies). fitRatio is
+    // the mount-time overview baseline.
+    const base = fitRatio ?? s.getCamera().ratio;
+    if (base > 0 && Number.isFinite(base)) {
+      if (fitRatio == null) useMorph.getState().setFitRatio(base);
+      const next = cameraRatioForMu(mu, fitRatio ?? base);
       const cam = s.getCamera();
-      const next = cameraRatioForMu(mu, fitRatio);
-      const cur = cam.ratio;
-      if (Math.abs(cur - next) > 0.001) {
+      if (Math.abs(cam.ratio - next) > 0.0005) {
         cam.setState({ ratio: next });
       }
     }
@@ -480,11 +484,12 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
       labelRenderedSizeThreshold: Infinity,
       defaultEdgeColor: palette().dim,
       defaultNodeColor: palette().dim,
-      minCameraRatio: 0.05,
-      maxCameraRatio: 4,
-      // Morph owns wheel — disable sigma camera zoom so trackpad doesn't
-      // fight μ. Pan (drag empty) still works via enableCameraPanning.
-      enableCameraZooming: false,
+      minCameraRatio: 0.04,
+      maxCameraRatio: 5,
+      // Keep enableCameraZooming true: sigma's Camera.validateState drops
+      // `ratio` entirely when zooming is disabled, so programmatic dolly
+      // for μ would silently no-op. User wheel zoom is blocked via
+      // preventSigmaDefault on the captors below — morph owns the wheel.
       // Labels must stay visible *during* camera moves — the zoom fade
       // rides the animation; hiding the layer would turn it into a pop
       // at the end.
@@ -641,6 +646,12 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
       hoverNodeRef.current = null;
       setHoverRef.current(null);
     });
+    // Block sigma's default wheel-zoom; empty-field wheel → μ (DOM handler).
+    const blockWheel = (e: { preventSigmaDefault: () => void }) => {
+      e.preventSigmaDefault();
+    };
+    s.on("wheelStage", blockWheel);
+    s.on("wheelNode", blockWheel);
     s.getCamera().on("updated", projectOverlays);
     s.on("afterRender", projectOverlays);
 
@@ -709,6 +720,8 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
     return () => {
       cancelAnimationFrame(revealRafId);
       drag.dispose();
+      s.off("wheelStage", blockWheel);
+      s.off("wheelNode", blockWheel);
       // Cross-mount continuity: persist where every node ended up.
       lastLayoutPositions.clear();
       for (const n of layout.simNodes) {
