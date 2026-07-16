@@ -18,6 +18,7 @@ import {
 import { ForestView, getFocusedNodeViewportPoint } from "@/features/forest/ForestView";
 import { NodeEditor } from "@/features/editor/NodeEditor";
 import { cn } from "@/lib/cn";
+import { useMorph } from "@/stores/morph";
 import type { NodeId, TopicId } from "@/lib/types";
 
 function prefersReducedMotion(): boolean {
@@ -47,6 +48,8 @@ export function NodePage() {
   const inspectOpen = useInspectOpen();
   const openInspect = useOpenInspect();
   const closeInspect = useCloseInspect();
+  const freezeForInspect = useMorph((s) => s.freezeForInspect);
+  const restoreAfterInspect = useMorph((s) => s.restoreAfterInspect);
 
   // Origin for the entrance animation (viewport coords relative to main).
   // Captured when Inspect opens; used as CSS transform-origin.
@@ -55,9 +58,10 @@ export function NodePage() {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const wasOpenRef = useRef(false);
 
-  // Capture origin when Inspect transitions closed → open.
+  // Capture origin when Inspect transitions closed → open; freeze μ.
   useEffect(() => {
     if (inspectOpen && !wasOpenRef.current) {
+      freezeForInspect();
       const host = fieldHostRef.current;
       const pt = getFocusedNodeViewportPoint(nodeId);
       if (host && pt) {
@@ -70,11 +74,14 @@ export function NodePage() {
         setOrigin(null);
       }
     }
+    if (!inspectOpen && wasOpenRef.current) {
+      restoreAfterInspect();
+    }
     if (!inspectOpen) {
       setOrigin(null);
     }
     wasOpenRef.current = inspectOpen;
-  }, [inspectOpen, nodeId]);
+  }, [inspectOpen, nodeId, freezeForInspect, restoreAfterInspect]);
 
   // Focus the panel when Inspect opens (a11y); restore main on close.
   useEffect(() => {
@@ -138,7 +145,11 @@ export function NodePage() {
         )}
         aria-hidden={inspectOpen}
       >
-        <ForestView focusedTopicId={topicId} focusedNodeId={nodeId} />
+        <ForestView
+          focusedTopicId={topicId}
+          focusedNodeId={nodeId}
+          inspectOpen={inspectOpen}
+        />
       </div>
 
       {inspectOpen && (

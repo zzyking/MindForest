@@ -1,47 +1,30 @@
 /**
- * ForestView — workspace-wide knowledge graph in the spirit of
- * Quartz's graph view, with Obsidian-style live physics.
+ * ForestView — the Morph Field (workspace-wide knowledge graph).
  *
  * Design:
  *   - One unified graph of every node across every topic.
- *   - The d3-force simulation is ALIVE: useSimLoop ticks it per rAF
- *     and writes positions into the graphology graph (sigma repaints
- *     reactively). It sleeps when alpha cools below alphaMin — zero
- *     physics and zero rendering at rest — and reheats on structure
- *     changes, so the cold open reads as an "unfold" and a new node
- *     glides in beside its parent.
- *   - Node radius = 6 + 1.5·sqrt(degree). Hubs read bigger.
- *   - Labels hidden by default; only the hovered node and its direct
- *     neighbours light up + show titles. Everything else dims.
- *   - Tree edges straight; reference links (same- and cross-topic) curved.
- *   - Click navigates to the node.
- *   - Topic labels float above each cluster — positions recomputed per
- *     frame (computeTopicAnchorPoints) since clusters drift while hot.
+ *   - Live d3-force via useSimLoop; sleeps when cool; reheats on structure.
+ *   - L2 morph: user-owned μ (近↔远) drives camera dolly + soft materials
+ *     (dual-zone hysteresis). Empty-field wheel nudges μ; bubble hover
+ *     never morphs. Inspect freezes μ (snapshot/restore in NodePage).
+ *   - Soft-body discs via drawNode; questions carry static hunger marks.
+ *   - Labels: hover capsule + zoom fade. Tree edges straight; refs curved.
+ *   - Click focuses; second click / double-click opens Inspect.
+ *   - Topic labels float above clusters (live anchors).
  *
- * The component owns lifecycle wiring only; the moving parts live in
- * sibling modules:
- *   graphBuild.ts     live layout: graph + simulation + structure diffs
- *   useSimLoop.ts     rAF tick loop with sleep/reheat
- *   camera.ts         framedGraph conversions, fit, target resolution
- *   palette.ts        canvas colors read from tokens.css
- *   drawLabel.ts      hover-capsule label renderer
- *   useHoverDim.ts    hover fade progress + neighbour dim set
- *   useCameraAnchor.ts  keep focus centered through sidebar resize
- *
- * Lifecycle: ONE ForestLayout and ONE sigma instance per mount. Store
- * changes are diffed into the live graph (gated on `forestLayoutKey`
- * with a 150ms settle window so hydration bursts coalesce); sigma is
- * never torn down mid-session. Cross-mount continuity comes from the
- * module-level `lastLayoutPositions` cache.
+ * Lifecycle: ONE ForestLayout and ONE sigma per mount. Structure diffs
+ * via forestLayoutKey + 150ms settle. Cross-mount continuity via
+ * lastLayoutPositions.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import EdgeCurveProgram from "@sigma/edge-curve";
 import Sigma from "sigma";
 
 import { cn } from "@/lib/cn";
 import { useFocusNode } from "@/app/navigation";
 import { useForestData } from "@/stores/forestData";
+import { useMorph } from "@/stores/morph";
 import { useWorkspaceUI } from "@/stores/workspaceUI";
 import type { NodeId, TopicId } from "@/lib/types";
 
@@ -62,7 +45,10 @@ import {
   resolveCameraTarget,
   type GraphPoint,
 } from "./camera";
+import { dimSoftColor, softNodeColor, softNodeSize } from "./drawNode";
 import { makeDrawNodeLabel } from "./drawLabel";
+import { MorphSlider } from "./MorphSlider";
+import { cameraRatioForMu, edgeStyleForMaterial } from "./morphMap";
 import { wireNodeDrag } from "./nodeDrag";
 import { palette, withAlpha } from "./palette";
 import { useCameraAnchor } from "./useCameraAnchor";
@@ -91,6 +77,8 @@ export function getFocusedNodeViewportPoint(nodeId: NodeId): { x: number; y: num
 interface Props {
   focusedTopicId: TopicId;
   focusedNodeId: NodeId;
+  /** Inspect open — hide morph chrome; wheel must not morph. */
+  inspectOpen?: boolean;
 }
 
 // Hover dim alpha for non-neighbour nodes / edges.
@@ -115,20 +103,30 @@ const zoomLabelAlpha = (ratio: number) =>
 // missing entries only mean a colder start, never wrong rendering.
 const lastLayoutPositions = new Map<NodeId, GraphPoint>();
 
-export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
+export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false }: Props) {
   const topics = useForestData((s) => s.topics);
   const topicDetails = useForestData((s) => s.topicDetails);
   const detailLoading = useForestData((s) => s.loading.topicDetail);
   const detailErrors = useForestData((s) => s.errors.topicDetail);
   const fetchTopics = useForestData((s) => s.fetchTopics);
   const fetchTopic = useForestData((s) => s.fetchTopic);
+  const createNode = useForestData((s) => s.createNode);
   const forestCameraIntent = useWorkspaceUI((s) => s.forestCameraIntent);
   const consumeForestCameraIntent = useWorkspaceUI((s) => s.consumeForestCameraIntent);
   const sidebarOpen = useWorkspaceUI((s) => s.sidebarOpen);
   const focus = useFocusNode();
 
+  const mu = useMorph((s) => s.mu);
+  const material = useMorph((s) => s.material);
+  const fitRatio = useMorph((s) => s.fitRatio);
+  const morphFrozen = useMorph((s) => s.frozen);
+  const nudgeMu = useMorph((s) => s.nudgeMu);
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sigmaRef = useRef<Sigma | null>(null);
+  const materialRef = useRef(material);
+  materialRef.current = material;
+  const hoverNodeRef = useRef<NodeId | null>(null);
 
   // The live layout — graph + simulation, one per mount.
   const layoutRef = useRef<ForestLayout | null>(null);
@@ -149,6 +147,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
   // style, so this must be state (a raw style mutation would be
   // clobbered by any re-render mid-drag).
   const [draggingNode, setDraggingNode] = useState(false);
+  const [addingQuestion, setAddingQuestion] = useState(false);
 
   // Sigma init takes a real bite of main-thread time. The outer
   // NodePage wrapper animation finishes before sigma even paints, so
@@ -268,10 +267,46 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
           graph.setNodeAttribute(n.id, "color", color);
           dirty = true;
         }
+        if (graph.getNodeAttribute(n.id, "nodeType") !== n.type) {
+          graph.setNodeAttribute(n.id, "nodeType", n.type);
+          dirty = true;
+        }
       }
     }
     if (dirty) sigmaRef.current?.refresh();
   }, [graphReady, topicDetails]);
+
+  // Apply morph material → edge style; camera ratio from μ + fitRatio.
+  useEffect(() => {
+    const s = sigmaRef.current;
+    const graph = layoutRef.current?.graph;
+    if (!s || !graph || !graphReady) return;
+
+    const es = edgeStyleForMaterial(material);
+    graph.forEachEdge((edge, attrs) => {
+      const kind = attrs.kind as string;
+      const base =
+        kind === "tree"
+          ? palette().dim
+          : kind === "link"
+            ? palette().accent
+            : palette().accentDeep;
+      const alpha = kind === "tree" ? es.treeAlpha : es.linkAlpha;
+      const size = kind === "tree" ? es.treeSize : es.linkSize;
+      graph.setEdgeAttribute(edge, "color", withAlpha(base, alpha));
+      graph.setEdgeAttribute(edge, "size", size);
+    });
+
+    if (fitRatio != null && !morphFrozen) {
+      const cam = s.getCamera();
+      const next = cameraRatioForMu(mu, fitRatio);
+      const cur = cam.ratio;
+      if (Math.abs(cur - next) > 0.001) {
+        cam.setState({ ratio: next });
+      }
+    }
+    s.refresh();
+  }, [graphReady, material, mu, fitRatio, morphFrozen]);
 
   const cameraAnchorRef = useCameraAnchor(sigmaRef, sidebarOpen);
   const {
@@ -289,10 +324,79 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
   // throw away the whole "graph is alive" continuity.
   const focusRef = useRef(focus);
   const setHoverRef = useRef(setHover);
+  const inspectOpenRef = useRef(inspectOpen);
+  const morphFrozenRef = useRef(morphFrozen);
   useEffect(() => {
     focusRef.current = focus;
     setHoverRef.current = setHover;
   }, [focus, setHover]);
+  useEffect(() => {
+    inspectOpenRef.current = inspectOpen;
+    morphFrozenRef.current = morphFrozen;
+  }, [inspectOpen, morphFrozen]);
+
+  // Empty-field wheel → μ (not over bubble / Inspect / chrome).
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || !graphReady) return;
+    let lastTs = 0;
+    const onWheel = (e: WheelEvent) => {
+      if (inspectOpenRef.current || morphFrozenRef.current) return;
+      // Pointer over a node → content/no-op (never morph).
+      if (hoverNodeRef.current) return;
+      // Don't steal horizontal-ish trackpad pans.
+      if (Math.abs(e.deltaY) < Math.abs(e.deltaX) * 0.6) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // Throttle ~45Hz + ease via small steps.
+      const now = performance.now();
+      if (now - lastTs < 22) return;
+      lastTs = now;
+      // Positive deltaY = scroll down = farther (μ ↑).
+      const raw = e.deltaY;
+      const step = Math.sign(raw) * Math.min(0.055, Math.abs(raw) * 0.0012 + 0.012);
+      nudgeMu(step);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [graphReady, nudgeMu]);
+
+  const openQuestionCount = useMemo(() => {
+    const detail = topicDetails[focusedTopicId];
+    if (!detail) return 0;
+    return detail.nodes.filter((n) => n.type === "question").length;
+  }, [topicDetails, focusedTopicId]);
+
+  const onAddChildQuestion = useCallback(async () => {
+    if (addingQuestion || inspectOpen) return;
+    const detail = topicDetails[focusedTopicId];
+    if (!detail) return;
+    const parent = detail.nodes.find((n) => n.id === focusedNodeId);
+    if (!parent) return;
+    setAddingQuestion(true);
+    try {
+      const child = await createNode({
+        topic: focusedTopicId,
+        parent: focusedNodeId,
+        title: "Untitled question",
+        content: "",
+        node_type: "question",
+      });
+      await focus(child.id, child.topic, { write: true });
+    } catch {
+      // Store surfaces errors; keep field calm.
+    } finally {
+      setAddingQuestion(false);
+    }
+  }, [
+    addingQuestion,
+    inspectOpen,
+    topicDetails,
+    focusedTopicId,
+    focusedNodeId,
+    createNode,
+    focus,
+  ]);
 
   const focusedNodeIdRef = useRef(focusedNodeId);
   const focusedTopicIdRef = useRef(focusedTopicId);
@@ -361,7 +465,7 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       () => hoverProgressRef.current,
       // Reading the live ratio per draw (via sigmaRef — the instance
       // doesn't exist yet on this line) is what makes the fade
-      // continuous through sigma's animated wheel-zoom.
+      // continuous through camera ratio changes from μ.
       () => {
         const live = sigmaRef.current;
         return live ? zoomLabelAlpha(live.getCamera().ratio) : 0;
@@ -382,6 +486,9 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       defaultNodeColor: palette().dim,
       minCameraRatio: 0.05,
       maxCameraRatio: 4,
+      // Morph owns wheel — disable sigma camera zoom so trackpad doesn't
+      // fight μ. Pan (drag empty) still works via enableCameraPanning.
+      enableCameraZooming: false,
       // Labels must stay visible *during* camera moves — the zoom fade
       // rides the animation; hiding the layer would turn it into a pop
       // at the end.
@@ -402,9 +509,17 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
         // below still blanks labels on dimmed nodes.
         out.forceLabel = true;
 
-        if (id === focusedNodeIdRef.current) {
-          out.color = palette().ink;
-        }
+        const nodeType = (attrs.nodeType as string | undefined) ?? undefined;
+        const mat = materialRef.current;
+        const baseSize = attrs.size as number;
+        const baseColor =
+          id === focusedNodeIdRef.current
+            ? palette().ink
+            : softNodeColor((attrs.color as string) || palette().dim, nodeType, mat);
+
+        out.color = baseColor;
+        out.size = softNodeSize(baseSize, nodeType, mat);
+        out.nodeType = nodeType;
 
         const hoverBoost = hoverProgressRef.current;
 
@@ -420,11 +535,11 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
             out.forceLabel = true;
             out.isHoveredNode = isHovered; // read by the drawLabel renderer
             if (isHovered) {
-              out.size = (attrs.size as number) * (1 + HOVER_SCALE * hoverBoost);
+              out.size = (out.size as number) * (1 + HOVER_SCALE * hoverBoost);
             }
           } else {
             const currentAlpha = 1 - (1 - DIM_ALPHA) * hoverBoost;
-            out.color = withAlpha(attrs.color as string, currentAlpha);
+            out.color = dimSoftColor(baseColor, currentAlpha);
             out.label = "";
           }
         }
@@ -522,8 +637,14 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
       animateCameraToPoint(s, { x, y }, { duration: 400 });
       cameraAnchorRef.current = { x, y };
     });
-    s.on("enterNode", ({ node }) => setHoverRef.current(node as NodeId));
-    s.on("leaveNode", () => setHoverRef.current(null));
+    s.on("enterNode", ({ node }) => {
+      hoverNodeRef.current = node as NodeId;
+      setHoverRef.current(node as NodeId);
+    });
+    s.on("leaveNode", () => {
+      hoverNodeRef.current = null;
+      setHoverRef.current(null);
+    });
     s.getCamera().on("updated", projectOverlays);
     s.on("afterRender", projectOverlays);
 
@@ -551,6 +672,10 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
           }) ?? getGraphNodePosition(graph, focusId))
         : null;
     fitCameraToGraph(s, graph, mountTarget ? { center: mountTarget } : undefined);
+    // Capture fit ratio as morph base, then apply cold-open μ dolly.
+    const fitted = s.getCamera().ratio;
+    useMorph.getState().setFitRatio(fitted);
+    s.getCamera().setState({ ratio: cameraRatioForMu(useMorph.getState().mu, fitted) });
     if (mountTarget) {
       cameraAnchorRef.current = mountTarget;
     } else {
@@ -659,6 +784,9 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
         {anchors.map((a) => {
           const focused = a.topicId === focusedTopicId;
           const detail = topicDetails[a.topicId];
+          const qCount = detail
+            ? detail.nodes.filter((n) => n.type === "question").length
+            : 0;
           return (
             <div
               key={a.topicId}
@@ -688,11 +816,48 @@ export function ForestView({ focusedTopicId, focusedNodeId }: Props) {
                 <span className="text-forest-400 text-[10px] uppercase tracking-[0.08em] tabular-nums">
                   {a.nodeCount}
                 </span>
+                {qCount > 0 && (
+                  <span
+                    className="text-forest-600 bg-forest-100/90 inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 text-[10px] font-medium tabular-nums"
+                    title={`${qCount} open question${qCount === 1 ? "" : "s"}`}
+                  >
+                    ? {qCount}
+                  </span>
+                )}
               </button>
             </div>
           );
         })}
       </div>
+
+      {/* Morph chrome — bottom-center; hidden while Inspect open */}
+      {!inspectOpen && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-20 z-10 flex justify-center gap-2 px-4">
+          <MorphSlider />
+          <button
+            type="button"
+            onClick={() => void onAddChildQuestion()}
+            disabled={addingQuestion}
+            title="Add child question under focus (growth)"
+            aria-label="Add child question under focused node"
+            className={cn(
+              "pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-forest-200",
+              "bg-sand-100/85 px-3 py-1.5 text-[11px] font-medium text-forest-700 shadow-glass backdrop-blur-md",
+              "hover:bg-sand-100 hover:border-forest-300 transition-colors",
+              "disabled:opacity-50",
+              "[-webkit-font-smoothing:antialiased]",
+            )}
+          >
+            <span aria-hidden className="text-forest-500">
+              ?
+            </span>
+            <span>问</span>
+            {openQuestionCount > 0 && (
+              <span className="text-forest-400 tabular-nums">{openQuestionCount}</span>
+            )}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
