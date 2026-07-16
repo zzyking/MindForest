@@ -10,6 +10,8 @@
  * Both getters are read per draw call, so the fades track their
  * sources frame-by-frame without any reducer re-runs.
  *
+ * Questions: static hunger glyph "?" above the disc (no ambient pulse).
+ *
  * All colors come from the canvas palette (tokens.css via
  * getComputedStyle) — nothing hardcoded here, so a token tweak
  * propagates to the canvas without touching this file.
@@ -25,6 +27,7 @@ interface LabelData {
   color?: string;
   /** Set by the node reducer for the actively hovered node. */
   isHoveredNode?: boolean;
+  nodeType?: string;
 }
 
 interface LabelSettings {
@@ -44,6 +47,20 @@ export function makeDrawNodeLabel(
   getZoomLabelAlpha: () => number = () => 0,
 ) {
   return (context: CanvasRenderingContext2D, data: LabelData, settings: LabelSettings) => {
+    // Static question mark — scannable even when title label is hidden.
+    if (data.nodeType === "question") {
+      const glyphSize = Math.max(8, Math.min(13, data.size * 0.95));
+      const [lr, lg, lb] = palette().labelRgb;
+      const qAlpha = Math.max(0.55, getZoomLabelAlpha() * 0.4 + 0.55);
+      context.save();
+      context.font = `600 ${glyphSize}px system-ui, sans-serif`;
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.fillStyle = `rgba(${lr},${lg},${lb},${qAlpha})`;
+      context.fillText("?", data.x, data.y - data.size - glyphSize * 0.45);
+      context.restore();
+    }
+
     if (!data.label) return;
     const hoverBoost = getHoverProgress();
     const hoverAlpha = Math.max(0, (hoverBoost - 0.4) / 0.6);
