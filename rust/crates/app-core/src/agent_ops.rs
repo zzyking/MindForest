@@ -6,7 +6,9 @@
 //! accept/reject will live alongside `set_agent_config`. See
 //! `AGENT_HARNESS.md`.
 
-use agent::{secret_accounts, AgentConfig, AgentRequest, AgentStream};
+use std::sync::Arc;
+
+use agent::{secret_accounts, AgentConfig, AgentRequest, AgentStream, ToolSession};
 use domain::{ForestError, ForestResult, NodeId, TopicId};
 
 use crate::config::write_agent_config_file;
@@ -16,6 +18,11 @@ impl ForestService {
   /// Build the agent context (full topic + node list) and dispatch.
   /// The returned stream is alive for the duration of one HTTP SSE
   /// response; the route handler maps each `AgentEvent` to a frame.
+  ///
+  /// H2: hands the proposer a read-only `ToolSession` so the model can
+  /// call `mf_read_node` / `mf_search` mid-turn. The executor is `self`
+  /// (ForestService implements `ToolExecutor`); no shadow/staging yet —
+  /// that lands in H3 with write tools.
   pub async fn propose(
     &self,
     topic_id: &TopicId,
@@ -39,8 +46,12 @@ impl ForestService {
       history,
       vault_context,
     };
+    // ToolSession holds `Arc<dyn ToolExecutor>`. ForestService is not
+    // itself an Arc here, so wrap a clone — `Clone` is cheap (inner
+    // fields are already Arcs).
+    let tools = Some(ToolSession::read_only(Arc::new(self.clone())));
     let proposer = self.proposer.read().await.clone();
-    proposer.propose(req).await
+    proposer.propose(req, tools).await
   }
 
   /// Backend label, e.g. `"stub"`, `"gpt-4o-mini (api.openai.com)"`,

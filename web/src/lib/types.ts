@@ -180,6 +180,16 @@ export type AgentProposal =
 export type AgentEvent =
   | { kind: "token"; text: string }
   | { kind: "proposal"; proposal: AgentProposal }
+  /** H2: model requested a tool; UI may ignore (H3 stages diffs). */
+  | { kind: "tool_call_pending"; id: string; name: string; input: unknown }
+  /** H2: tool outcome already fed back to the provider. */
+  | {
+      kind: "tool_result";
+      id: string;
+      name: string;
+      content: string;
+      is_error: boolean;
+    }
   | { kind: "error"; message: string }
   | { kind: "done" };
 

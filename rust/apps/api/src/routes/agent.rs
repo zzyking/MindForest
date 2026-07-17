@@ -102,6 +102,8 @@ fn event_name(ev: &AgentEvent) -> &'static str {
   match ev {
     AgentEvent::Token { .. } => "token",
     AgentEvent::Proposal { .. } => "proposal",
+    AgentEvent::ToolCallPending { .. } => "tool_call_pending",
+    AgentEvent::ToolResult { .. } => "tool_result",
     AgentEvent::Error { .. } => "error",
     AgentEvent::Done => "done",
   }

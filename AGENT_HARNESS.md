@@ -1,6 +1,6 @@
 # Agent Harness Design
 
-> Status: **H1 implemented + validated** (`app-core/src/context.rs`; injection 2026-06-11, live-provider validation + cosine-floor hardening 2026-07-15); H2–H4 remain design. Captures the shape of how the in-app agent should plug into the vault — what context goes in, what operations come out, how those operations land. Refer back when implementing phases H1..H4 below.
+> Status: **H1 implemented + validated** (`app-core/src/context.rs`; injection 2026-06-11, live-provider validation + cosine-floor hardening 2026-07-15); **H2 implemented** (tool type layer + `ToolExecutor` over `ForestService` + OpenAI/Anthropic multi-round tool loop on `/v1/agent/propose`; SSE `tool_call_pending` / `tool_result`; UI ignores tool events until H3); H3–H4 remain design. Captures the shape of how the in-app agent should plug into the vault — what context goes in, what operations come out, how those operations land. Refer back when implementing phases H1..H4 below.
 >
 > H1 validation (real provider, real embeddings): the model demonstrably consumes the block — when a genuinely-related cross-topic node exists it emits a verbatim-id cross-topic `link` the single-topic node dump could never produce; when none exists it correctly declines. The gate is met. Note the marquee `<semantic-neighbors>` channel is only as good as the vault is dense: at ~25 nodes with a near-empty second topic it mostly renders empty, which is correct. The cosine floor (below) was added after validation surfaced junk nodes scoring at the ~0.58 English baseline.
 
@@ -159,7 +159,7 @@ DraftOverlay (web)
 
 **H1 — Context only, no tools.** Ship `ContextBuilder` and inject `<vault-context>`. `AgentProposer` signature unchanged. **Validation gate**: the sibling-title test from the original plan turned out weak — the request body already dumps the whole topic (siblings included), so avoiding a collision doesn't isolate L1. The signal that *does* isolate it: with a genuinely-related node in **another** topic, the agent emits a cross-topic `link` using an id it could only have seen in `<semantic-neighbors>` (the dump is single-topic). That's the test that was run and passed (2026-07-15). If L1 alone doesn't measurably move output quality, stop — H2/H3 won't fix it either.
 
-**H2 — Read-only tools.** Add `mf_read_node` + `mf_search`. Provider can decide to dig further. No mutations. UI unchanged — text proposals only.
+**H2 — Read-only tools.** Add `mf_read_node` + `mf_search`. Provider can decide to dig further. No mutations. UI unchanged — text proposals only. **Shipped** on `refactor/h2-tools`: `agent/src/tools.rs` + `app-core/src/tool_exec.rs` + provider tool loops; `AgentProposer::propose(req, tools: Option<ToolSession>)`.
 
 **H3 — Write tools.** `mf_create_node` / `mf_patch_node` / `mf_link_nodes` / `mf_move_subtree`. Shadow service. DraftOverlay redesign for staged-diff UI. This is the largest single shipment in the harness; everything else is plumbing.
 

@@ -10,7 +10,9 @@ use async_trait::async_trait;
 use domain::{ForestResult, NodeType};
 use futures::stream;
 
-use crate::{AgentEvent, AgentProposal, AgentProposer, AgentRequest, AgentStream, NodeRef};
+use crate::{
+  AgentEvent, AgentProposal, AgentProposer, AgentRequest, AgentStream, NodeRef, ToolSession,
+};
 
 #[derive(Default, Clone)]
 pub struct StubProposer;
@@ -23,7 +25,13 @@ impl StubProposer {
 
 #[async_trait]
 impl AgentProposer for StubProposer {
-  async fn propose(&self, req: AgentRequest) -> ForestResult<AgentStream> {
+  async fn propose(
+    &self,
+    req: AgentRequest,
+    _tools: Option<ToolSession>,
+  ) -> ForestResult<AgentStream> {
+    // Stub ignores tools — no network, no vault dig. Keeps tests and
+    // the no-provider fallback deterministic.
     // Pick a parent: the focused node, or the topic root if no focus.
     let parent_id = req.focused_node_id.unwrap_or(req.topic.root_node_id);
 
@@ -96,7 +104,7 @@ mod tests {
   #[tokio::test]
   async fn stub_emits_tokens_then_proposal_then_done() {
     let p = StubProposer::new();
-    let mut s = p.propose(topic_fixture()).await.unwrap();
+    let mut s = p.propose(topic_fixture(), None).await.unwrap();
     let mut tokens = 0;
     let mut proposals = 0;
     let mut done = false;
@@ -109,6 +117,9 @@ mod tests {
           break;
         }
         AgentEvent::Error { .. } => panic!("unexpected error"),
+        AgentEvent::ToolCallPending { .. } | AgentEvent::ToolResult { .. } => {
+          panic!("stub must not emit tool events")
+        }
       }
     }
     assert!(tokens > 0);

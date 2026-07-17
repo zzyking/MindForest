@@ -2,22 +2,22 @@
 //!
 //! ## Streaming
 //!
-//! With `"stream": true` Anthropic emits named SSE events. We only need
-//! `content_block_delta` (one per token chunk); other events
-//! (`message_start`, `ping`, `message_delta`, `message_stop`) are
-//! ignored. The chunk shape is a `content_block_delta` event whose
-//! data carries `{"delta":{"type":"text_delta","text":"…"}}`. Same
-//! accumulator pattern as the OpenAI side: stream tokens, then parse
-//! proposals out of the buffered prose at the end.
+//! With `"stream": true` Anthropic emits named SSE events. Text tokens
+//! arrive as `content_block_delta` / `text_delta`; tool-arg fragments as
+//! `input_json_delta` under a `tool_use` content block. Same multi-round
+//! tool loop as the OpenAI adapter when a `ToolSession` is supplied.
 
 use async_trait::async_trait;
-use domain::{ForestError, ForestResult};
+use domain::ForestResult;
 use futures::StreamExt;
-use serde_json::json;
+use serde_json::{json, Value};
 
-use crate::prompt::{build_user_message, SYSTEM_PROMPT};
+use crate::prompt::{build_user_message, system_prompt_for};
 use crate::sse::into_event_stream;
-use crate::{extract_proposals, AgentEvent, AgentProposer, AgentRequest, AgentRole, AgentStream};
+use crate::tools::{anthropic_tools_array, dispatch_tool};
+use crate::{
+  extract_proposals, AgentEvent, AgentProposer, AgentRequest, AgentRole, AgentStream, ToolSession,
+};
 
 const DEFAULT_API_BASE: &str = "https://api.anthropic.com/v1";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -66,11 +66,36 @@ impl AnthropicProposer {
   }
 }
 
+#[derive(Debug, Default, Clone)]
+struct AccumToolUse {
+  id: String,
+  name: String,
+  input_json: String,
+}
+
+struct RoundOutcome {
+  text: String,
+  tool_uses: Vec<AccumToolUse>,
+  /// Anthropic `message_delta.stop_reason`: `end_turn` | `tool_use` | …
+  stop_reason: Option<String>,
+}
+
 #[async_trait]
 impl AgentProposer for AnthropicProposer {
-  async fn propose(&self, req: AgentRequest) -> ForestResult<AgentStream> {
+  async fn propose(
+    &self,
+    req: AgentRequest,
+    tools: Option<ToolSession>,
+  ) -> ForestResult<AgentStream> {
     let url = format!("{}/messages", self.cfg.base_url.trim_end_matches('/'));
-    let mut messages: Vec<serde_json::Value> = Vec::with_capacity(req.history.len() + 1);
+    let client = self.client.clone();
+    let api_key = self.cfg.api_key.clone();
+    let model = self.cfg.model.clone();
+    let max_tokens = self.cfg.max_tokens;
+    let has_tools = tools.is_some();
+    let system = system_prompt_for(has_tools);
+
+    let mut messages: Vec<Value> = Vec::with_capacity(req.history.len() + 1);
     for turn in &req.history {
       messages.push(json!({
         "role": match turn.role {
@@ -81,75 +106,144 @@ impl AgentProposer for AnthropicProposer {
       }));
     }
     messages.push(json!({ "role": "user", "content": build_user_message(&req) }));
-    let body = json!({
-      "model": self.cfg.model,
-      "max_tokens": self.cfg.max_tokens,
-      "stream": true,
-      "system": SYSTEM_PROMPT,
-      "messages": messages,
-    });
-    let resp = self
-      .client
-      .post(&url)
-      .header("x-api-key", &self.cfg.api_key)
-      .header("anthropic-version", ANTHROPIC_VERSION)
-      .json(&body)
-      .send()
-      .await
-      .map_err(|e| ForestError::Agent(format!("anthropic connect: {e}")))?;
-    if !resp.status().is_success() {
-      let status = resp.status();
-      let body = resp.text().await.unwrap_or_default();
-      return Err(ForestError::Agent(format!(
-        "anthropic upstream {status}: {body}"
-      )));
-    }
-
-    let byte_stream = resp.bytes_stream();
-    let event_stream = into_event_stream(byte_stream);
 
     Ok(Box::pin(async_stream::stream! {
-      let mut buf = String::new();
-      let mut s = event_stream;
-      while let Some(item) = s.next().await {
-        let ev = match item {
-          Ok(e) => e,
+      let mut messages = messages;
+      let mut all_text = String::new();
+      let mut calls_used: usize = 0;
+      let max_calls = tools.as_ref().map(|t| t.max_tool_calls).unwrap_or(0);
+      let tools_json = tools.as_ref().map(|t| anthropic_tools_array(&t.tools));
+
+      loop {
+        let mut body = json!({
+          "model": model,
+          "max_tokens": max_tokens,
+          "stream": true,
+          "system": system,
+          "messages": messages,
+        });
+        if let Some(ref t) = tools_json {
+          body["tools"] = t.clone();
+        }
+
+        let resp = match client
+          .post(&url)
+          .header("x-api-key", &api_key)
+          .header("anthropic-version", ANTHROPIC_VERSION)
+          .json(&body)
+          .send()
+          .await
+        {
+          Ok(r) => r,
           Err(e) => {
-            yield AgentEvent::Error { message: format!("anthropic stream: {e}") };
-            break;
+            yield AgentEvent::Error { message: format!("anthropic connect: {e}") };
+            yield AgentEvent::Done;
+            return;
           }
         };
-        match ev.event.as_deref() {
-          Some("content_block_delta") => {
-            let val: serde_json::Value = match serde_json::from_str(&ev.data) {
-              Ok(v) => v,
-              Err(_) => continue,
-            };
-            // Only text_delta carries user-visible content; other delta
-            // types (input_json_delta for tool args, etc.) are ignored
-            // because we don't ask the model to use tools.
-            if let Some(text) = val
-              .get("delta")
-              .and_then(|d| d.get("text"))
-              .and_then(|t| t.as_str())
-            {
-              if !text.is_empty() {
-                buf.push_str(text);
-                yield AgentEvent::Token { text: text.to_string() };
-              }
-            }
+        if !resp.status().is_success() {
+          let status = resp.status();
+          let body = resp.text().await.unwrap_or_default();
+          yield AgentEvent::Error {
+            message: format!("anthropic upstream {status}: {body}"),
+          };
+          yield AgentEvent::Done;
+          return;
+        }
+
+        let outcome = match stream_anthropic_round(resp.bytes_stream()).await {
+          Ok(o) => o,
+          Err(e) => {
+            yield AgentEvent::Error { message: e };
+            yield AgentEvent::Done;
+            return;
           }
-          Some("message_stop") => break,
-          Some("error") => {
-            yield AgentEvent::Error { message: format!("anthropic error event: {}", ev.data) };
+        };
+
+        if !outcome.text.is_empty() {
+          all_text.push_str(&outcome.text);
+          yield AgentEvent::Token { text: outcome.text.clone() };
+        }
+
+        let wants_tools = outcome.stop_reason.as_deref() == Some("tool_use")
+          || !outcome.tool_uses.is_empty();
+
+        if !wants_tools || tools.is_none() {
+          break;
+        }
+
+        let session = tools.as_ref().unwrap();
+        if calls_used >= max_calls {
+          yield AgentEvent::Error {
+            message: format!(
+              "tool-call budget exhausted ({max_calls}); stopping without further tools"
+            ),
+          };
+          break;
+        }
+
+        // Assistant content blocks: optional text + each tool_use.
+        let mut content_blocks: Vec<Value> = Vec::new();
+        if !outcome.text.is_empty() {
+          content_blocks.push(json!({ "type": "text", "text": outcome.text }));
+        }
+
+        let mut tool_results: Vec<Value> = Vec::new();
+        for tu in &outcome.tool_uses {
+          if calls_used >= max_calls {
             break;
           }
-          // Ignore message_start, ping, content_block_start/stop,
-          // message_delta — they don't change buffered text.
-          _ => {}
+          calls_used += 1;
+
+          let input: Value = serde_json::from_str(&tu.input_json)
+            .unwrap_or_else(|_| json!({}));
+          yield AgentEvent::ToolCallPending {
+            id: tu.id.clone(),
+            name: tu.name.clone(),
+            input: input.clone(),
+          };
+
+          let result = dispatch_tool(session.executor.as_ref(), &tu.name, input).await;
+          yield AgentEvent::ToolResult {
+            id: tu.id.clone(),
+            name: tu.name.clone(),
+            content: result.content.clone(),
+            is_error: result.is_error,
+          };
+
+          content_blocks.push(json!({
+            "type": "tool_use",
+            "id": tu.id,
+            "name": tu.name,
+            "input": serde_json::from_str::<Value>(&tu.input_json)
+              .unwrap_or_else(|_| json!({})),
+          }));
+          let mut tr = json!({
+            "type": "tool_result",
+            "tool_use_id": tu.id,
+            "content": result.content,
+          });
+          if result.is_error {
+            tr["is_error"] = json!(true);
+          }
+          tool_results.push(tr);
         }
+
+        if tool_results.is_empty() {
+          break;
+        }
+
+        messages.push(json!({
+          "role": "assistant",
+          "content": content_blocks,
+        }));
+        messages.push(json!({
+          "role": "user",
+          "content": tool_results,
+        }));
       }
-      match extract_proposals(&buf) {
+
+      match extract_proposals(&all_text) {
         Ok(props) => {
           for p in props {
             yield AgentEvent::Proposal { proposal: p };
@@ -166,4 +260,110 @@ impl AgentProposer for AnthropicProposer {
   fn backend(&self) -> &str {
     &self.backend_label
   }
+}
+
+async fn stream_anthropic_round<S>(byte_stream: S) -> Result<RoundOutcome, String>
+where
+  S: futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
+{
+  let mut text = String::new();
+  let mut tool_uses: Vec<AccumToolUse> = Vec::new();
+  // Index of the content block currently being streamed (from
+  // `content_block_start.index`).
+  let mut current_index: Option<usize> = None;
+  // Maps content-block index → slot in `tool_uses`.
+  let mut index_to_tool: std::collections::HashMap<usize, usize> =
+    std::collections::HashMap::new();
+  let mut stop_reason: Option<String> = None;
+  let mut event_stream = into_event_stream(byte_stream);
+
+  while let Some(item) = event_stream.next().await {
+    let ev = item.map_err(|e| format!("anthropic stream: {e}"))?;
+    match ev.event.as_deref() {
+      Some("content_block_start") => {
+        let val: Value = match serde_json::from_str(&ev.data) {
+          Ok(v) => v,
+          Err(_) => continue,
+        };
+        let index = val.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+        current_index = Some(index);
+        let block = val.get("content_block").cloned().unwrap_or(Value::Null);
+        if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+          let id = block
+            .get("id")
+            .and_then(|i| i.as_str())
+            .unwrap_or("")
+            .to_string();
+          let name = block
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("")
+            .to_string();
+          let slot = tool_uses.len();
+          tool_uses.push(AccumToolUse {
+            id,
+            name,
+            input_json: String::new(),
+          });
+          index_to_tool.insert(index, slot);
+        }
+      }
+      Some("content_block_delta") => {
+        let val: Value = match serde_json::from_str(&ev.data) {
+          Ok(v) => v,
+          Err(_) => continue,
+        };
+        let delta = val.get("delta").cloned().unwrap_or(Value::Null);
+        match delta.get("type").and_then(|t| t.as_str()) {
+          Some("text_delta") => {
+            if let Some(t) = delta.get("text").and_then(|t| t.as_str()) {
+              if !t.is_empty() {
+                text.push_str(t);
+              }
+            }
+          }
+          Some("input_json_delta") => {
+            if let Some(partial) = delta.get("partial_json").and_then(|p| p.as_str()) {
+              let index = val
+                .get("index")
+                .and_then(|i| i.as_u64())
+                .map(|i| i as usize)
+                .or(current_index);
+              if let Some(idx) = index {
+                if let Some(&slot) = index_to_tool.get(&idx) {
+                  tool_uses[slot].input_json.push_str(partial);
+                }
+              }
+            }
+          }
+          _ => {}
+        }
+      }
+      Some("message_delta") => {
+        if let Ok(val) = serde_json::from_str::<Value>(&ev.data) {
+          if let Some(sr) = val
+            .get("delta")
+            .and_then(|d| d.get("stop_reason"))
+            .and_then(|s| s.as_str())
+          {
+            stop_reason = Some(sr.to_string());
+          }
+        }
+      }
+      Some("message_stop") => break,
+      Some("error") => {
+        return Err(format!("anthropic error event: {}", ev.data));
+      }
+      _ => {}
+    }
+  }
+
+  // Drop empty-name tool uses (malformed stream).
+  tool_uses.retain(|t| !t.name.is_empty());
+
+  Ok(RoundOutcome {
+    text,
+    tool_uses,
+    stop_reason,
+  })
 }

@@ -4,14 +4,17 @@
 //! Two narrow tools the provider can call to look around the vault before
 //! it proposes: `mf_read_node` and `mf_search`. This module is *pure
 //! types* — what the provider is told about (`ToolDef` + input schemas),
-//! the parsed call the backend dispatches (`AgentToolCall`), and the
-//! `ToolExecutor` seam that app-core implements over `ForestService`.
+//! the parsed call the backend dispatches (`AgentToolCall`), the
+//! `ToolExecutor` seam that app-core implements over `ForestService`,
+//! and the `ToolSession` the provider loop holds for one turn.
 //!
 //! The executor trait lives here, not in app-core, on purpose: the
 //! provider tool loop (this crate) holds a `dyn ToolExecutor` and calls
 //! it, so putting the trait here keeps the dependency arrow pointing the
 //! one way it already points (`app-core → agent`). No provider wire
 //! format and no `ForestService` leak into this file.
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -154,6 +157,49 @@ pub trait ToolExecutor: Send + Sync {
   async fn execute(&self, call: AgentToolCall) -> ToolResult;
 }
 
+/// Default ceiling on tool *executions* per propose turn
+/// (`AGENT_HARNESS.md` §7). Without a budget a bad prompt can spiral.
+pub const DEFAULT_MAX_TOOL_CALLS: usize = 20;
+
+/// Everything the provider loop needs to advertise tools and run them
+/// for one propose turn. Built by app-core (`ToolSession::read_only`)
+/// and passed into `AgentProposer::propose`. Not serializable — the
+/// executor is a live vault handle.
+pub struct ToolSession {
+  pub tools: Vec<ToolDef>,
+  pub executor: Arc<dyn ToolExecutor>,
+  /// Hard cap on how many tool calls the loop will execute this turn.
+  /// Further `tool_use` blocks from the model are ignored and the loop
+  /// ends with whatever text/proposals it has so far.
+  pub max_tool_calls: usize,
+}
+
+impl ToolSession {
+  /// H2 session: the two read-only tools against the given executor.
+  pub fn read_only(executor: Arc<dyn ToolExecutor>) -> Self {
+    Self {
+      tools: read_only_tools(),
+      executor,
+      max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
+    }
+  }
+}
+
+/// Parse a provider tool_use (`name` + JSON `input`) and run it. Unknown
+/// names and schema mismatches become `is_error` results the model can
+/// recover from — never a dropped turn.
+pub async fn dispatch_tool(
+  executor: &dyn ToolExecutor,
+  name: &str,
+  input: Value,
+) -> ToolResult {
+  match AgentToolCall::parse(name, input) {
+    None => ToolResult::error(format!("unknown tool: {name}")),
+    Some(Err(e)) => ToolResult::error(format!("invalid input for {name}: {e}")),
+    Some(Ok(call)) => executor.execute(call).await,
+  }
+}
+
 /// Render a tool-input type's JSON Schema as a plain `serde_json::Value`
 /// for inlining into a provider's `tools` array. `schema_for!` is
 /// infallible to build and the result always serializes, so a failure
@@ -161,6 +207,43 @@ pub trait ToolExecutor: Send + Sync {
 /// empty object rather than panic.
 fn schema_of<T: schemars::JsonSchema>() -> Value {
   serde_json::to_value(schemars::schema_for!(T)).unwrap_or_else(|_| serde_json::json!({}))
+}
+
+/// OpenAI / OpenAI-compatible `tools` array entry shape
+/// (`type: "function"` + nested `function.{name,description,parameters}`).
+pub fn openai_tools_array(tools: &[ToolDef]) -> Value {
+  Value::Array(
+    tools
+      .iter()
+      .map(|t| {
+        serde_json::json!({
+          "type": "function",
+          "function": {
+            "name": t.name,
+            "description": t.description,
+            "parameters": t.input_schema,
+          }
+        })
+      })
+      .collect(),
+  )
+}
+
+/// Anthropic `/v1/messages` `tools` array entry shape
+/// (`name` + `description` + `input_schema` at the top level).
+pub fn anthropic_tools_array(tools: &[ToolDef]) -> Value {
+  Value::Array(
+    tools
+      .iter()
+      .map(|t| {
+        serde_json::json!({
+          "name": t.name,
+          "description": t.description,
+          "input_schema": t.input_schema,
+        })
+      })
+      .collect(),
+  )
 }
 
 #[cfg(test)]
@@ -223,5 +306,34 @@ mod tests {
     let v: Value = serde_json::from_str(&r.content).unwrap();
     assert_eq!(v["error"], "node not found");
     assert!(!ToolResult::ok("{}".into()).is_error);
+  }
+
+  struct EchoExecutor;
+
+  #[async_trait]
+  impl ToolExecutor for EchoExecutor {
+    async fn execute(&self, call: AgentToolCall) -> ToolResult {
+      ToolResult::ok(format!("echo:{}", call.name()))
+    }
+  }
+
+  #[tokio::test]
+  async fn dispatch_unknown_and_bad_input_are_errors() {
+    let ex = EchoExecutor;
+    let r = dispatch_tool(&ex, "mf_nope", json!({})).await;
+    assert!(r.is_error);
+    assert!(r.content.contains("unknown tool"));
+
+    let r = dispatch_tool(&ex, MF_READ_NODE, json!({ "wrong": 1 })).await;
+    assert!(r.is_error);
+    assert!(r.content.contains("invalid input"));
+  }
+
+  #[tokio::test]
+  async fn dispatch_known_tool_hits_executor() {
+    let ex = EchoExecutor;
+    let r = dispatch_tool(&ex, MF_READ_NODE, json!({ "id": "01ABC" })).await;
+    assert!(!r.is_error);
+    assert_eq!(r.content, format!("echo:{MF_READ_NODE}"));
   }
 }

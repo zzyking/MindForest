@@ -223,6 +223,10 @@ export const useAgentSession = create<AgentSessionState>((set, get) => {
             case "error":
               patch(key, (c) => ({ errors: [...c.errors, ev.message] }));
               break;
+            case "tool_call_pending":
+            case "tool_result":
+              // H2: tools run server-side; UI stays text-proposal only.
+              break;
             case "done":
               sawDone = true;
               break;

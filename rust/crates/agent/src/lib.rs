@@ -54,8 +54,9 @@ pub use parse::{extract_proposals, ProposalParseError};
 pub use secrets::{mask_secret, InMemoryStore, KeyringStore, SecretError, SecretStore};
 pub use stub::StubProposer;
 pub use tools::{
-  read_only_tools, AgentToolCall, ReadNodeInput, SearchInput, ToolDef, ToolExecutor, ToolResult,
-  DEFAULT_SEARCH_K, MF_READ_NODE, MF_SEARCH,
+  anthropic_tools_array, dispatch_tool, openai_tools_array, read_only_tools, AgentToolCall,
+  ReadNodeInput, SearchInput, ToolDef, ToolExecutor, ToolResult, ToolSession,
+  DEFAULT_MAX_TOOL_CALLS, DEFAULT_SEARCH_K, MF_READ_NODE, MF_SEARCH,
 };
 
 use std::sync::Arc;
@@ -358,6 +359,23 @@ pub enum AgentEvent {
   Token { text: String },
   /// A structured edit the agent suggests.
   Proposal { proposal: AgentProposal },
+  /// H2: the model requested a tool call. Emitted before the backend
+  /// runs it so the client can narrate "searching…" etc. H2 UI ignores
+  /// these; H3 surfaces them in the staged-diff overlay.
+  ToolCallPending {
+    id: String,
+    name: String,
+    input: serde_json::Value,
+  },
+  /// H2: outcome of a tool call, already fed back to the provider as a
+  /// `tool_result`. `is_error` is a recoverable tool-level failure
+  /// (bad id, missing node), not a dropped turn.
+  ToolResult {
+    id: String,
+    name: String,
+    content: String,
+    is_error: bool,
+  },
   /// Non-fatal note (e.g. "couldn't parse proposals block"). Stream
   /// still continues; the client just surfaces the message.
   Error { message: String },
@@ -489,7 +507,17 @@ pub trait AgentProposer: Send + Sync {
   /// Start a propose session. Errors only on synchronous setup failures
   /// (bad config); transport errors that happen mid-stream surface as
   /// `AgentEvent::Error` followed by `AgentEvent::Done`.
-  async fn propose(&self, req: AgentRequest) -> ForestResult<AgentStream>;
+  ///
+  /// When `tools` is `Some`, the provider advertises the tool schemas and
+  /// runs a multi-round tool loop (H2+), emitting `ToolCallPending` /
+  /// `ToolResult` events between text tokens. When `None`, behaviour is
+  /// the pre-H2 single-shot stream (used by the stub and by tests that
+  /// don't care about tools).
+  async fn propose(
+    &self,
+    req: AgentRequest,
+    tools: Option<ToolSession>,
+  ) -> ForestResult<AgentStream>;
 
   /// Human-readable backend name, surfaced to clients via
   /// `GET /v1/agent/status` so the UI can show "powered by …".
