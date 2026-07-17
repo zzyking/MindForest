@@ -35,6 +35,12 @@ import {
 } from "d3-force";
 import Graph from "graphology";
 
+import {
+  chargeScale,
+  layoutBeta,
+  treeAnchorStrength,
+  treeSnapBlend,
+} from "./layoutContinuum";
 import { palette } from "./palette";
 import type { NodeId, NodeType, TopicDetail, TopicId, TopicSummary } from "@/lib/types";
 
@@ -68,6 +74,10 @@ export interface TopicAnchorInfo {
  * `sim` keep their identity across structure syncs; `simNodes` /
  * `nodeById` / `neighbors` / `anchors` are replaced or mutated by
  * syncForestStructure.
+ *
+ * L3: `treeTargets` are hierarchy positions (radial seed + topic orbit)
+ * used as soft anchors when μ is near; `parentById` / `childrenById`
+ * feed family-scope dimming.
  */
 export interface ForestLayout {
   graph: Graph;
@@ -77,6 +87,12 @@ export interface ForestLayout {
   nodeById: Map<NodeId, SimNode>;
   neighbors: Map<NodeId, Set<NodeId>>;
   anchors: TopicAnchorInfo[];
+  /** Absolute graph coords for the hierarchy field (L3 continuum). */
+  treeTargets: Map<NodeId, { x: number; y: number }>;
+  parentById: Map<NodeId, NodeId | null>;
+  childrenById: Map<NodeId, NodeId[]>;
+  /** Last applied layout β — skip force rebind when unchanged. */
+  lastLayoutBeta: number;
 }
 
 export interface SyncResult {
@@ -256,6 +272,15 @@ export function createForestLayout(): ForestLayout {
     .force("center", forceCenter(0, 0).strength(0.3))
     .force("x", forceX(0).strength(0.04)) // Pull disconnected topics closer
     .force("y", forceY(0).strength(0.04)) // Pull disconnected topics closer
+    // L3: per-node hierarchy anchors (strength modulated by μ).
+    .force(
+      "treeX",
+      forceX<SimNode>((n) => layoutTreeX(n)).strength(0),
+    )
+    .force(
+      "treeY",
+      forceY<SimNode>((n) => layoutTreeY(n)).strength(0),
+    )
     .force("link", linkForce)
     .force("collide", forceCollide<SimNode>((n) => nodeRadius(n) * 1.6).iterations(3))
     .stop(); // we drive ticks manually (useSimLoop / buildForestGraph)
@@ -268,7 +293,22 @@ export function createForestLayout(): ForestLayout {
     nodeById: new Map(),
     neighbors: new Map(),
     anchors: [],
+    treeTargets: new Map(),
+    parentById: new Map(),
+    childrenById: new Map(),
+    lastLayoutBeta: 1,
   };
+}
+
+// Module-level target lookup so forceX/Y accessors stay stable closures
+// re-bound via applyContinuumForces (they close over layout.treeTargets).
+let continuumTargets: Map<NodeId, { x: number; y: number }> = new Map();
+
+function layoutTreeX(n: SimNode): number {
+  return continuumTargets.get(n.id)?.x ?? n.x ?? 0;
+}
+function layoutTreeY(n: SimNode): number {
+  return continuumTargets.get(n.id)?.y ?? n.y ?? 0;
 }
 
 /**
@@ -536,6 +576,25 @@ export function syncForestStructure(
     }
   }
 
+  // ── L3 hierarchy field (tree targets + parent/children) ───────────
+  // Always rebuild absolute radial targets so near-μ anchors stay valid
+  // even after incremental structure changes. Topic orbit placement
+  // matches cold creation when possible; otherwise uses live centroids.
+  rebuildTreeTargets(layout, ready, seedsByTopic, isCreation);
+
+  const parentById = new Map<NodeId, NodeId | null>();
+  const childrenById = new Map<NodeId, NodeId[]>();
+  for (const [id, info] of desiredNodes) {
+    parentById.set(id, info.parent);
+    if (info.parent) {
+      const arr = childrenById.get(info.parent) ?? [];
+      arr.push(id);
+      childrenById.set(info.parent, arr);
+    }
+  }
+  layout.parentById = parentById;
+  layout.childrenById = childrenById;
+
   // ── Rebind the simulation ─────────────────────────────────────────
   // nodes() re-initializes every force with the new array; links()
   // must come after so the link force resolves ids against it.
@@ -543,6 +602,8 @@ export function syncForestStructure(
   layout.linkForce.links(
     [...desiredEdges.values()].map(({ a, b, kind }) => ({ source: a, target: b, kind })),
   );
+  // Re-apply continuum forces after nodes() (which re-inits forces).
+  applyContinuumForces(layout, layout.lastLayoutBeta);
 
   layout.neighbors = adjacency;
   layout.anchors = ready.map((d) => ({
@@ -566,10 +627,141 @@ export function syncForestStructure(
   };
 }
 
+/**
+ * Rebuild absolute hierarchy targets for every node. Uses the same
+ * radial seed + topic orbit as cold placement so near-μ layout reads
+ * as a tidy tree, not a random force cloud.
+ */
+function rebuildTreeTargets(
+  layout: ForestLayout,
+  ready: TopicDetail[],
+  seedsByTopic: Map<
+    TopicId,
+    { positions: Map<NodeId, { x: number; y: number }>; cx: number; cy: number }
+  >,
+  isCreation: boolean,
+): void {
+  const targets = new Map<NodeId, { x: number; y: number }>();
+
+  // Prefer seeds already computed this sync (creation / new topics).
+  // For existing topics, recompute radial seed and place at the live
+  // topic centroid so the tree field tracks the force cluster.
+  for (const detail of ready) {
+    const existing = seedsByTopic.get(detail.id);
+    let cx: number;
+    let cy: number;
+    let positions: Map<NodeId, { x: number; y: number }>;
+    if (existing) {
+      cx = existing.cx;
+      cy = existing.cy;
+      positions = existing.positions;
+    } else {
+      const seed = radialTreeSeed(detail);
+      positions = seed.positions;
+      // Live centroid of this topic's sim nodes (fallback 0,0).
+      let sx = 0;
+      let sy = 0;
+      let c = 0;
+      for (const n of layout.simNodes) {
+        if (n.topicId !== detail.id) continue;
+        sx += n.x ?? 0;
+        sy += n.y ?? 0;
+        c += 1;
+      }
+      if (c > 0) {
+        cx = sx / c;
+        cy = sy / c;
+      } else if (isCreation) {
+        cx = 0;
+        cy = 0;
+      } else {
+        cx = 0;
+        cy = 0;
+      }
+    }
+    for (const [id, p] of positions) {
+      targets.set(id, { x: cx + p.x, y: cy + p.y });
+    }
+  }
+  layout.treeTargets = targets;
+  continuumTargets = targets;
+}
+
+/**
+ * L3: rebind force strengths from layout β (μ-driven). Safe to call
+ * every μ change; cheap when β is unchanged (caller may still reheat).
+ */
+export function applyContinuumForces(layout: ForestLayout, beta: number): void {
+  continuumTargets = layout.treeTargets;
+  const b = Math.min(1, Math.max(0, beta));
+  layout.lastLayoutBeta = b;
+
+  const anchor = treeAnchorStrength(b);
+  const charge = -120 * chargeScale(b);
+  // Far: keep weak global pull; near: let tree anchors own structure.
+  const globalXY = 0.04 * b;
+  const centerStr = 0.05 + 0.25 * b;
+
+  const { sim } = layout;
+  const chargeForce = sim.force("charge") as { strength: (s: number) => unknown } | undefined;
+  chargeForce?.strength(charge);
+  const centerForce = sim.force("center") as { strength: (s: number) => unknown } | undefined;
+  centerForce?.strength(centerStr);
+  const xForce = sim.force("x") as { strength: (s: number) => unknown } | undefined;
+  xForce?.strength(globalXY);
+  const yForce = sim.force("y") as { strength: (s: number) => unknown } | undefined;
+  yForce?.strength(globalXY);
+
+  // Tree anchors: forceX/Y with per-node accessors (already bound).
+  const treeX = sim.force("treeX") as { strength: (s: number) => unknown } | undefined;
+  const treeY = sim.force("treeY") as { strength: (s: number) => unknown } | undefined;
+  treeX?.strength(anchor);
+  treeY?.strength(anchor);
+
+  // Link strength: stronger tree links when near; full when far.
+  const linkBoost = 0.55 + 0.45 * b; // near slightly softer tree pull via anchors
+  layout.linkForce.strength((l) => {
+    const base = l.kind === "tree" ? 0.7 : l.kind === "link" ? 0.25 : 0.2;
+    // Near: weaken non-tree links so hierarchy dominates.
+    if (l.kind !== "tree") return base * b;
+    return base * linkBoost;
+  });
+}
+
+/**
+ * Apply continuum from user μ. Returns whether forces changed enough
+ * to warrant a reheat.
+ */
+export function setLayoutFromMu(layout: ForestLayout, mu: number): boolean {
+  const beta = layoutBeta(mu);
+  const prev = layout.lastLayoutBeta;
+  applyContinuumForces(layout, beta);
+  return Math.abs(beta - prev) > 0.02;
+}
+
+/** After a sim tick: soft-snap toward tree targets when nearly near-locked. */
+export function applyTreeSnap(layout: ForestLayout): void {
+  const snap = treeSnapBlend(layout.lastLayoutBeta);
+  if (snap < 0.01) return;
+  for (const n of layout.simNodes) {
+    const t = layout.treeTargets.get(n.id);
+    if (!t) continue;
+    const x = n.x ?? t.x;
+    const y = n.y ?? t.y;
+    n.x = x + (t.x - x) * snap;
+    n.y = y + (t.y - y) * snap;
+    if (snap > 0.85) {
+      n.vx = 0;
+      n.vy = 0;
+    }
+  }
+}
+
 /** Copy the simulation's positions into the graphology graph in one
  *  batched update — a single graphology event, which sigma coalesces
  *  into one repaint. Called once per simulation tick. */
 export function writeSimPositionsToGraph(layout: ForestLayout): void {
+  applyTreeSnap(layout);
   layout.graph.updateEachNodeAttributes(
     (id, attrs) => {
       const sn = layout.nodeById.get(id as NodeId);

@@ -32,6 +32,7 @@ export function useSimLoop(
       return;
     }
     sim.tick(); // advances alpha toward alphaTarget per d3 semantics
+    // writeSimPositionsToGraph also applies L3 tree-snap when near-locked.
     writeSimPositionsToGraph(layout);
     // Explicit refresh — sigma does NOT listen to graphology's batched
     // `eachNodeAttributesUpdated` event, so the position write above

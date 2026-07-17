@@ -119,6 +119,9 @@ export function edgeStyleForMaterial(material: number): {
   return { treeAlpha, linkAlpha, treeSize, linkSize };
 }
 
+// L3 layout continuum maps live in features/forest/layoutContinuum.ts
+// (layoutBeta, scopeBand) so the sim loop can import them without the store.
+
 interface MorphState {
   /** User control value ∈ [0,1] — drives camera + material together. */
   mu: number;

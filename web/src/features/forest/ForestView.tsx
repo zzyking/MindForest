@@ -4,9 +4,9 @@
  * Design:
  *   - One unified graph of every node across every topic.
  *   - Live d3-force via useSimLoop; sleeps when cool; reheats on structure.
- *   - L2 morph: user-owned μ (近↔远) drives camera dolly + soft materials
- *     (dual-zone hysteresis). Empty-field wheel nudges μ; bubble hover
- *     never morphs. Inspect freezes μ (snapshot/restore in NodePage).
+ *   - L2/L3 morph: user-owned μ drives camera, soft materials, and layout
+ *     continuum (near hierarchy ↔ far force; scope family→topic→vault).
+ *     Empty-field wheel ≡ slider. Inspect freezes μ.
  *   - Soft-body discs via drawNode; questions carry static hunger marks.
  *   - Labels: hover capsule + zoom fade. Tree edges straight; refs curved.
  *   - Click focuses; second click / double-click opens Inspect.
@@ -33,10 +33,16 @@ import {
   createForestLayout,
   forestLayoutKey,
   presettleForFit,
+  setLayoutFromMu,
   syncForestStructure,
   type ForestLayout,
   type TopicAnchorInfo,
 } from "./graphBuild";
+import {
+  computeFamilySet,
+  nodeInScope,
+  scopeBand,
+} from "./layoutContinuum";
 import {
   animateCameraToPoint,
   fitCameraToGraph,
@@ -208,6 +214,8 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
     );
     if (!res.hasReadyData) return;
     layoutRef.current = layout;
+    // L3: bind force continuum to current μ before first reheat.
+    setLayoutFromMu(layout, useMorph.getState().mu);
     setAnchors(layout.anchors);
     setNeighbors(layout.neighbors);
     setGraphReady(true);
@@ -299,14 +307,19 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
   focusedNodeIdRef.current = focusedNodeId;
   focusedTopicIdRef.current = focusedTopicId;
 
-  // μ is the only distance control: any setMu (slider or wheel) rewrites
-  // ratio, pivoting on the focused node's current screen position.
+  // μ is the only distance control: camera dolly + L3 layout continuum.
+  // Pivot camera on the focused node; rebind tree-anchor / charge forces.
   useEffect(() => {
     if (!graphReady) return;
-    const apply = () => {
+    const apply = (opts?: { layout?: boolean }) => {
+      const layout = layoutRef.current;
       const s = sigmaRef.current;
+      if (layout && opts?.layout !== false) {
+        const changed = setLayoutFromMu(layout, useMorph.getState().mu);
+        if (changed) reheat(0.15);
+      }
       if (!s) return;
-      const graph = layoutRef.current?.graph;
+      const graph = layout?.graph;
       const id = focusedNodeIdRef.current;
       const center =
         graph && id && graph.hasNode(id) ? getGraphNodePosition(graph, id) : null;
@@ -315,9 +328,10 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
     };
     apply();
     return useMorph.subscribe((state, prev) => {
-      if (state.mu !== prev.mu || state.fitRatio !== prev.fitRatio) apply();
+      if (state.mu !== prev.mu) apply({ layout: true });
+      else if (state.fitRatio !== prev.fitRatio) apply({ layout: false });
     });
-  }, [graphReady]);
+  }, [graphReady, reheat]);
   const {
     hoverNode,
     setHover,
@@ -420,8 +434,8 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
     });
     if (!target) return;
 
-    // Repaint first so the focused node's ink color updates even when
-    // the camera doesn't move.
+    // Repaint first so focus ink + L3 family/topic scope dim update even
+    // when the camera doesn't move.
     s.refresh();
     // Skip the tween when the camera is already anchored on this exact
     // target — clickNode animates immediately and the URL change lands
@@ -517,6 +531,34 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
         out.size = softNodeSize(baseSize, nodeType, mat);
         out.nodeType = nodeType;
 
+        // L3 scope dim: out-of-band nodes fade (family → topic → vault).
+        const layout = layoutRef.current;
+        const mu = useMorph.getState().mu;
+        const band = scopeBand(mu);
+        if (layout && band !== "vault") {
+          const focusId = focusedNodeIdRef.current;
+          const focusTopic = focusedTopicIdRef.current;
+          const family =
+            band === "family"
+              ? computeFamilySet(focusId, layout.parentById, layout.childrenById)
+              : new Set<NodeId>();
+          const topicId = attrs.topicId as TopicId;
+          const inScope = nodeInScope(
+            id as NodeId,
+            topicId,
+            band,
+            focusId,
+            focusTopic,
+            family,
+          );
+          if (!inScope) {
+            out.color = dimSoftColor(baseColor, 0.12);
+            out.label = "";
+            out.size = (out.size as number) * 0.55;
+            return out;
+          }
+        }
+
         const hoverBoost = hoverProgressRef.current;
 
         if (hoverBoost > 0) {
@@ -544,6 +586,43 @@ export function ForestView({ focusedTopicId, focusedNodeId, inspectOpen = false 
       edgeReducer: (id, attrs) => {
         const out: typeof attrs = { ...attrs };
         const hoverBoost = hoverProgressRef.current;
+        const layout = layoutRef.current;
+        const mu = useMorph.getState().mu;
+        const band = scopeBand(mu);
+
+        // L3: fade edges that leave the active scope band.
+        if (layout && band !== "vault" && graph.hasEdge(id)) {
+          const [src, tgt] = graph.extremities(id);
+          const focusId = focusedNodeIdRef.current;
+          const focusTopic = focusedTopicIdRef.current;
+          const family =
+            band === "family"
+              ? computeFamilySet(focusId, layout.parentById, layout.childrenById)
+              : new Set<NodeId>();
+          const srcTopic = graph.getNodeAttribute(src, "topicId") as TopicId;
+          const tgtTopic = graph.getNodeAttribute(tgt, "topicId") as TopicId;
+          const srcIn = nodeInScope(
+            src as NodeId,
+            srcTopic,
+            band,
+            focusId,
+            focusTopic,
+            family,
+          );
+          const tgtIn = nodeInScope(
+            tgt as NodeId,
+            tgtTopic,
+            band,
+            focusId,
+            focusTopic,
+            family,
+          );
+          if (!srcIn || !tgtIn) {
+            out.color = withAlpha(attrs.color as string, 0.06);
+            out.hidden = true;
+            return out;
+          }
+        }
 
         if (hoverBoost > 0 && graph.hasEdge(id)) {
           const { hovered } = resolveDimSet();

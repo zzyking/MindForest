@@ -11,3 +11,12 @@ export {
   sizeScaleForMaterial,
   typeSoftness,
 } from "@/stores/morph";
+
+export {
+  chargeScale,
+  layoutBeta,
+  scopeBand,
+  treeAnchorStrength,
+  treeSnapBlend,
+  type ScopeBand,
+} from "./layoutContinuum";
