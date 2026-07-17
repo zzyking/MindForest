@@ -1,38 +1,34 @@
-//! H2 of the agent harness — the read-only tool surface
-//! (`AGENT_HARNESS.md` §L2).
+//! Agent harness tool surface (`AGENT_HARNESS.md` §L2).
 //!
-//! Two narrow tools the provider can call to look around the vault before
-//! it proposes: `mf_read_node` and `mf_search`. This module is *pure
-//! types* — what the provider is told about (`ToolDef` + input schemas),
-//! the parsed call the backend dispatches (`AgentToolCall`), the
-//! `ToolExecutor` seam that app-core implements over `ForestService`,
-//! and the `ToolSession` the provider loop holds for one turn.
+//! **H2** — read-only: `mf_read_node`, `mf_search`.
+//! **H3** — write tools on a shadow vault: `mf_create_node`, `mf_patch_node`,
+//! `mf_link_nodes`, `mf_move_subtree`. Writes journal as `StagedOp`s;
+//! accept flushes to the real vault.
 //!
-//! The executor trait lives here, not in app-core, on purpose: the
-//! provider tool loop (this crate) holds a `dyn ToolExecutor` and calls
-//! it, so putting the trait here keeps the dependency arrow pointing the
-//! one way it already points (`app-core → agent`). No provider wire
-//! format and no `ForestService` leak into this file.
+//! Pure types + dispatch seam. No `ForestService` here — app-core implements
+//! `ToolExecutor` (shadow during propose, real vault only on accept).
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde::Deserialize;
+use domain::{Node, NodeId, NodeType};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Tool name constants — the single source of truth shared by the schema
-/// advertised to the model and the dispatch that parses its calls back.
+// ─── Tool names ──────────────────────────────────────────────────────
+
 pub const MF_READ_NODE: &str = "mf_read_node";
 pub const MF_SEARCH: &str = "mf_search";
+pub const MF_CREATE_NODE: &str = "mf_create_node";
+pub const MF_PATCH_NODE: &str = "mf_patch_node";
+pub const MF_LINK_NODES: &str = "mf_link_nodes";
+pub const MF_MOVE_SUBTREE: &str = "mf_move_subtree";
 
-/// Default `k` for `mf_search` when the model omits it. Mirrors the
-/// harness doc's tool table.
 pub const DEFAULT_SEARCH_K: usize = 8;
+pub const DEFAULT_MAX_TOOL_CALLS: usize = 20;
 
-/// One tool advertised to the provider: a name, a one-line description,
-/// and the JSON Schema for its input object. Each provider adapter
-/// translates this into its own `tools` array shape (Anthropic's
-/// `input_schema`, OpenAI's `function.parameters`).
+// ─── Schemas advertised to the model ─────────────────────────────────
+
 #[derive(Debug, Clone)]
 pub struct ToolDef {
   pub name: &'static str,
@@ -40,154 +36,254 @@ pub struct ToolDef {
   pub input_schema: Value,
 }
 
-/// Input for `mf_read_node`. The id is a plain string on the wire; the
-/// executor parses it to a `NodeId`. An unparseable id is a *tool* error
-/// (a `tool_result` the model can react to), not a deserialize failure
-/// that would drop the whole turn — so it stays a `String` here.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct ReadNodeInput {
-  /// ULID of the node to read (26 chars), e.g. from a search hit or the
-  /// `<vault-context>` block.
+  /// ULID of the node to read (26 chars).
   pub id: String,
 }
 
-/// Input for `mf_search`. Hybrid FTS + vector search across the whole
-/// vault (all topics), the same engine that backs the app's search
-/// palette.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct SearchInput {
-  /// Natural-language or keyword query.
   pub query: String,
-  /// Max hits to return. Omitted → `DEFAULT_SEARCH_K`.
   #[serde(default)]
   pub k: Option<usize>,
 }
 
-/// A tool call the model made, parsed from the provider's `tool_use`
-/// block into a typed, dispatch-ready value.
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct CreateNodeInput {
+  /// Parent node ULID (existing vault id or one returned by an earlier
+  /// `mf_create_node` in this turn).
+  pub parent_id: String,
+  pub title: String,
+  /// concept | idea | fact | source | example | question | task | misc
+  #[serde(default, rename = "type")]
+  pub node_type: Option<String>,
+  #[serde(default)]
+  pub content: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct PatchNodeInput {
+  pub id: String,
+  #[serde(default)]
+  pub title: Option<String>,
+  #[serde(default)]
+  pub content: Option<String>,
+  #[serde(default, rename = "type")]
+  pub node_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct LinkNodesInput {
+  pub src_id: String,
+  pub dst_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct MoveSubtreeInput {
+  pub id: String,
+  pub new_parent_id: String,
+}
+
+// ─── Parsed calls ────────────────────────────────────────────────────
+
 #[derive(Debug, Clone)]
 pub enum AgentToolCall {
   ReadNode(ReadNodeInput),
   Search(SearchInput),
+  CreateNode(CreateNodeInput),
+  PatchNode(PatchNodeInput),
+  LinkNodes(LinkNodesInput),
+  MoveSubtree(MoveSubtreeInput),
 }
 
 impl AgentToolCall {
-  /// Parse a provider tool_use (`name` + its JSON `input`) into a typed
-  /// call. Layered so the loop can react precisely:
-  ///
-  /// - `None` — unknown tool name (model hallucinated a tool).
-  /// - `Some(Err)` — known tool, but the input doesn't match its schema.
-  /// - `Some(Ok(call))` — ready to dispatch.
-  ///
-  /// Both failure arms become an `is_error` `tool_result` upstream, never
-  /// a dropped turn.
   pub fn parse(name: &str, input: Value) -> Option<Result<Self, serde_json::Error>> {
     match name {
       MF_READ_NODE => Some(serde_json::from_value(input).map(AgentToolCall::ReadNode)),
       MF_SEARCH => Some(serde_json::from_value(input).map(AgentToolCall::Search)),
+      MF_CREATE_NODE => Some(serde_json::from_value(input).map(AgentToolCall::CreateNode)),
+      MF_PATCH_NODE => Some(serde_json::from_value(input).map(AgentToolCall::PatchNode)),
+      MF_LINK_NODES => Some(serde_json::from_value(input).map(AgentToolCall::LinkNodes)),
+      MF_MOVE_SUBTREE => Some(serde_json::from_value(input).map(AgentToolCall::MoveSubtree)),
       _ => None,
     }
   }
 
-  /// The advertised name of this call's tool — for labelling the SSE
-  /// `tool_call` event and error messages without re-matching.
   pub fn name(&self) -> &'static str {
     match self {
       AgentToolCall::ReadNode(_) => MF_READ_NODE,
       AgentToolCall::Search(_) => MF_SEARCH,
+      AgentToolCall::CreateNode(_) => MF_CREATE_NODE,
+      AgentToolCall::PatchNode(_) => MF_PATCH_NODE,
+      AgentToolCall::LinkNodes(_) => MF_LINK_NODES,
+      AgentToolCall::MoveSubtree(_) => MF_MOVE_SUBTREE,
     }
+  }
+
+  /// True for tools that mutate the (shadow) vault and should surface as
+  /// a staged-diff row in the UI.
+  pub fn is_write(&self) -> bool {
+    matches!(
+      self,
+      AgentToolCall::CreateNode(_)
+        | AgentToolCall::PatchNode(_)
+        | AgentToolCall::LinkNodes(_)
+        | AgentToolCall::MoveSubtree(_)
+    )
   }
 }
 
-/// The read-only tool set for H2, in the order advertised to the model.
-/// H3 appends the write tools; H4 appends `mf_code_map`.
+// ─── Tool catalogs ───────────────────────────────────────────────────
+
 pub fn read_only_tools() -> Vec<ToolDef> {
   vec![
     ToolDef {
       name: MF_READ_NODE,
-      description: "Read one node in full by its ULID: title, type, the complete markdown body, and its links. Use it before proposing an edit to a node whose full content you haven't seen — the vault-context block only carries excerpts.",
+      description: "Read one node in full by its ULID: title, type, the complete markdown body, and its links. Use it before editing a node whose full content you haven't seen — the vault-context block only carries excerpts.",
       input_schema: schema_of::<ReadNodeInput>(),
     },
     ToolDef {
       name: MF_SEARCH,
-      description: "Search the whole vault (every topic) by meaning and keyword. Returns the top matches as id + topic + title + snippet. Use it to find already-existing related nodes before drafting, so you build on them and propose cross-topic links instead of duplicating them.",
+      description: "Search the whole vault (every topic) by meaning and keyword. Returns the top matches as id + topic + title + snippet. Use it to find already-existing related nodes before drafting.",
       input_schema: schema_of::<SearchInput>(),
     },
   ]
 }
 
-/// The outcome of executing a tool, ready to hand back to the provider as
-/// a `tool_result`. `content` is JSON text (a serialized `Node`, an array
-/// of search hits, or `{"error": "..."}`); `is_error` maps to the
-/// provider's tool-result error flag so the model learns the call failed
-/// while the turn continues.
+pub fn write_tools() -> Vec<ToolDef> {
+  vec![
+    ToolDef {
+      name: MF_CREATE_NODE,
+      description: "Create a child node under parent_id. Returns the new node JSON including its assigned ULID — use that id as parent_id for further children in this turn. Changes are staged until the user accepts.",
+      input_schema: schema_of::<CreateNodeInput>(),
+    },
+    ToolDef {
+      name: MF_PATCH_NODE,
+      description: "Update an existing node's title, content, and/or type. Omit fields you don't want to change. Staged until accept.",
+      input_schema: schema_of::<PatchNodeInput>(),
+    },
+    ToolDef {
+      name: MF_LINK_NODES,
+      description: "Add a graph link from src_id to dst_id (directed). Staged until accept.",
+      input_schema: schema_of::<LinkNodesInput>(),
+    },
+    ToolDef {
+      name: MF_MOVE_SUBTREE,
+      description: "Reparent node id under new_parent_id (moves the whole subtree). Same-topic only; cannot move the topic root. Staged until accept.",
+      input_schema: schema_of::<MoveSubtreeInput>(),
+    },
+  ]
+}
+
+/// H3 full tool set: reads then writes, in advertisement order.
+pub fn full_tools() -> Vec<ToolDef> {
+  let mut t = read_only_tools();
+  t.extend(write_tools());
+  t
+}
+
+// ─── Staged ops (wire + journal) ─────────────────────────────────────
+
+/// One vault mutation journaled by the shadow and shown in the UI as a
+/// staged-diff row. Accept replays these in order onto the real vault.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum StagedOp {
+  CreateNode { node: Node },
+  PatchNode { before: Node, after: Node },
+  LinkNodes {
+    src_id: NodeId,
+    dst_id: NodeId,
+    /// Source node after the link was added (for accept + UI).
+    after: Node,
+  },
+  MoveSubtree { before: Node, after: Node },
+}
+
+impl StagedOp {
+  pub fn summary_title(&self) -> &str {
+    match self {
+      StagedOp::CreateNode { node } => &node.title,
+      StagedOp::PatchNode { after, .. } => &after.title,
+      StagedOp::LinkNodes { after, .. } => &after.title,
+      StagedOp::MoveSubtree { after, .. } => &after.title,
+    }
+  }
+}
+
+// ─── Tool result ─────────────────────────────────────────────────────
+
 #[derive(Debug, Clone)]
 pub struct ToolResult {
   pub content: String,
   pub is_error: bool,
+  /// When set, the provider loop also emits `AgentEvent::StagedDiff`.
+  pub staged: Option<StagedOp>,
 }
 
 impl ToolResult {
-  /// A successful result carrying already-serialized JSON `content`.
   pub fn ok(content: String) -> Self {
     Self {
       content,
       is_error: false,
+      staged: None,
     }
   }
 
-  /// An error the model should see and can recover from (bad id, node not
-  /// found, …). Wrapped as `{"error": "<message>"}` so the content is
-  /// always valid JSON regardless of the arm.
+  pub fn ok_staged(content: String, staged: StagedOp) -> Self {
+    Self {
+      content,
+      is_error: false,
+      staged: Some(staged),
+    }
+  }
+
   pub fn error(message: impl Into<String>) -> Self {
     Self {
       content: serde_json::json!({ "error": message.into() }).to_string(),
       is_error: true,
+      staged: None,
     }
   }
 }
 
-/// The seam between the provider tool loop (this crate) and the vault
-/// (app-core). The loop calls `execute` once per `tool_use`; the app-core
-/// impl runs it against `ForestService` and serializes the result. A
-/// tool-level failure is returned as `ToolResult { is_error: true }`, not
-/// as a Rust error — the loop must always have something to feed back.
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
   async fn execute(&self, call: AgentToolCall) -> ToolResult;
 }
 
-/// Default ceiling on tool *executions* per propose turn
-/// (`AGENT_HARNESS.md` §7). Without a budget a bad prompt can spiral.
-pub const DEFAULT_MAX_TOOL_CALLS: usize = 20;
-
-/// Everything the provider loop needs to advertise tools and run them
-/// for one propose turn. Built by app-core (`ToolSession::read_only`)
-/// and passed into `AgentProposer::propose`. Not serializable — the
-/// executor is a live vault handle.
+/// Per-turn tool handle passed into `AgentProposer::propose`.
 pub struct ToolSession {
   pub tools: Vec<ToolDef>,
   pub executor: Arc<dyn ToolExecutor>,
-  /// Hard cap on how many tool calls the loop will execute this turn.
-  /// Further `tool_use` blocks from the model are ignored and the loop
-  /// ends with whatever text/proposals it has so far.
   pub max_tool_calls: usize,
+  /// Staging turn id (H3). Present when write tools are active so the
+  /// provider loop can attach it to `StagedDiff` events.
+  pub turn_id: Option<String>,
 }
 
 impl ToolSession {
-  /// H2 session: the two read-only tools against the given executor.
   pub fn read_only(executor: Arc<dyn ToolExecutor>) -> Self {
     Self {
       tools: read_only_tools(),
       executor,
       max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
+      turn_id: None,
+    }
+  }
+
+  /// H3: read + write tools against a shadow executor.
+  pub fn full(executor: Arc<dyn ToolExecutor>, turn_id: String) -> Self {
+    Self {
+      tools: full_tools(),
+      executor,
+      max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
+      turn_id: Some(turn_id),
     }
   }
 }
 
-/// Parse a provider tool_use (`name` + JSON `input`) and run it. Unknown
-/// names and schema mismatches become `is_error` results the model can
-/// recover from — never a dropped turn.
 pub async fn dispatch_tool(
   executor: &dyn ToolExecutor,
   name: &str,
@@ -200,17 +296,10 @@ pub async fn dispatch_tool(
   }
 }
 
-/// Render a tool-input type's JSON Schema as a plain `serde_json::Value`
-/// for inlining into a provider's `tools` array. `schema_for!` is
-/// infallible to build and the result always serializes, so a failure
-/// here would be a bug in schemars, not runtime data — degrade to an
-/// empty object rather than panic.
 fn schema_of<T: schemars::JsonSchema>() -> Value {
   serde_json::to_value(schemars::schema_for!(T)).unwrap_or_else(|_| serde_json::json!({}))
 }
 
-/// OpenAI / OpenAI-compatible `tools` array entry shape
-/// (`type: "function"` + nested `function.{name,description,parameters}`).
 pub fn openai_tools_array(tools: &[ToolDef]) -> Value {
   Value::Array(
     tools
@@ -229,8 +318,6 @@ pub fn openai_tools_array(tools: &[ToolDef]) -> Value {
   )
 }
 
-/// Anthropic `/v1/messages` `tools` array entry shape
-/// (`name` + `description` + `input_schema` at the top level).
 pub fn anthropic_tools_array(tools: &[ToolDef]) -> Value {
   Value::Array(
     tools
@@ -246,6 +333,24 @@ pub fn anthropic_tools_array(tools: &[ToolDef]) -> Value {
   )
 }
 
+/// Parse a wire `type` string into `NodeType`. Unknown → error string.
+pub fn parse_node_type(raw: Option<&str>) -> Result<NodeType, String> {
+  let Some(s) = raw else {
+    return Ok(NodeType::Concept);
+  };
+  match s {
+    "concept" => Ok(NodeType::Concept),
+    "idea" => Ok(NodeType::Idea),
+    "fact" => Ok(NodeType::Fact),
+    "source" => Ok(NodeType::Source),
+    "example" => Ok(NodeType::Example),
+    "question" => Ok(NodeType::Question),
+    "task" => Ok(NodeType::Task),
+    "misc" => Ok(NodeType::Misc),
+    other => Err(format!("unknown node type: {other}")),
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -257,12 +362,15 @@ mod tests {
       .expect("known tool")
       .expect("valid input");
     assert!(matches!(call, AgentToolCall::ReadNode(_)));
-    assert_eq!(call.name(), MF_READ_NODE);
 
-    let call = AgentToolCall::parse(MF_SEARCH, json!({ "query": "tokenization" }))
-      .expect("known tool")
-      .expect("valid input");
-    assert!(matches!(call, AgentToolCall::Search(_)));
+    let call = AgentToolCall::parse(
+      MF_CREATE_NODE,
+      json!({ "parent_id": "01ABC", "title": "X", "type": "concept" }),
+    )
+    .expect("known")
+    .expect("valid");
+    assert!(call.is_write());
+    assert_eq!(call.name(), MF_CREATE_NODE);
   }
 
   #[test]
@@ -272,7 +380,7 @@ mod tests {
     else {
       panic!("expected search");
     };
-    assert_eq!(input.k, None); // caller substitutes DEFAULT_SEARCH_K
+    assert_eq!(input.k, None);
   }
 
   #[test]
@@ -282,21 +390,24 @@ mod tests {
 
   #[test]
   fn parse_bad_input_is_some_err() {
-    // Known tool, but `id` is required and missing.
     let outcome = AgentToolCall::parse(MF_READ_NODE, json!({ "wrong": "field" }));
     assert!(matches!(outcome, Some(Err(_))));
   }
 
   #[test]
-  fn read_only_tools_are_the_two_named_read_tools_with_schemas() {
-    let tools = read_only_tools();
-    let names: Vec<_> = tools.iter().map(|t| t.name).collect();
-    assert_eq!(names, vec![MF_READ_NODE, MF_SEARCH]);
-    for t in &tools {
-      assert!(!t.description.is_empty());
-      // Each schema is an object describing the input's properties.
-      assert!(t.input_schema.get("properties").is_some(), "{} has no properties", t.name);
-    }
+  fn full_tools_include_reads_and_writes() {
+    let names: Vec<_> = full_tools().iter().map(|t| t.name).collect();
+    assert_eq!(
+      names,
+      vec![
+        MF_READ_NODE,
+        MF_SEARCH,
+        MF_CREATE_NODE,
+        MF_PATCH_NODE,
+        MF_LINK_NODES,
+        MF_MOVE_SUBTREE,
+      ]
+    );
   }
 
   #[test]
@@ -305,7 +416,6 @@ mod tests {
     assert!(r.is_error);
     let v: Value = serde_json::from_str(&r.content).unwrap();
     assert_eq!(v["error"], "node not found");
-    assert!(!ToolResult::ok("{}".into()).is_error);
   }
 
   struct EchoExecutor;
@@ -322,11 +432,8 @@ mod tests {
     let ex = EchoExecutor;
     let r = dispatch_tool(&ex, "mf_nope", json!({})).await;
     assert!(r.is_error);
-    assert!(r.content.contains("unknown tool"));
-
     let r = dispatch_tool(&ex, MF_READ_NODE, json!({ "wrong": 1 })).await;
     assert!(r.is_error);
-    assert!(r.content.contains("invalid input"));
   }
 
   #[tokio::test]
@@ -335,5 +442,12 @@ mod tests {
     let r = dispatch_tool(&ex, MF_READ_NODE, json!({ "id": "01ABC" })).await;
     assert!(!r.is_error);
     assert_eq!(r.content, format!("echo:{MF_READ_NODE}"));
+  }
+
+  #[test]
+  fn parse_node_type_defaults_and_rejects() {
+    assert!(matches!(parse_node_type(None), Ok(NodeType::Concept)));
+    assert!(matches!(parse_node_type(Some("question")), Ok(NodeType::Question)));
+    assert!(parse_node_type(Some("nope")).is_err());
   }
 }

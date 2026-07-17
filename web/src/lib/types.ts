@@ -176,13 +176,18 @@ export type AgentProposal =
   | { op: "link"; from: NodeRef; to: NodeRef }
   | { op: "unlink"; from: NodeId; to: NodeId };
 
+/** One shadow journal entry (H3 write tool). Mirrors agent `StagedOp`. */
+export type StagedOp =
+  | { op: "create_node"; node: Node }
+  | { op: "patch_node"; before: Node; after: Node }
+  | { op: "link_nodes"; src_id: NodeId; dst_id: NodeId; after: Node }
+  | { op: "move_subtree"; before: Node; after: Node };
+
 /** SSE events emitted by `POST /v1/agent/propose`. */
 export type AgentEvent =
   | { kind: "token"; text: string }
   | { kind: "proposal"; proposal: AgentProposal }
-  /** H2: model requested a tool; UI may ignore (H3 stages diffs). */
   | { kind: "tool_call_pending"; id: string; name: string; input: unknown }
-  /** H2: tool outcome already fed back to the provider. */
   | {
       kind: "tool_result";
       id: string;
@@ -190,8 +195,26 @@ export type AgentEvent =
       content: string;
       is_error: boolean;
     }
+  | {
+      kind: "staged_diff";
+      turn_id: string;
+      tool_call_id: string;
+      op: StagedOp;
+    }
+  | { kind: "turn_started"; turn_id: string }
   | { kind: "error"; message: string }
   | { kind: "done" };
+
+export interface AcceptStagedResponse {
+  turn_id: string;
+  applied: number;
+  ops: StagedOp[];
+}
+
+export interface RejectStagedResponse {
+  turn_id: string;
+  discarded: number;
+}
 
 export interface AgentStatusResponse {
   /** Human-readable backend label, e.g. `"stub"`, `"gpt-4o-mini (api.openai.com)"`. */

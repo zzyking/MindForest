@@ -1,13 +1,6 @@
-//! H2 of the agent harness — the vault side of the tool seam
-//! (`AGENT_HARNESS.md` §L2).
-//!
-//! Implements the agent crate's `ToolExecutor` over `ForestService`, so
-//! the provider tool loop can run `mf_read_node` / `mf_search` against the
-//! real vault without the agent crate ever depending on app-core. Every
-//! outcome — bad id, missing node, index error — comes back as a
-//! `ToolResult`, never a Rust error: the loop must always have a
-//! `tool_result` to hand the model, and a tool failure is something the
-//! model should see and can recover from, not a reason to drop the turn.
+//! H2 read tools on the real vault. Write tools only run on `ShadowForest`
+//! (see `shadow.rs`); calling them here is a programming error and returns
+//! a tool-level error rather than mutating disk mid-stream.
 
 use agent::{AgentToolCall, ToolExecutor, ToolResult, DEFAULT_SEARCH_K};
 use async_trait::async_trait;
@@ -15,9 +8,6 @@ use domain::NodeId;
 
 use crate::ForestService;
 
-/// Upper bound on `mf_search`'s `k`. A tool result is pasted back into the
-/// model's context, so an unbounded `k` is both a cost and a
-/// context-blowout risk; the model can always search again to go deeper.
 const MAX_SEARCH_K: usize = 25;
 
 #[async_trait]
@@ -37,8 +27,6 @@ impl ToolExecutor for ForestService {
         }
       }
       AgentToolCall::Search(input) => {
-        // Vault-wide (no topic filter) so the model can find cross-topic
-        // material — the whole point of giving it search.
         let k = input.k.unwrap_or(DEFAULT_SEARCH_K).clamp(1, MAX_SEARCH_K);
         match self.search(&input.query, None, k).await {
           Ok(hits) => match serde_json::to_string(&hits) {
@@ -48,6 +36,12 @@ impl ToolExecutor for ForestService {
           Err(e) => ToolResult::error(format!("search failed: {e}")),
         }
       }
+      AgentToolCall::CreateNode(_)
+      | AgentToolCall::PatchNode(_)
+      | AgentToolCall::LinkNodes(_)
+      | AgentToolCall::MoveSubtree(_) => ToolResult::error(
+        "write tools must run on the shadow vault during propose; use accept_staged_turn to flush",
+      ),
     }
   }
 }

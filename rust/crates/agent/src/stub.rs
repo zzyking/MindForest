@@ -28,22 +28,25 @@ impl AgentProposer for StubProposer {
   async fn propose(
     &self,
     req: AgentRequest,
-    _tools: Option<ToolSession>,
+    tools: Option<ToolSession>,
   ) -> ForestResult<AgentStream> {
-    // Stub ignores tools — no network, no vault dig. Keeps tests and
-    // the no-provider fallback deterministic.
-    // Pick a parent: the focused node, or the topic root if no focus.
+    // Stub does not run tools — no network, no vault dig. Still emits
+    // TurnStarted when a turn_id is present so the SSE/UI path is exercised.
     let parent_id = req.focused_node_id.unwrap_or(req.topic.root_node_id);
 
     let prose = format!(
       "I read the prompt: {:?}. Here's a stubbed suggestion — adding a child note under the focused node.",
       req.prompt
     );
-    // Chunk on whitespace so the client gets multiple Token events.
-    let mut events: Vec<AgentEvent> = prose
-      .split_inclusive(' ')
-      .map(|s| AgentEvent::Token { text: s.to_string() })
-      .collect();
+    let mut events: Vec<AgentEvent> = Vec::new();
+    if let Some(tid) = tools.and_then(|t| t.turn_id) {
+      events.push(AgentEvent::TurnStarted { turn_id: tid });
+    }
+    events.extend(
+      prose
+        .split_inclusive(' ')
+        .map(|s| AgentEvent::Token { text: s.to_string() }),
+    );
     events.push(AgentEvent::Token {
       text: "\n\n(structured proposal follows)".into(),
     });
@@ -117,9 +120,12 @@ mod tests {
           break;
         }
         AgentEvent::Error { .. } => panic!("unexpected error"),
-        AgentEvent::ToolCallPending { .. } | AgentEvent::ToolResult { .. } => {
-          panic!("stub must not emit tool events")
+        AgentEvent::ToolCallPending { .. }
+        | AgentEvent::ToolResult { .. }
+        | AgentEvent::StagedDiff { .. } => {
+          panic!("stub must not emit tool/staged events without tools")
         }
+        AgentEvent::TurnStarted { .. } => {}
       }
     }
     assert!(tokens > 0);

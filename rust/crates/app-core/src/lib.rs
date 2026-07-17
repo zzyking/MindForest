@@ -34,6 +34,8 @@ mod config;
 mod context;
 mod model;
 mod search;
+mod shadow;
+mod staged;
 mod tool_exec;
 mod workers;
 
@@ -44,8 +46,9 @@ pub use agent::{
   AgentAnthropicConfigView, AgentConfig, AgentConfigUpdate, AgentConfigView, AgentEvent,
   AgentOpenAIConfig, AgentOpenAIConfigUpdate, AgentOpenAIConfigView, AgentProposer, AgentProvider,
   AgentRequest, AgentRole, AgentStream, AgentTurn, InMemoryStore, KeyringStore, SecretError,
-  SecretStore, SECRET_SERVICE,
+  SecretStore, StagedOp, SECRET_SERVICE,
 };
+pub use staged::{AcceptStagedResponse, RejectStagedResponse};
 pub use embed::download::{DownloadEvent, FileStatus, ModelDownloader, ModelStatus};
 pub use embed::{EmbedMode, StubEmbedder, UnavailableEmbedder};
 pub use index_sqlite::{content_hash_for, SqliteIndex, EMBED_DIM};
@@ -153,6 +156,8 @@ pub struct ForestService {
   /// it on boot. Tests can pass `InMemoryStore` to avoid mutating the
   /// host's real keyring.
   secret_store: Arc<dyn SecretStore>,
+  /// H3: in-flight shadow journals keyed by turn_id (ULID string).
+  staged_turns: Arc<staged::StagedTurnRegistry>,
 }
 
 impl ForestService {
@@ -178,6 +183,7 @@ impl ForestService {
       agent_config: Arc::new(RwLock::new(agent_config)),
       agent_config_path: agent_config_path.into(),
       secret_store,
+      staged_turns: Arc::new(staged::StagedTurnRegistry::new()),
     }
   }
 
@@ -238,6 +244,16 @@ impl ForestService {
     self.index.upsert(&node).await?;
     self.embed_notify.notify_one();
     Ok(node)
+  }
+
+  /// Persist a fully-formed node (H3 accept path). Used when flushing a
+  /// shadow-created node so the client-held ULID stays valid. Does not
+  /// re-generate the id.
+  pub async fn write_node_as_is(&self, node: &Node) -> ForestResult<Node> {
+    self.repo.write_node(node).await?;
+    self.index.upsert(node).await?;
+    self.embed_notify.notify_one();
+    Ok(node.clone())
   }
 
   pub async fn update_node(&self, id: &NodeId, patch: NodePatch) -> ForestResult<Node> {
@@ -1043,5 +1059,81 @@ mod tests {
       .unwrap()
       .iter()
       .any(|h| h["title"] == "Tokenization"));
+  }
+
+  #[tokio::test]
+  async fn shadow_create_then_accept_lands_on_disk() {
+    use agent::{AgentToolCall, CreateNodeInput, ToolExecutor};
+    use crate::shadow::ShadowForest;
+    use std::sync::Arc;
+
+    let (_tmp, svc) = fixture().await;
+    let topic = svc
+      .create_topic(NewTopic {
+        title: "Shadow".into(),
+        slug: None,
+      })
+      .await
+      .unwrap();
+    let root = topic.root_node_id;
+
+    let shadow = Arc::new(ShadowForest::new(svc.clone()));
+    let r = shadow
+      .execute(AgentToolCall::CreateNode(CreateNodeInput {
+        parent_id: root.to_string(),
+        title: "Staged child".into(),
+        node_type: Some("concept".into()),
+        content: Some("body".into()),
+      }))
+      .await;
+    assert!(!r.is_error, "{}", r.content);
+    assert!(r.staged.is_some());
+    let node: domain::Node = serde_json::from_str(&r.content).unwrap();
+    // Not on disk yet.
+    assert!(svc.get_node(&node.id).await.is_err());
+
+    let turn_id = crate::staged::StagedTurnRegistry::new_turn_id();
+    svc
+      .staged_turns
+      .insert(turn_id.clone(), shadow)
+      .await;
+    let accepted = svc.accept_staged_turn(&turn_id).await.unwrap();
+    assert_eq!(accepted.applied, 1);
+    let on_disk = svc.get_node(&node.id).await.unwrap();
+    assert_eq!(on_disk.title, "Staged child");
+    assert_eq!(on_disk.id, node.id);
+  }
+
+  #[tokio::test]
+  async fn shadow_reject_discards_journal() {
+    use agent::{AgentToolCall, CreateNodeInput, ToolExecutor};
+    use crate::shadow::ShadowForest;
+    use std::sync::Arc;
+
+    let (_tmp, svc) = fixture().await;
+    let topic = svc
+      .create_topic(NewTopic {
+        title: "Reject".into(),
+        slug: None,
+      })
+      .await
+      .unwrap();
+    let shadow = Arc::new(ShadowForest::new(svc.clone()));
+    let r = shadow
+      .execute(AgentToolCall::CreateNode(CreateNodeInput {
+        parent_id: topic.root_node_id.to_string(),
+        title: "Gone".into(),
+        node_type: None,
+        content: None,
+      }))
+      .await;
+    let node: domain::Node = serde_json::from_str(&r.content).unwrap();
+    let turn_id = crate::staged::StagedTurnRegistry::new_turn_id();
+    svc.staged_turns.insert(turn_id.clone(), shadow).await;
+    let rejected = svc.reject_staged_turn(&turn_id).await.unwrap();
+    assert_eq!(rejected.discarded, 1);
+    assert!(svc.get_node(&node.id).await.is_err());
+    // Second reject is unknown turn.
+    assert!(svc.reject_staged_turn(&turn_id).await.is_err());
   }
 }

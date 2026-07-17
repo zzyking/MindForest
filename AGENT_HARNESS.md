@@ -1,6 +1,6 @@
 # Agent Harness Design
 
-> Status: **H1 implemented + validated** (`app-core/src/context.rs`; injection 2026-06-11, live-provider validation + cosine-floor hardening 2026-07-15); **H2 implemented** (tool type layer + `ToolExecutor` over `ForestService` + OpenAI/Anthropic multi-round tool loop on `/v1/agent/propose`; SSE `tool_call_pending` / `tool_result`; UI ignores tool events until H3); H3–H4 remain design. Captures the shape of how the in-app agent should plug into the vault — what context goes in, what operations come out, how those operations land. Refer back when implementing phases H1..H4 below.
+> Status: **H1 implemented + validated**; **H2 implemented**; **H3 implemented** (write tools + `ShadowForest` journal + SSE `turn_started`/`staged_diff` + `POST /v1/agent/staged/:turn_id/{accept,reject}` + DraftOverlay pending-changes). H4 remains design. Captures the shape of how the in-app agent should plug into the vault — what context goes in, what operations come out, how those operations land. Refer back when implementing phases H1..H4 below.
 >
 > H1 validation (real provider, real embeddings): the model demonstrably consumes the block — when a genuinely-related cross-topic node exists it emits a verbatim-id cross-topic `link` the single-topic node dump could never produce; when none exists it correctly declines. The gate is met. Note the marquee `<semantic-neighbors>` channel is only as good as the vault is dense: at ~25 nodes with a near-empty second topic it mostly renders empty, which is correct. The cosine floor (below) was added after validation surfaced junk nodes scoring at the ~0.58 English baseline.
 
@@ -161,7 +161,7 @@ DraftOverlay (web)
 
 **H2 — Read-only tools.** Add `mf_read_node` + `mf_search`. Provider can decide to dig further. No mutations. UI unchanged — text proposals only. **Shipped** on `refactor/h2-tools`: `agent/src/tools.rs` + `app-core/src/tool_exec.rs` + provider tool loops; `AgentProposer::propose(req, tools: Option<ToolSession>)`.
 
-**H3 — Write tools.** `mf_create_node` / `mf_patch_node` / `mf_link_nodes` / `mf_move_subtree`. Shadow service. DraftOverlay redesign for staged-diff UI. This is the largest single shipment in the harness; everything else is plumbing.
+**H3 — Write tools.** `mf_create_node` / `mf_patch_node` / `mf_link_nodes` / `mf_move_subtree`. Shadow service. DraftOverlay redesign for staged-diff UI. This is the largest single shipment in the harness; everything else is plumbing. **Shipped** on `refactor/h3-write-tools`: `ShadowForest` + staged registry; propose uses `ToolSession::full`; accept flushes journal with stable ULIDs via `write_node_as_is`.
 
 **H4 — `mf_code_map` read tool (PDF/web later).** Ship the native tree-sitter outline backend (Rust + TS/TSX first) behind the `mf_code_map` tool interface; add the optional `graphify-out/graph.json` reader as an enhancer when present. **No new UI and no importer** — codebase trees grow through the same prompt-bar → staged-diff loop as concept trees, a subtree per turn. Validation gate: point it at MindForest's own repo and grow a structure topic; the proposed `links` must cite real cross-crate dependencies with `EXTRACTED` evidence.
 

@@ -88,17 +88,24 @@ The fenced block is parsed by code. A single mistake here breaks the whole batch
 - Don't propose deletions or updates that the user didn't ask for, and never delete the topic root.
 - Don't output anything after the closing fence."#;
 
-/// Appended to [`SYSTEM_PROMPT`] when a `ToolSession` is active (H2+).
+/// Appended to [`SYSTEM_PROMPT`] when a full (H3) tool session is active.
 const TOOLS_APPENDIX: &str = r#"
 
-## Tools (read-only)
+## Tools
 
-You have two tools. Prefer them over guessing:
+Prefer tools over guessing. **Write tools stage changes** — they do not hit disk until the user accepts. Prefer write tools for mutations; use the fenced `mindforest-proposals` block only when you have nothing to stage (empty array is fine).
 
-- `mf_search(query, k?)` — hybrid keyword + semantic search across the *whole vault* (every topic). Use it to find already-existing related notes before drafting, and to surface cross-topic material the `<vault-context>` block may have missed.
-- `mf_read_node(id)` — load one node in full (title, type, complete markdown body, links). The vault-context and the topic dump only carry excerpts / summaries; call this before proposing an `update_node` or a detailed follow-up that needs the full body.
+### Read
+- `mf_search(query, k?)` — hybrid search across the whole vault.
+- `mf_read_node(id)` — full node body. Call before patching a node you have only seen as an excerpt.
 
-Call tools when they would change what you propose. Don't call them just to restate what is already in the message. After tools return, still end with the same prose + `mindforest-proposals` fenced block — tools never replace that contract."#;
+### Write (staged)
+- `mf_create_node(parent_id, title, type?, content?)` — returns the new node with a real ULID; use that id as `parent_id` for children in the same turn.
+- `mf_patch_node(id, title?, content?, type?)` — partial update.
+- `mf_link_nodes(src_id, dst_id)` — directed graph link.
+- `mf_move_subtree(id, new_parent_id)` — reparent (same topic; not the root).
+
+Call tools when they change the outcome. End with a short prose explanation (2–4 sentences). Still include a `mindforest-proposals` fence — usually `[]` when all edits went through write tools."#;
 
 /// System prompt for this turn. When `with_tools` is true, the H2
 /// tools appendix is appended so the model knows the tool surface.

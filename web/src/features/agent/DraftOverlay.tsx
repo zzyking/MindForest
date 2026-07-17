@@ -26,13 +26,19 @@ import { useEffect, useRef, useState } from "react";
 import { useMainPaneShiftClass } from "@/app/mainPaneShift";
 import { cn } from "@/lib/cn";
 import { useWorkspaceUI } from "@/stores/workspaceUI";
-import type { AgentProposal, AgentTurn } from "@/lib/types";
-import { GLOBAL_KEY, useAgentSession, type ProposalEntry } from "./agentStore";
+import type { AgentProposal, AgentTurn, StagedOp } from "@/lib/types";
+import {
+  GLOBAL_KEY,
+  useAgentSession,
+  type ProposalEntry,
+  type StagedEntry,
+} from "./agentStore";
 import { useConversationKey } from "./conversationKey";
 import { applyProposal, type ResolveTable } from "./applyProposal";
 
 // Stable fallbacks for "no conversation yet" so hook deps don't churn.
 const NO_PROPOSALS: ProposalEntry[] = [];
+const NO_STAGED: StagedEntry[] = [];
 const NO_ERRORS: string[] = [];
 const NO_HISTORY: AgentTurn[] = [];
 const NO_TABLE: ResolveTable = {};
@@ -44,6 +50,8 @@ export function DraftOverlay() {
   const close = useAgentSession((s) => s.close);
   const clear = useAgentSession((s) => s.clear);
   const setProposalStatus = useAgentSession((s) => s.setProposalStatus);
+  const acceptStaged = useAgentSession((s) => s.acceptStaged);
+  const rejectStaged = useAgentSession((s) => s.rejectStaged);
   const mergeResolvedTable = useAgentSession((s) => s.mergeResolvedTable);
   // The conversation the bar is currently talking to — the panel
   // mirrors it 1:1.
@@ -62,6 +70,7 @@ export function DraftOverlay() {
   const prompt = conversation?.prompt ?? "";
   const history = conversation?.history ?? NO_HISTORY;
   const proposals = conversation?.proposals ?? NO_PROPOSALS;
+  const staged = conversation?.staged ?? NO_STAGED;
   const errors = conversation?.errors ?? NO_ERRORS;
   const turnCount = conversation?.turnCount ?? 0;
   const resolvedTable = conversation?.resolvedTable ?? NO_TABLE;
@@ -89,7 +98,7 @@ export function DraftOverlay() {
   useEffect(() => {
     const el = scrollRef.current;
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
-  }, [draft, history, proposals, errors, thisStreaming]);
+  }, [draft, history, proposals, staged, errors, thisStreaming]);
 
   if (!visible || !key || !conversation) return null;
 
@@ -112,6 +121,14 @@ export function DraftOverlay() {
 
   const acceptAll = async () => {
     setBulkBusy(true);
+    // H3: flush each pending staged turn first (server-side journal).
+    const pendingTurns = [
+      ...new Set(staged.filter((s) => s.status === "pending").map((s) => s.turnId)),
+    ];
+    for (const turnId of pendingTurns) {
+      await acceptStaged(key, turnId);
+    }
+    // Legacy text proposals still apply client-side.
     let table: ResolveTable = {};
     for (const entry of proposals) {
       table = await acceptOne(entry, table);
@@ -119,11 +136,23 @@ export function DraftOverlay() {
     setBulkBusy(false);
   };
 
-  const rejectAll = () => {
+  const rejectAll = async () => {
+    setBulkBusy(true);
+    const pendingTurns = [
+      ...new Set(staged.filter((s) => s.status === "pending").map((s) => s.turnId)),
+    ];
+    for (const turnId of pendingTurns) {
+      await rejectStaged(key, turnId);
+    }
     proposals.forEach((p) => {
       if (p.status === "pending") setProposalStatus(key, p.id, "rejected");
     });
+    setBulkBusy(false);
   };
+
+  const hasPending =
+    proposals.some((p) => p.status === "pending") ||
+    staged.some((s) => s.status === "pending");
 
   return (
     // Two-element split, same trick as the bar: the outer wrapper owns
@@ -208,8 +237,11 @@ export function DraftOverlay() {
                   userText={pair.user}
                   assistantText={pair.assistant}
                   proposals={proposals.filter((p) => p.turnIndex === idx + 1)}
+                  staged={staged.filter((s) => s.turnIndex === idx + 1)}
                   onAccept={acceptOne}
                   onReject={(id) => setProposalStatus(key, id, "rejected")}
+                  onAcceptStaged={(turnId) => void acceptStaged(key, turnId)}
+                  onRejectStaged={(turnId) => void rejectStaged(key, turnId)}
                 />
               ))}
             </div>
@@ -240,6 +272,13 @@ export function DraftOverlay() {
                 </div>
               )}
               <DraftText text={draft} streaming={thisStreaming} />
+              {staged.filter((s) => s.turnIndex === turnCount).length > 0 && (
+                <StagedList
+                  staged={staged.filter((s) => s.turnIndex === turnCount)}
+                  onAcceptTurn={(turnId) => void acceptStaged(key, turnId)}
+                  onRejectTurn={(turnId) => void rejectStaged(key, turnId)}
+                />
+              )}
               {proposals.filter((p) => p.turnIndex === turnCount).length > 0 && (
                 <ProposalList
                   proposals={proposals.filter((p) => p.turnIndex === turnCount)}
@@ -264,16 +303,16 @@ export function DraftOverlay() {
         <footer className="border-forest-100 flex items-center justify-end gap-2 border-t px-4 py-2">
           <button
             type="button"
-            onClick={rejectAll}
-            disabled={bulkBusy || proposals.every((p) => p.status !== "pending")}
+            onClick={() => void rejectAll()}
+            disabled={bulkBusy || !hasPending}
             className="text-forest-700 hover:bg-forest-100 disabled:opacity-40 rounded-full px-3 py-1 text-xs"
           >
             Reject all
           </button>
           <button
             type="button"
-            onClick={acceptAll}
-            disabled={bulkBusy || thisStreaming || proposals.every((p) => p.status !== "pending")}
+            onClick={() => void acceptAll()}
+            disabled={bulkBusy || thisStreaming || !hasPending}
             className="text-sand-100 bg-forest-700 hover:bg-forest-800 disabled:opacity-40 rounded-full px-3 py-1 text-xs"
           >
             {bulkBusy ? "Applying…" : "Accept all"}
@@ -318,15 +357,21 @@ function TurnPair({
   userText,
   assistantText,
   proposals,
+  staged,
   onAccept,
   onReject,
+  onAcceptStaged,
+  onRejectStaged,
 }: {
   turnIndex: number;
   userText: string;
   assistantText: string;
   proposals: ProposalEntry[];
+  staged: StagedEntry[];
   onAccept: (entry: ProposalEntry, table: ResolveTable) => Promise<ResolveTable>;
   onReject: (id: string) => void;
+  onAcceptStaged: (turnId: string) => void;
+  onRejectStaged: (turnId: string) => void;
 }) {
   const visible = stripTrailingProposalsBlock(assistantText);
   return (
@@ -341,11 +386,129 @@ function TurnPair({
       <div className="text-forest-800 whitespace-pre-wrap text-sm leading-relaxed">
         {visible || "(no reply text)"}
       </div>
+      {staged.length > 0 && (
+        <StagedList
+          staged={staged}
+          onAcceptTurn={onAcceptStaged}
+          onRejectTurn={onRejectStaged}
+        />
+      )}
       {proposals.length > 0 && (
         <ProposalList proposals={proposals} onAccept={onAccept} onReject={onReject} />
       )}
     </div>
   );
+}
+
+function StagedList({
+  staged,
+  onAcceptTurn,
+  onRejectTurn,
+}: {
+  staged: StagedEntry[];
+  onAcceptTurn: (turnId: string) => void;
+  onRejectTurn: (turnId: string) => void;
+}) {
+  // Group by turn_id so Accept applies the whole journal batch.
+  const byTurn = new Map<string, StagedEntry[]>();
+  for (const s of staged) {
+    const list = byTurn.get(s.turnId) ?? [];
+    list.push(s);
+    byTurn.set(s.turnId, list);
+  }
+  return (
+    <div className="mt-4 space-y-3">
+      <div className="text-forest-500 text-[10px] uppercase tracking-wider">
+        Pending changes
+      </div>
+      {[...byTurn.entries()].map(([turnId, rows]) => {
+        const pending = rows.some((r) => r.status === "pending");
+        const status = rows[0]?.status ?? "pending";
+        return (
+          <div
+            key={turnId}
+            className={cn(
+              "border-forest-100 bg-sand-100/70 rounded-lg border px-3 py-2",
+              status === "accepted" && "border-forest-300 bg-forest-50",
+              status === "rejected" && "opacity-50",
+              status === "failed" && "border-rust-300 bg-rust-50",
+            )}
+          >
+            <ul className="space-y-2">
+              {rows.map((entry) => {
+                const summary = describeStaged(entry.op);
+                return (
+                  <li key={entry.id} className="text-xs">
+                    <div className="text-forest-500 mb-0.5 flex items-center gap-2 text-[10px] uppercase tracking-wider">
+                      <span>{summary.op}</span>
+                      <StatusBadge status={entry.status} />
+                    </div>
+                    <div className="text-forest-900">{summary.title}</div>
+                    {summary.detail && (
+                      <div className="text-forest-600 mt-0.5 line-clamp-2 whitespace-pre-wrap">
+                        {summary.detail}
+                      </div>
+                    )}
+                    {entry.error && (
+                      <div className="mt-1 text-rust-700">{entry.error}</div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+            {pending && (
+              <div className="mt-2 flex justify-end gap-1">
+                <button
+                  type="button"
+                  onClick={() => onRejectTurn(turnId)}
+                  className="text-forest-700 hover:bg-forest-100 rounded-full px-2 py-0.5 text-xs"
+                >
+                  Reject
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onAcceptTurn(turnId)}
+                  className="text-sand-100 bg-forest-700 hover:bg-forest-800 rounded-full px-2 py-0.5 text-xs"
+                >
+                  Accept
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function describeStaged(op: StagedOp): { op: string; title: string; detail?: string } {
+  switch (op.op) {
+    case "create_node":
+      return {
+        op: "create",
+        title: op.node.title,
+        detail: op.node.content || undefined,
+      };
+    case "patch_node":
+      return {
+        op: "patch",
+        title: op.after.title,
+        detail: op.after.content !== op.before.content ? op.after.content : undefined,
+      };
+    case "link_nodes":
+      return {
+        op: "link",
+        title: `${shortRef(op.src_id)} → ${shortRef(op.dst_id)}`,
+      };
+    case "move_subtree":
+      return {
+        op: "move",
+        title: op.after.title,
+        detail: op.after.parent
+          ? `→ parent ${shortRef(op.after.parent)}`
+          : undefined,
+      };
+  }
 }
 
 function DraftText({ text, streaming }: { text: string; streaming: boolean }) {

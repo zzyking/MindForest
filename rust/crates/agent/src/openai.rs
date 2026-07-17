@@ -140,6 +140,9 @@ impl AgentProposer for OpenAICompatibleProposer {
       let mut calls_used: usize = 0;
       let max_calls = tools.as_ref().map(|t| t.max_tool_calls).unwrap_or(0);
       let tools_json = tools.as_ref().map(|t| openai_tools_array(&t.tools));
+      if let Some(tid) = tools.as_ref().and_then(|t| t.turn_id.clone()) {
+        yield AgentEvent::TurnStarted { turn_id: tid };
+      }
 
       loop {
         let mut body = json!({
@@ -242,6 +245,13 @@ impl AgentProposer for OpenAICompatibleProposer {
             content: result.content.clone(),
             is_error: result.is_error,
           };
+          if let (Some(op), Some(turn_id)) = (result.staged, session.turn_id.as_ref()) {
+            yield AgentEvent::StagedDiff {
+              turn_id: turn_id.clone(),
+              tool_call_id: tc.id.clone(),
+              op,
+            };
+          }
 
           api_tool_calls.push(json!({
             "id": tc.id,

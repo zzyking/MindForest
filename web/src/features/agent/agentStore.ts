@@ -35,14 +35,16 @@
 
 import { create } from "zustand";
 
-import { streamAgentPropose } from "@/lib/api";
+import { acceptStagedTurn, rejectStagedTurn, streamAgentPropose } from "@/lib/api";
 import type {
   AgentEvent,
   AgentProposal,
   AgentTurn,
   NodeId,
+  StagedOp,
   TopicId,
 } from "@/lib/types";
+import { useForestData } from "@/stores/forestData";
 import type { ResolveTable } from "./applyProposal";
 
 export type ProposalStatus = "pending" | "accepted" | "rejected" | "failed";
@@ -68,6 +70,17 @@ export interface ProposalEntry {
   error?: string;
 }
 
+/** One staged write-tool op from the shadow journal (H3). */
+export interface StagedEntry {
+  id: string;
+  turnId: string;
+  toolCallId: string;
+  op: StagedOp;
+  status: ProposalStatus;
+  turnIndex: number;
+  error?: string;
+}
+
 export interface Conversation {
   /** In-flight (uncommitted) user prompt. Cleared when the turn lands
    *  in history — doubles as the "an uncommitted turn exists" flag. */
@@ -80,6 +93,10 @@ export interface Conversation {
   turnCount: number;
   /** All proposals across the conversation, oldest first. */
   proposals: ProposalEntry[];
+  /** H3 staged write ops (shadow journal rows). */
+  staged: StagedEntry[];
+  /** Latest staging turn_id from the server for this conversation. */
+  activeTurnId: string | null;
   errors: string[];
   /** Accumulated client_id → real NodeId mappings across accepted
    *  proposals. Resolves cross-proposal references when the user
@@ -93,6 +110,8 @@ const emptyConversation = (): Conversation => ({
   history: [],
   turnCount: 0,
   proposals: [],
+  staged: [],
+  activeTurnId: null,
   errors: [],
   resolvedTable: {},
 });
@@ -130,6 +149,16 @@ interface AgentSessionState {
     status: ProposalStatus,
     error?: string,
   ) => void;
+  setStagedStatus: (
+    key: ConversationKey,
+    turnId: string,
+    status: ProposalStatus,
+    error?: string,
+  ) => void;
+  /** Accept all pending staged ops for a turn_id (server flush). */
+  acceptStaged: (key: ConversationKey, turnId: string) => Promise<void>;
+  /** Reject all pending staged ops for a turn_id (server discard). */
+  rejectStaged: (key: ConversationKey, turnId: string) => Promise<void>;
   mergeResolvedTable: (key: ConversationKey, updates: ResolveTable) => void;
 }
 
@@ -137,6 +166,12 @@ let proposalCounter = 0;
 function nextProposalId(): string {
   proposalCounter += 1;
   return `p-${proposalCounter}`;
+}
+
+let stagedCounter = 0;
+function nextStagedId(): string {
+  stagedCounter += 1;
+  return `s-${stagedCounter}`;
 }
 
 export const useAgentSession = create<AgentSessionState>((set, get) => {
@@ -223,9 +258,28 @@ export const useAgentSession = create<AgentSessionState>((set, get) => {
             case "error":
               patch(key, (c) => ({ errors: [...c.errors, ev.message] }));
               break;
+            case "turn_started":
+              patch(key, () => ({ activeTurnId: ev.turn_id }));
+              break;
+            case "staged_diff":
+              patch(key, (c) => ({
+                staged: [
+                  ...c.staged,
+                  {
+                    id: nextStagedId(),
+                    turnId: ev.turn_id,
+                    toolCallId: ev.tool_call_id,
+                    op: ev.op,
+                    status: "pending",
+                    turnIndex,
+                  },
+                ],
+                activeTurnId: ev.turn_id,
+              }));
+              break;
             case "tool_call_pending":
             case "tool_result":
-              // H2: tools run server-side; UI stays text-proposal only.
+              // Narration-only for now; staged_diff carries the UI row.
               break;
             case "done":
               sawDone = true;
@@ -276,6 +330,7 @@ export const useAgentSession = create<AgentSessionState>((set, get) => {
           !!c &&
           (c.history.length > 0 ||
             c.proposals.length > 0 ||
+            c.staged.length > 0 ||
             c.errors.length > 0 ||
             c.prompt !== "" ||
             (s.streaming && s.streamingKey === key));
@@ -295,10 +350,61 @@ export const useAgentSession = create<AgentSessionState>((set, get) => {
         proposals: c.proposals.map((p) => (p.id === id ? { ...p, status, error } : p)),
       })),
 
+    setStagedStatus: (key, turnId, status, error) =>
+      patch(key, (c) => ({
+        staged: c.staged.map((s) =>
+          s.turnId === turnId && s.status === "pending"
+            ? { ...s, status, error }
+            : s,
+        ),
+      })),
+
+    acceptStaged: async (key, turnId) => {
+      try {
+        await acceptStagedTurn(turnId);
+        get().setStagedStatus(key, turnId, "accepted");
+        // Reload topics touched by the flush so the tree/forest update.
+        const topics = new Set(
+          (get().conversations[key]?.staged ?? [])
+            .filter((s) => s.turnId === turnId)
+            .map((s) => stagedTopicId(s.op))
+            .filter(Boolean) as TopicId[],
+        );
+        const forest = useForestData.getState();
+        for (const tid of topics) {
+          await forest.fetchTopic(tid);
+        }
+        await forest.fetchTopics();
+      } catch (e) {
+        get().setStagedStatus(key, turnId, "failed", errorMessage(e));
+      }
+    },
+
+    rejectStaged: async (key, turnId) => {
+      try {
+        await rejectStagedTurn(turnId);
+        get().setStagedStatus(key, turnId, "rejected");
+      } catch (e) {
+        get().setStagedStatus(key, turnId, "failed", errorMessage(e));
+      }
+    },
+
     mergeResolvedTable: (key, updates) =>
       patch(key, (c) => ({ resolvedTable: { ...c.resolvedTable, ...updates } })),
   };
 });
+
+function stagedTopicId(op: StagedOp): TopicId | null {
+  switch (op.op) {
+    case "create_node":
+      return op.node.topic;
+    case "patch_node":
+    case "move_subtree":
+      return op.after.topic;
+    case "link_nodes":
+      return op.after.topic;
+  }
+}
 
 function errorMessage(e: unknown): string {
   if (e instanceof Error) return e.message;

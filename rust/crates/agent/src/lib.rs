@@ -54,9 +54,11 @@ pub use parse::{extract_proposals, ProposalParseError};
 pub use secrets::{mask_secret, InMemoryStore, KeyringStore, SecretError, SecretStore};
 pub use stub::StubProposer;
 pub use tools::{
-  anthropic_tools_array, dispatch_tool, openai_tools_array, read_only_tools, AgentToolCall,
-  ReadNodeInput, SearchInput, ToolDef, ToolExecutor, ToolResult, ToolSession,
-  DEFAULT_MAX_TOOL_CALLS, DEFAULT_SEARCH_K, MF_READ_NODE, MF_SEARCH,
+  anthropic_tools_array, dispatch_tool, full_tools, openai_tools_array, parse_node_type,
+  read_only_tools, write_tools, AgentToolCall, CreateNodeInput, LinkNodesInput, MoveSubtreeInput,
+  PatchNodeInput, ReadNodeInput, SearchInput, StagedOp, ToolDef, ToolExecutor, ToolResult,
+  ToolSession, DEFAULT_MAX_TOOL_CALLS, DEFAULT_SEARCH_K, MF_CREATE_NODE, MF_LINK_NODES,
+  MF_MOVE_SUBTREE, MF_PATCH_NODE, MF_READ_NODE, MF_SEARCH,
 };
 
 use std::sync::Arc;
@@ -376,6 +378,17 @@ pub enum AgentEvent {
     content: String,
     is_error: bool,
   },
+  /// H3: a write tool landed on the shadow journal. UI shows a staged-diff
+  /// row; accept/reject is `POST /v1/agent/staged/:turn_id/{accept,reject}`.
+  StagedDiff {
+    turn_id: String,
+    /// Provider tool_use id (correlates with ToolCallPending / ToolResult).
+    tool_call_id: String,
+    op: StagedOp,
+  },
+  /// H3: emitted once at the start of a tool-enabled propose so the client
+  /// knows which staging turn subsequent `StagedDiff` rows belong to.
+  TurnStarted { turn_id: String },
   /// Non-fatal note (e.g. "couldn't parse proposals block"). Stream
   /// still continues; the client just surfaces the message.
   Error { message: String },

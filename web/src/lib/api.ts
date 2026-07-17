@@ -13,6 +13,7 @@
  */
 
 import type {
+  AcceptStagedResponse,
   AgentConfigUpdate,
   AgentConfigView,
   AgentEvent,
@@ -27,6 +28,7 @@ import type {
   NodeId,
   NodePatch,
   ProposeRequestBody,
+  RejectStagedResponse,
   SearchHit,
   Topic,
   TopicDetail,
@@ -249,6 +251,22 @@ export function streamAgentPropose(
     controller.signal,
   );
   return { events, cancel: () => controller.abort() };
+}
+
+/** Flush a shadow journal to disk (H3). */
+export function acceptStagedTurn(turnId: string): Promise<AcceptStagedResponse> {
+  return request<AcceptStagedResponse>(
+    `/v1/agent/staged/${encodeURIComponent(turnId)}/accept`,
+    { method: "POST" },
+  );
+}
+
+/** Discard a shadow journal (H3). */
+export function rejectStagedTurn(turnId: string): Promise<RejectStagedResponse> {
+  return request<RejectStagedResponse>(
+    `/v1/agent/staged/${encodeURIComponent(turnId)}/reject`,
+    { method: "POST" },
+  );
 }
 
 // ─── SSE plumbing ───────────────────────────────────────────────────

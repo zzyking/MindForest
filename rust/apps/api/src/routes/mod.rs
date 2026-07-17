@@ -36,4 +36,12 @@ pub fn v1() -> Router<AppState> {
     .route("/agent/status", get(agent::status))
     .route("/agent/propose", post(agent::propose))
     .route("/agent/config", get(agent::get_config).put(agent::put_config))
+    .route(
+      "/agent/staged/:turn_id/accept",
+      post(agent::accept_staged),
+    )
+    .route(
+      "/agent/staged/:turn_id/reject",
+      post(agent::reject_staged),
+    )
 }

@@ -19,7 +19,10 @@ use futures::stream::{Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 
-use app_core::{merge_config_update, AgentConfigUpdate, AgentConfigView, AgentEvent, AgentTurn};
+use app_core::{
+  merge_config_update, AcceptStagedResponse, AgentConfigUpdate, AgentConfigView, AgentEvent,
+  AgentTurn, RejectStagedResponse,
+};
 use domain::{NodeId, TopicId};
 
 use crate::error::ApiError;
@@ -98,12 +101,30 @@ pub async fn propose(
   )
 }
 
+/// `POST /v1/agent/staged/:turn_id/accept` — flush shadow journal to disk.
+pub async fn accept_staged(
+  State(svc): State<AppState>,
+  axum::extract::Path(turn_id): axum::extract::Path<String>,
+) -> Result<Json<AcceptStagedResponse>, ApiError> {
+  Ok(Json(svc.accept_staged_turn(&turn_id).await?))
+}
+
+/// `POST /v1/agent/staged/:turn_id/reject` — discard shadow journal.
+pub async fn reject_staged(
+  State(svc): State<AppState>,
+  axum::extract::Path(turn_id): axum::extract::Path<String>,
+) -> Result<Json<RejectStagedResponse>, ApiError> {
+  Ok(Json(svc.reject_staged_turn(&turn_id).await?))
+}
+
 fn event_name(ev: &AgentEvent) -> &'static str {
   match ev {
     AgentEvent::Token { .. } => "token",
     AgentEvent::Proposal { .. } => "proposal",
     AgentEvent::ToolCallPending { .. } => "tool_call_pending",
     AgentEvent::ToolResult { .. } => "tool_result",
+    AgentEvent::StagedDiff { .. } => "staged_diff",
+    AgentEvent::TurnStarted { .. } => "turn_started",
     AgentEvent::Error { .. } => "error",
     AgentEvent::Done => "done",
   }

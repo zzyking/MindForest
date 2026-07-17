@@ -1,10 +1,10 @@
 //! Agent surface on `ForestService` — proposal dispatch and runtime
 //! config swaps.
 //!
-//! This is where the harness work (H1..H3) lands: the `ContextBuilder`
-//! call will slot into `propose()` before dispatch, and staged-turn
-//! accept/reject will live alongside `set_agent_config`. See
-//! `AGENT_HARNESS.md`.
+//! H1: `ContextBuilder` into every propose.
+//! H2: read tools.
+//! H3: full tool session against a per-turn `ShadowForest`; accept/reject
+//! live in `staged.rs`.
 
 use std::sync::Arc;
 
@@ -12,17 +12,15 @@ use agent::{secret_accounts, AgentConfig, AgentRequest, AgentStream, ToolSession
 use domain::{ForestError, ForestResult, NodeId, TopicId};
 
 use crate::config::write_agent_config_file;
+use crate::shadow::ShadowForest;
+use crate::staged::StagedTurnRegistry;
 use crate::ForestService;
 
 impl ForestService {
-  /// Build the agent context (full topic + node list) and dispatch.
-  /// The returned stream is alive for the duration of one HTTP SSE
-  /// response; the route handler maps each `AgentEvent` to a frame.
-  ///
-  /// H2: hands the proposer a read-only `ToolSession` so the model can
-  /// call `mf_read_node` / `mf_search` mid-turn. The executor is `self`
-  /// (ForestService implements `ToolExecutor`); no shadow/staging yet —
-  /// that lands in H3 with write tools.
+  /// Build the agent context and dispatch with a full (H3) tool session
+  /// bound to a fresh shadow journal. The stream emits `turn_started`
+  /// then tool/staged-diff events; the journal stays registered until
+  /// accept/reject.
   pub async fn propose(
     &self,
     topic_id: &TopicId,
@@ -32,9 +30,6 @@ impl ForestService {
   ) -> ForestResult<AgentStream> {
     let topic = self.repo.get_topic(topic_id).await?;
     let nodes = self.repo.list_nodes_in_topic(topic_id).await?;
-    // H1: locate the focus inside the wider vault (spine + cross-topic
-    // neighbors). Best-effort — a None here just means the model works
-    // from the node dump alone, as it did before the harness.
     let vault_context = self
       .build_vault_context(&topic, &nodes, focused_node_id)
       .await;
@@ -46,41 +41,28 @@ impl ForestService {
       history,
       vault_context,
     };
-    // ToolSession holds `Arc<dyn ToolExecutor>`. ForestService is not
-    // itself an Arc here, so wrap a clone — `Clone` is cheap (inner
-    // fields are already Arcs).
-    let tools = Some(ToolSession::read_only(Arc::new(self.clone())));
+
+    let turn_id = StagedTurnRegistry::new_turn_id();
+    let shadow = Arc::new(ShadowForest::new(Arc::new(self.clone())));
+    self
+      .staged_turns
+      .insert(turn_id.clone(), shadow.clone())
+      .await;
+    let tools = Some(ToolSession::full(shadow, turn_id));
+
     let proposer = self.proposer.read().await.clone();
     proposer.propose(req, tools).await
   }
 
-  /// Backend label, e.g. `"stub"`, `"gpt-4o-mini (api.openai.com)"`,
-  /// `"claude-sonnet-4-6 (anthropic)"`. Surfaced via the agent status
-  /// endpoint so the UI can render a "powered by …" hint.
   pub async fn agent_backend(&self) -> String {
     self.proposer.read().await.backend().to_string()
   }
 
-  /// Snapshot of the persisted agent configuration, with API keys
-  /// included verbatim. The HTTP route exposes this on loopback only;
-  /// callers outside the service should not relay it elsewhere.
   pub async fn agent_config(&self) -> AgentConfig {
     self.agent_config.read().await.clone()
   }
 
-  /// Persist a new `AgentConfig` and rebuild the proposer. Returns the
-  /// new backend label so the caller (HTTP route) can echo it back to
-  /// the UI without a second round-trip.
-  ///
-  /// API keys are written through to the `SecretStore` (OS keychain).
-  /// The serialized `agent.json` does not contain plaintext keys —
-  /// `AgentOpenAIConfig::api_key` and friends are `skip_serializing`.
-  /// An empty/None key clears the keychain entry, matching the user's
-  /// intent ("revoke this provider's key").
   pub async fn set_agent_config(&self, config: AgentConfig) -> ForestResult<String> {
-    // Secrets first. Doing this before the file write means a keychain
-    // failure surfaces as a hard error rather than a half-applied state
-    // where the file says one provider but the keychain says another.
     self.write_secret(secret_accounts::OPENAI, config.openai.api_key.as_deref())?;
     self.write_secret(
       secret_accounts::ANTHROPIC,
@@ -98,9 +80,6 @@ impl ForestService {
     Ok(backend)
   }
 
-  /// `Some("non-empty")` writes the secret; `None` or `Some("")` deletes
-  /// it. Errors map onto `ForestError::Storage` so the route handler
-  /// returns a clean 500 with the underlying reason.
   fn write_secret(&self, account: &str, value: Option<&str>) -> ForestResult<()> {
     match value {
       Some(v) if !v.is_empty() => self
