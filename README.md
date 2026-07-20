@@ -7,6 +7,9 @@ English | [简体中文](README.zh-CN.md)
 
 </div>
 
+> **Status: Unmaintained / archived.**  
+> Active development has stopped. The latest work lives on the `refactor/v2` line (L1–L3 field morph, agent harness H1–H3). No further features or support are planned. Forks and experiments are welcome.
+
 MindForest is a dual-layer visual knowledge workspace: the Tree View helps you dive deep into a topic while the Graph View exposes cross-topic relations. The app blends trees, graph canvas, and a Markdown editor so you can grow and reorganize your forest of ideas with an immersive flow.
 
 **Current version:** 0.1.0-alpha · See [CHANGELOG.md](CHANGELOG.md) for updates.

@@ -6,6 +6,9 @@
 
 </div>
 
+> **状态：停止维护 / 已归档。**  
+> 开发已暂停。最新进展在 `refactor/v2`（L1–L3 场域 morph、agent harness H1–H3）。不再计划新功能或支持。欢迎 fork 与实验。
+
 MindForest 是一款「双层导航」的可视化知识组织工具：树状结构负责主题深潜，图谱结构负责跨主题关联。它结合了 Tree View、Graph View 以及 Markdown 编辑面板，帮助你以更具沉浸感的方式构建和梳理知识森林。
 
 **当前版本：** 0.1.0-alpha · 更新内容见 [CHANGELOG.md](CHANGELOG.md)。
